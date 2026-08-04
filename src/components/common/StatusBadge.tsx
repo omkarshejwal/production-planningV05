@@ -2,7 +2,7 @@ import React from 'react';
 import { BottleColor, JobPriority, JobStatus } from '../../types';
 
 interface StatusBadgeProps {
-  status?: JobStatus | 'Running' | 'Stopped' | 'Maintenance' | 'Changeover' | 'PASSED' | 'WARNING' | 'REJECTED' | 'Loading' | 'Dispatched' | 'In Stock' | 'Low Stock' | 'Critical';
+  status?: JobStatus | 'Running' | 'Stopped' | 'Maintenance' | 'Changeover' | 'PASSED' | 'WARNING' | 'REJECTED' | 'Loading' | 'Scheduled' | 'Dispatched' | 'Delivered' | 'In Stock' | 'Low Stock' | 'Critical';
   size?: 'sm' | 'md' | 'lg';
   className?: string;
 }
@@ -32,6 +32,11 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'sm', c
     case 'Scheduled':
       bgClass = 'bg-slate-100 text-slate-700 border-slate-200';
       dotColor = 'bg-slate-500';
+      break;
+
+    case 'Delivered':
+      bgClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      dotColor = 'bg-emerald-600';
       break;
 
     case 'Changeover':

@@ -1,20 +1,30 @@
-import React, { useEffect, useState } from 'react';
-import { X, Save, Trash2, Calculator, AlertTriangle, ShieldCheck, Lock, Clock } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Save, X } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
-import { BottleColor, JobPriority, JobStatus, PackingCategory, PalletType, ProductionJob } from '../../types';
-import {
-  calculateBottlesPerHour,
-  calculateBottlesPerMin,
-  calculateDailyProductionPcs,
-  calculateDailyProductionTons,
-  calculateDrawTonsPerDay,
-  calculateEstimatedCompletionDate,
-  calculateGrossDayQuantity,
-  calculateProductionDuration,
-  calculateRemainingQuantity,
-  formatDecimal,
-  formatNumber,
-} from '../../utils/calculations';
+import { JobPackagingRow } from '../../data/planningSchema';
+import { planningRepository } from '../../services/planningRepository';
+import { calculateDrawTonsPerDay } from '../../utils/calculations';
+
+type PackagingCode = 'ST' | 'SN' | 'SB' | 'BT';
+
+const PACKAGING_OPTIONS: Array<{
+  code: PackagingCode;
+  title: string;
+  subtitle: string;
+}> = [
+  { code: 'ST', title: 'Shrink', subtitle: 'Tray' },
+  { code: 'SN', title: 'Shrink', subtitle: 'Naked' },
+  { code: 'SB', title: 'Shrink', subtitle: 'Box' },
+  { code: 'BT', title: 'Bottom', subtitle: 'Tray' },
+];
+
+const toJobKey = (
+  plan_date: string,
+  machine_no: string,
+  bottle_id: string,
+  section: number,
+  start_time: string
+) => ({ plan_date, machine_no, bottle_id, section, start_time });
 
 export const PlanningDrawer: React.FC = () => {
   const {
@@ -23,584 +33,431 @@ export const PlanningDrawer: React.FC = () => {
     editingJob,
     drawerDefaultMachineId,
     drawerDefaultDate,
+    drawerSuggestedStartTime,
     saveJob,
-    deleteJob,
     bottles,
     machines,
     bottleMasterRecords,
   } = useERP();
 
   const [machineId, setMachineId] = useState('MAC-01');
-  const [selectedBottleName, setSelectedBottleName] = useState('');
-  const [sectionCount, setSectionCount] = useState<number>(8);
-  const [grossQuantity, setGrossQuantity] = useState<number>(300000);
-  const [producedQuantity, setProducedQuantity] = useState<number>(0);
-  const [startDate, setStartDate] = useState('2026-08-01');
-  const [endDate, setEndDate] = useState('2026-08-15');
-  const [status, setStatus] = useState<JobStatus>('Pending');
-  const [priority, setPriority] = useState<JobPriority>('Medium');
-  const [packingCategory, setPackingCategory] = useState<PackingCategory>('Palletized');
-  const [palletType, setPalletType] = useState<PalletType>('Wooden Standard (1200x1000)');
+  const [date, setDate] = useState('2026-08-01');
+  const [bottleId, setBottleId] = useState('');
+  const [sectionCount, setSectionCount] = useState(8);
+  const [quantity, setQuantity] = useState(0);
+  const [weightGrams, setWeightGrams] = useState(400);
+  const [cutPerMin, setCutPerMin] = useState(28);
+  const [drawTons, setDrawTons] = useState(0);
+  const [startTime, setStartTime] = useState('07:00');
+  const [expectedEndTime, setExpectedEndTime] = useState('23:00');
   const [customerName, setCustomerName] = useState('');
-  const [changeoverHours, setChangeoverHours] = useState<number>(4.0);
-  const [remarks, setRemarks] = useState('');
 
-  // Currently selected machine object and name
-  const currentMachine = machines.find((m) => m.id === machineId) || machines[0];
-  const machineName = currentMachine?.name || 'Machine No 1';
+  const [selectedPackaging, setSelectedPackaging] = useState<PackagingCode[]>([]);
+  const [packagingQuantities, setPackagingQuantities] = useState<Record<PackagingCode, number>>({
+    ST: 0,
+    SN: 0,
+    SB: 0,
+    BT: 0,
+  });
+  const [palletPacking, setPalletPacking] = useState<'YES' | 'NO'>('NO');
+  const [palletQuantity, setPalletQuantity] = useState(0);
 
-  // Get all bottle master records matching the selected machine
-  const machineMasterRecords = bottleMasterRecords.filter(
-    (r) => r.mch === machineName || r.mch === machineId
+  const machine = machines.find((m) => m.id === machineId);
+
+  const availableBottles = useMemo(() => {
+    const currentMachine = machines.find((m) => m.id === machineId);
+    const names = new Set(
+      bottleMasterRecords
+        .filter((record) => record.mch === currentMachine?.name || record.mch === machineId)
+        .map((record) => record.bottleName)
+    );
+
+    const matchedBottles = bottles.filter((b) => names.has(b.name));
+    return matchedBottles.length > 0 ? matchedBottles : bottles;
+  }, [bottleMasterRecords, bottles, machineId, machines]);
+
+  const dailyCapacity = Math.max(1, cutPerMin * sectionCount * 60 * 24);
+  const estimatedDays = quantity > 0 ? quantity / dailyCapacity : 0;
+
+  const allocatedQty = selectedPackaging.reduce(
+    (sum, code) => sum + (packagingQuantities[code] || 0),
+    0
   );
-
-  // Get list of unique bottle names for this machine from Bottle Master
-  const availableBottleNames = Array.from(
-    new Set(machineMasterRecords.map((r) => r.bottleName))
-  );
-
-  // If no bottle names for this machine in Bottle Master, fallback to all records
-  const bottleNameList = availableBottleNames.length > 0
-    ? availableBottleNames
-    : Array.from(new Set(bottleMasterRecords.map((r) => r.bottleName)));
-
-  // Available section options for the currently selected machine & bottle name
-  const bottleSectionRecords = machineMasterRecords.filter(
-    (r) => r.bottleName === selectedBottleName
-  );
-  const availableSectionsForBottle = Array.from(
-    new Set(bottleSectionRecords.map((r) => r.section))
-  ).sort((a, b) => Number(a) - Number(b));
-
-  // Active Bottle Master Record matching machine, bottle name, and selected section
-  const activeMasterRecord = bottleMasterRecords.find(
-    (r) =>
-      (r.mch === machineName || r.mch === machineId) &&
-      r.bottleName === selectedBottleName &&
-      r.section === sectionCount
-  );
-
-  // Derived values from Bottle Master
-  const weightGrams = activeMasterRecord?.weightGrams || 400;
-  const cutPerMin = activeMasterRecord?.speed || 28;
-  const isRecordValid = Boolean(activeMasterRecord);
-
-  // Fallback match bottle in global list for color/drawing number
-  const matchingBottleObj = bottles.find((b) => b.name === selectedBottleName) || bottles[0];
+  const isBalanced = quantity > 0 && allocatedQty === quantity;
+  const requiresPalletQuantity = palletPacking === 'YES' && selectedPackaging.includes('SN');
 
   useEffect(() => {
+    const derivedDraw = calculateDrawTonsPerDay(cutPerMin, sectionCount, weightGrams);
+    setDrawTons(derivedDraw);
+  }, [cutPerMin, sectionCount, weightGrams]);
+
+  useEffect(() => {
+    if (!isDrawerOpen) return;
+
+    const resetPackaging = () => {
+      setSelectedPackaging([]);
+      setPackagingQuantities({ ST: 0, SN: 0, SB: 0, BT: 0 });
+      setPalletPacking('NO');
+      setPalletQuantity(0);
+    };
+
     if (editingJob) {
       setMachineId(editingJob.machineId);
-      const targetMch = machines.find((m) => m.id === editingJob.machineId);
-      const mchName = targetMch?.name || 'Machine No 1';
-
-      const jobBottleObj = bottles.find((b) => b.id === editingJob.bottleId);
-      const bName = jobBottleObj?.name || '750ml Bordeaux Wine Heavy';
-
-      setSelectedBottleName(bName);
+      setDate(editingJob.date || editingJob.startDate);
+      setBottleId(editingJob.bottleId);
       setSectionCount(editingJob.sectionCount);
-      setGrossQuantity(editingJob.grossQuantity);
-      setProducedQuantity(editingJob.producedQuantity);
-      setStartDate(editingJob.startDate);
-      setEndDate(editingJob.endDate);
-      setStatus(editingJob.status);
-      setPriority(editingJob.priority);
-      setPackingCategory(editingJob.packingCategory);
-      setPalletType(editingJob.palletType);
-      setCustomerName(editingJob.customerName);
-      setChangeoverHours(editingJob.changeoverHours || 4.0);
-      setRemarks(editingJob.remarks || '');
-    } else {
-      // Default creation state based on selected machine
-      const defaultMchId = drawerDefaultMachineId || machines[0]?.id || 'MAC-01';
-      setMachineId(defaultMchId);
+      setQuantity(editingJob.productionQuantity || editingJob.grossQuantity);
+      setWeightGrams(editingJob.weightGrams);
+      setCutPerMin(editingJob.cutPerMin);
+      setDrawTons(editingJob.drawTonsPerDay);
+      setStartTime(editingJob.startTime || '07:00');
+      setExpectedEndTime(editingJob.expectedEndTime || '23:00');
+      setCustomerName(editingJob.customerName || '');
 
-      const targetMch = machines.find((m) => m.id === defaultMchId);
-      const mchName = targetMch?.name || 'Machine No 1';
+      const records = planningRepository
+        .getJobPackaging()
+        .filter(
+          (pkg) =>
+            pkg.plan_date === (editingJob.date || editingJob.startDate) &&
+            pkg.machine_no === editingJob.machineId &&
+            pkg.bottle_id === editingJob.bottleId &&
+            pkg.section === editingJob.sectionCount &&
+            pkg.start_time === (editingJob.startTime || '07:00')
+        );
 
-      const mchRecords = bottleMasterRecords.filter(
-        (r) => r.mch === mchName || r.mch === defaultMchId
-      );
-      const defaultBottle = mchRecords[0]?.bottleName || bottleMasterRecords[0]?.bottleName || '750ml Bordeaux Wine Heavy';
+      if (records.length === 0) {
+        resetPackaging();
+      } else {
+        const selected = records
+          .map((pkg) => pkg.packaging_type as PackagingCode)
+          .filter((code): code is PackagingCode => ['ST', 'SN', 'SB', 'BT'].includes(code));
 
-      setSelectedBottleName(defaultBottle);
+        const nextQty: Record<PackagingCode, number> = { ST: 0, SN: 0, SB: 0, BT: 0 };
+        records.forEach((pkg) => {
+          const code = pkg.packaging_type as PackagingCode;
+          if (code in nextQty) nextQty[code] = pkg.quantity;
+        });
 
-      const bottleSecs = mchRecords.filter((r) => r.bottleName === defaultBottle);
-      const defaultSec = bottleSecs[0]?.section || targetMch?.sectionsCount || 8;
-      setSectionCount(defaultSec);
-
-      const botObj = bottles.find((b) => b.name === defaultBottle);
-      setCustomerName(botObj?.customerName || mchRecords[0]?.customerName || 'Standard Customer');
-
-      setGrossQuantity(300000);
-      setProducedQuantity(0);
-      setStartDate(drawerDefaultDate || '2026-08-01');
-      setEndDate('2026-08-15');
-      setStatus('Pending');
-      setPriority('Medium');
-      setPackingCategory('Palletized');
-      setPalletType('Wooden Standard (1200x1000)');
-      setChangeoverHours(4.0);
-      setRemarks('');
-    }
-  }, [editingJob, isDrawerOpen, drawerDefaultMachineId, drawerDefaultDate]);
-
-  // When Machine changes, auto-select a valid bottle & section from Bottle Master
-  const handleMachineChange = (newMachineId: string) => {
-    setMachineId(newMachineId);
-    const mch = machines.find((m) => m.id === newMachineId);
-    const mchName = mch?.name || 'Machine No 1';
-
-    const mchRecords = bottleMasterRecords.filter(
-      (r) => r.mch === mchName || r.mch === newMachineId
-    );
-    if (mchRecords.length > 0) {
-      const firstBot = mchRecords[0].bottleName;
-      setSelectedBottleName(firstBot);
-      setSectionCount(mchRecords[0].section);
-      setCustomerName(mchRecords[0].customerName || 'Standard Customer');
-    }
-  };
-
-  // When Bottle Name changes, update available section options
-  const handleBottleNameChange = (newBottleName: string) => {
-    setSelectedBottleName(newBottleName);
-    const bottleSecs = machineMasterRecords.filter((r) => r.bottleName === newBottleName);
-    if (bottleSecs.length > 0) {
-      setSectionCount(bottleSecs[0].section);
-      if (bottleSecs[0].customerName) {
-        setCustomerName(bottleSecs[0].customerName);
+        setSelectedPackaging(selected);
+        setPackagingQuantities(nextQty);
+        setPalletPacking(records.some((pkg) => pkg.pallet_packing === 'YES') ? 'YES' : 'NO');
+        setPalletQuantity(records.find((pkg) => pkg.packaging_type === 'SN')?.pallet_quantity || 0);
       }
+      return;
     }
-  };
 
-  // Calculated Metrics
-  const bottlesPerMin = calculateBottlesPerMin(cutPerMin, sectionCount);
-  const bottlesPerHour = calculateBottlesPerHour(cutPerMin, sectionCount);
-  const dailyPcs = calculateDailyProductionPcs(cutPerMin, sectionCount);
-  const dailyTons = calculateDailyProductionTons(cutPerMin, sectionCount, weightGrams);
-  const remainingPcs = calculateRemainingQuantity(grossQuantity, producedQuantity);
-  const durationInfo = calculateProductionDuration(remainingPcs, cutPerMin, sectionCount);
-  const estEndDate = calculateEstimatedCompletionDate(startDate, grossQuantity, cutPerMin, sectionCount);
+    const defaultMachineId = drawerDefaultMachineId || machines[0]?.id || 'MAC-01';
+    const fallbackBottleId = bottles[0]?.id || '';
+    const matchedMachine = machines.find((m) => m.id === defaultMachineId);
+    const machineBottleNames = new Set(
+      bottleMasterRecords
+        .filter((record) => record.mch === matchedMachine?.name || record.mch === defaultMachineId)
+        .map((record) => record.bottleName)
+    );
+    const firstBottle = bottles.find((b) => machineBottleNames.has(b.name)) || bottles[0];
+
+    setMachineId(defaultMachineId);
+    setDate(drawerDefaultDate || '2026-08-01');
+    setBottleId(firstBottle?.id || fallbackBottleId);
+    setSectionCount(matchedMachine?.sectionsCount || matchedMachine?.defaultSectionsCount || 8);
+    setQuantity(0);
+    setWeightGrams(firstBottle?.weightGrams || 400);
+    setCutPerMin(firstBottle?.standardCutPerMin || 28);
+    setStartTime(drawerSuggestedStartTime || '07:00');
+    setExpectedEndTime('23:00');
+    setCustomerName(firstBottle?.customerName || '');
+    resetPackaging();
+  }, [
+    isDrawerOpen,
+    editingJob,
+    drawerDefaultMachineId,
+    drawerDefaultDate,
+    drawerSuggestedStartTime,
+    machines,
+    bottles,
+    bottleMasterRecords,
+  ]);
+
+  useEffect(() => {
+    const selectedBottle = bottles.find((b) => b.id === bottleId);
+    if (!selectedBottle) return;
+
+    const matchedMaster = bottleMasterRecords.find((record) => {
+      const currentMachine = machines.find((m) => m.id === machineId);
+      return (
+        (record.mch === currentMachine?.name || record.mch === machineId) &&
+        record.bottleName === selectedBottle.name &&
+        record.section === sectionCount
+      );
+    });
+
+    if (matchedMaster) {
+      setWeightGrams(matchedMaster.weightGrams);
+      setCutPerMin(matchedMaster.speed);
+      setCustomerName(matchedMaster.customerName || selectedBottle.customerName || '');
+      return;
+    }
+
+    setWeightGrams(selectedBottle.weightGrams);
+    setCutPerMin(selectedBottle.standardCutPerMin);
+    setCustomerName(selectedBottle.customerName || '');
+  }, [bottleId, sectionCount, machineId, bottles, bottleMasterRecords, machines]);
 
   if (!isDrawerOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isRecordValid) return;
+  const togglePackaging = (code: PackagingCode) => {
+    setSelectedPackaging((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
+    );
+  };
 
-    saveJob({
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (selectedPackaging.length > 0 && !isBalanced) {
+      alert('Packaging allocation is not balanced with required bottles.');
+      return;
+    }
+
+    if (requiresPalletQuantity && palletQuantity <= 0) {
+      alert('Pallet quantity is required for Shrink Naked when pallet packing is YES.');
+      return;
+    }
+
+    const saved = saveJob({
       id: editingJob?.id,
       jobNumber: editingJob?.jobNumber,
       machineId,
-      bottleId: matchingBottleObj?.id || bottles[0].id,
-      customerName: customerName || matchingBottleObj?.customerName || 'Standard Customer',
+      date,
+      startDate: date,
+      endDate: date,
+      bottleId,
+      customerName,
       sectionCount,
+      grossQuantity: quantity,
+      productionQuantity: quantity,
+      producedQuantity: 0,
       weightGrams,
       cutPerMin,
-      grossQuantity,
-      producedQuantity,
-      remainingQuantity: remainingPcs,
-      drawTonsPerDay: dailyTons,
-      startDate,
-      endDate: estEndDate || endDate,
-      status,
-      priority,
-      packingCategory,
-      palletType,
-      changeoverHours: status === 'Changeover' ? changeoverHours : 0,
-      remarks,
+      drawTonsPerDay: drawTons,
+      expectedEndTime,
+      startTime,
+      linkedJobGroupId: editingJob?.linkedJobGroupId,
+      sequenceNumber: editingJob?.sequenceNumber,
+      lifecycleStatus: editingJob?.lifecycleStatus || 'ACTIVE',
     });
+
+    if (!saved) return;
+
+    const rows: JobPackagingRow[] = selectedPackaging.map((code) => ({
+      plan_date: date,
+      machine_no: machineId,
+      bottle_id: bottleId,
+      section: sectionCount,
+      start_time: startTime,
+      packaging_type: code,
+      quantity: packagingQuantities[code] || 0,
+      pallet_packing: palletPacking,
+      pallet_quantity: palletPacking === 'YES' && code === 'SN' ? palletQuantity : 0,
+    }));
+
+    const syncResult = planningRepository.replaceJobPackagingForJob(
+      toJobKey(date, machineId, bottleId, sectionCount, startTime),
+      rows
+    );
+
+    if (!syncResult.ok) {
+      alert(syncResult.error || 'Job saved, but packaging could not be updated.');
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40 backdrop-blur-xs">
-      <div className="w-full max-w-xl bg-white h-full shadow-2xl flex flex-col justify-between animate-in slide-in-from-right duration-200">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">
-              {editingJob ? `Edit Job: ${editingJob.jobNumber}` : 'Create Glass Production Job'}
-            </h3>
-            <p className="text-xs text-slate-500">Bottle Master Integrated Production Register & Speed Matrix</p>
-          </div>
+    <div className="fixed inset-0 z-50 flex justify-center items-center bg-slate-900/40 backdrop-blur-xs p-4">
+      <div className="w-full max-w-xl bg-white rounded-xl border border-slate-200 shadow-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-900">
+            Edit Bottle - {machine?.name || 'Machine'}
+          </h3>
           <button
             onClick={closeDrawer}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70"
+            title="Close"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Drawer Body Form */}
-        <form id="jobForm" onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
-          {/* Machine & Status Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">Target Machine</label>
-              <select
-                value={machineId}
-                onChange={(e) => handleMachineChange(e.target.value)}
-                className="w-full bg-white border border-slate-300 rounded-lg p-2 font-bold text-blue-900 focus:ring-2 focus:ring-blue-500"
-              >
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.sectionsCount} Sec - {m.sectionType})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">Job Status</label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as JobStatus)}
-                className="w-full bg-white border border-slate-300 rounded-lg p-2 font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="Running">Blue - Running</option>
-                <option value="Completed">Green - Completed</option>
-                <option value="Pending">Gray - Pending</option>
-                <option value="Changeover">Orange - Changeover</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">Job Priority</label>
-              <select
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as JobPriority)}
-                className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="Low">Low</option>
-                <option value="Medium">Medium</option>
-                <option value="High">High</option>
-                <option value="Urgent">Urgent</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Validation Alert Message */}
-          {!isRecordValid && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2.5 text-red-800">
-              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-              <div>
-                <h5 className="font-bold text-xs text-red-900">Bottle Master Speed Entry Missing</h5>
-                <p className="text-[11px] text-red-700 mt-0.5 leading-tight">
-                  No speed matrix record found for bottle <b>"{selectedBottleName}"</b> on <b>{machineName}</b> with <b>{sectionCount} Sections</b>. Please select a valid section or bottle from the master data.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Bottle Master Selection */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-1">
-              <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
-                1. BOTTLE MASTER SELECTION ({machineName})
-              </h4>
-              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-semibold border border-emerald-200">
-                <ShieldCheck className="w-3 h-3" /> Master Verified
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="sm:col-span-2">
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Bottle Name <span className="text-slate-400 font-normal">(Loaded from Bottle Master)</span>
-                </label>
-                <select
-                  value={selectedBottleName}
-                  onChange={(e) => handleBottleNameChange(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2 font-bold text-slate-900 focus:ring-2 focus:ring-blue-500 shadow-2xs"
-                >
-                  {bottleNameList.map((bName) => (
-                    <option key={bName} value={bName}>
-                      {bName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1">Available Sections ({machineName})</label>
-                <select
-                  value={sectionCount}
-                  onChange={(e) => setSectionCount(Number(e.target.value))}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2 font-bold text-blue-700 focus:ring-2 focus:ring-blue-500"
-                >
-                  {availableSectionsForBottle.length > 0 ? (
-                    availableSectionsForBottle.map((sec) => (
-                      <option key={sec} value={sec}>
-                        {sec} Sections
-                      </option>
-                    ))
-                  ) : (
-                    currentMachine?.availableSections?.map((sec) => (
-                      <option key={sec} value={sec}>
-                        {sec} Sections
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1 flex items-center justify-between">
-                  <span>Weight (Wt - Grams)</span>
-                  <span className="text-[10px] text-slate-400 font-normal flex items-center gap-0.5">
-                    <Lock className="w-2.5 h-2.5" /> Read-only
-                  </span>
-                </label>
-                <input
-                  type="number"
-                  value={weightGrams}
-                  disabled
-                  className="w-full bg-slate-100 border border-slate-200 text-slate-700 rounded-lg p-2 font-mono font-bold cursor-not-allowed"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1">Bottle Color</label>
-                <div className="p-2 border border-slate-200 bg-slate-50 rounded-lg font-semibold text-slate-800 flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-blue-600"></span>
-                  {activeMasterRecord?.color || matchingBottleObj?.color || 'Flint'}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1 flex items-center justify-between">
-                  <span>Production Speed (Cuts / Min)</span>
-                  <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-0.5">
-                    <Lock className="w-2.5 h-2.5" /> Bottle Master
-                  </span>
-                </label>
-                <input
-                  type="number"
-                  value={cutPerMin}
-                  disabled
-                  className="w-full bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg p-2 font-mono font-bold text-sm cursor-not-allowed"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-slate-600 mb-1">Customer Name</label>
-                <input
-                  type="text"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 font-medium"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Production Quantity & Dates */}
-          <div className="space-y-3">
-            <h4 className="font-bold text-slate-800 text-xs border-b border-slate-100 pb-1 uppercase tracking-wider">
-              2. PRODUCTION TARGET QUANTITY & TIMELINE
-            </h4>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-slate-600 mb-1">Gross Target Quantity (Pcs)</label>
-                <input
-                  type="number"
-                  value={grossQuantity}
-                  onChange={(e) => setGrossQuantity(Number(e.target.value))}
-                  className="w-full border border-slate-300 rounded-lg p-2 font-bold text-blue-700 focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1">Produced Quantity So Far (Pcs)</label>
-                <input
-                  type="number"
-                  value={producedQuantity}
-                  onChange={(e) => setProducedQuantity(Number(e.target.value))}
-                  className="w-full border border-slate-300 rounded-lg p-2 font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1">Start Date</label>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-2 font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1 flex items-center justify-between">
-                  <span>Est. Completion Date</span>
-                  <span className="text-[10px] text-blue-600 font-semibold">Auto-calculated</span>
-                </label>
-                <input
-                  type="date"
-                  value={estEndDate || endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 font-bold text-slate-800"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Changeover Time if applicable */}
-          {status === 'Changeover' && (
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
-              <div className="flex items-center gap-2 text-amber-800 font-bold">
-                <AlertTriangle className="w-4 h-4 text-amber-600" />
-                Changeover Configuration
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-amber-900 font-medium mb-1">Manual Changeover Hours</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={changeoverHours}
-                    onChange={(e) => setChangeoverHours(Number(e.target.value))}
-                    className="w-full bg-white border border-amber-300 rounded-lg p-2 font-bold text-amber-900"
-                  />
-                </div>
-                <div className="flex items-center text-[11px] text-amber-700 leading-tight">
-                  Mold changeover automatically reduces daily quantity & draw for the selected date.
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Packing & Pallet */}
-          <div className="space-y-3">
-            <h4 className="font-bold text-slate-800 text-xs border-b border-slate-100 pb-1 uppercase tracking-wider">
-              3. PACKING CATEGORY & LOGISTICS
-            </h4>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-slate-600 mb-1">Packing Category</label>
-                <select
-                  value={packingCategory}
-                  onChange={(e) => setPackingCategory(e.target.value as PackingCategory)}
-                  className="w-full border border-slate-300 rounded-lg p-2 font-medium"
-                >
-                  <option value="Palletized">Palletized</option>
-                  <option value="Carton Pack">Carton Pack</option>
-                  <option value="Shrink Wrapped">Shrink Wrapped</option>
-                  <option value="Bulk Tray">Bulk Tray</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1">Pallet Type</label>
-                <select
-                  value={palletType}
-                  onChange={(e) => setPalletType(e.target.value as PalletType)}
-                  className="w-full border border-slate-300 rounded-lg p-2 font-medium"
-                >
-                  <option value="Wooden Standard (1200x1000)">Wooden Standard (1200x1000)</option>
-                  <option value="Euro Pallet (1200x800)">Euro Pallet (1200x800)</option>
-                  <option value="Plastic Heavy Duty">Plastic Heavy Duty</option>
-                  <option value="Heat Treated Export">Heat Treated Export</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-slate-600 mb-1">Job Remarks / Technical Notes</label>
-            <textarea
-              rows={2}
-              value={remarks}
-              onChange={(e) => setRemarks(e.target.value)}
-              placeholder="e.g. Feeder temperature 1185°C required. Cold end spray coating active."
-              className="w-full border border-slate-300 rounded-lg p-2"
+        <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
+          <div className="space-y-1.5">
+            <label className="text-slate-600 font-semibold">Start Time</label>
+            <input
+              type="time"
+              value={startTime}
+              onChange={(event) => setStartTime(event.target.value)}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2"
+              required
             />
           </div>
 
-          {/* Auto Calculated Manufacturing Metrics Preview Box */}
-          <div className="p-4 bg-slate-900 text-white rounded-xl space-y-3 shadow-md">
-            <div className="flex items-center justify-between border-b border-slate-700 pb-1.5">
-              <div className="flex items-center gap-2 font-semibold text-blue-300 text-xs">
-                <Calculator className="w-4 h-4 text-blue-400" /> MANUFACTURING CALCULATIONS PREVIEW
-              </div>
-              <span className="text-[10px] text-slate-400 font-mono">Formula: Speed ({cutPerMin}) × Sections ({sectionCount})</span>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-center">
-              <div className="bg-slate-800/80 p-2 rounded-lg border border-slate-700">
-                <p className="text-[10px] text-slate-400">Bottles / Min</p>
-                <p className="text-sm font-bold text-blue-300 mt-0.5">{formatNumber(bottlesPerMin)} bpm</p>
-              </div>
-              <div className="bg-slate-800/80 p-2 rounded-lg border border-slate-700">
-                <p className="text-[10px] text-slate-400">Bottles / Hour</p>
-                <p className="text-sm font-bold text-blue-300 mt-0.5">{formatNumber(bottlesPerHour)} bph</p>
-              </div>
-              <div className="bg-slate-800/80 p-2 rounded-lg border border-slate-700">
-                <p className="text-[10px] text-slate-400">Daily Production (Pcs)</p>
-                <p className="text-sm font-bold text-emerald-400 mt-0.5">{formatNumber(dailyPcs)} pcs</p>
-              </div>
-              <div className="bg-slate-800/80 p-2 rounded-lg border border-slate-700">
-                <p className="text-[10px] text-slate-400">Daily Draw (Tons)</p>
-                <p className="text-sm font-bold text-amber-400 mt-0.5">{dailyTons} Tons/day</p>
-              </div>
-              <div className="bg-slate-800/80 p-2 rounded-lg border border-slate-700">
-                <p className="text-[10px] text-slate-400">Remaining Quantity</p>
-                <p className="text-sm font-bold text-blue-400 mt-0.5">{formatNumber(remainingPcs)} pcs</p>
-              </div>
-              <div className="bg-slate-800/80 p-2 rounded-lg border border-slate-700">
-                <p className="text-[10px] text-slate-400">Production Duration</p>
-                <p className="text-xs font-bold text-amber-300 mt-1 flex items-center justify-center gap-1">
-                  <Clock className="w-3 h-3" /> {durationInfo.durationText}
-                </p>
-              </div>
+          <div className="space-y-1.5">
+            <label className="text-slate-600 font-semibold">Machine Number</label>
+            <div className="w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2 text-slate-700 font-semibold">
+              {machine?.name || machineId}
             </div>
           </div>
-        </form>
 
-        {/* Footer Actions */}
-        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
-          {editingJob ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (confirm('Delete this job from production plan?')) {
-                  deleteJob(editingJob.id);
-                  closeDrawer();
-                }
-              }}
-              className="px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-100 rounded-lg flex items-center gap-1.5"
+          <div className="space-y-1.5">
+            <label className="text-slate-600 font-semibold">Bottle Name</label>
+            <select
+              value={bottleId}
+              onChange={(event) => setBottleId(event.target.value)}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2"
+              required
             >
-              <Trash2 className="w-4 h-4" /> Delete Job
-            </button>
-          ) : (
-            <div />
+              {availableBottles.map((bottle) => (
+                <option key={bottle.id} value={bottle.id}>
+                  {bottle.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-slate-600 font-semibold">Required Bottles</label>
+            <input
+              type="number"
+              min={0}
+              value={quantity}
+              onChange={(event) => setQuantity(Number(event.target.value))}
+              placeholder="Enter required bottle quantity"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2"
+              required
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-slate-600 font-semibold">Estimated Completion</label>
+            {quantity > 0 ? (
+              <p className="text-slate-600">
+                Estimated Completion
+                <span className="ml-1 font-semibold text-slate-800">~ {estimatedDays.toFixed(2)} Days</span>
+              </p>
+            ) : (
+              <p className="text-slate-500">Enter bottle quantity to calculate completion time.</p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-slate-600 font-semibold">Packaging Category</label>
+            <div className="grid grid-cols-4 gap-2">
+              {PACKAGING_OPTIONS.map((option) => {
+                const selected = selectedPackaging.includes(option.code);
+                return (
+                  <button
+                    key={option.code}
+                    type="button"
+                    onClick={() => togglePackaging(option.code)}
+                    className={`rounded-lg border px-2 py-2 text-center transition-colors ${
+                      selected
+                        ? 'border-blue-500 bg-blue-50 text-blue-700'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="font-bold text-[11px]">{option.code}</div>
+                    <div className="text-[10px] leading-tight">{option.title}</div>
+                    <div className="text-[10px] leading-tight">{option.subtitle}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedPackaging.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                {selectedPackaging.map((code) => {
+                  const option = PACKAGING_OPTIONS.find((o) => o.code === code);
+                  return (
+                    <div key={code} className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/50">
+                      <div className="text-[11px] font-semibold text-slate-700 mb-1">
+                        {option?.code} Quantity
+                      </div>
+                      <input
+                        type="number"
+                        min={0}
+                        value={packagingQuantities[code] || 0}
+                        onChange={(event) =>
+                          setPackagingQuantities((prev) => ({
+                            ...prev,
+                            [code]: Number(event.target.value),
+                          }))
+                        }
+                        className="w-full border border-slate-300 rounded-md px-2 py-1.5"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-slate-200 px-3 py-2 flex items-center justify-between text-[11px]">
+            <span className="text-slate-600">
+              Allocated: <span className="font-semibold text-slate-800">{allocatedQty.toLocaleString()} / {quantity.toLocaleString()}</span>
+            </span>
+            <span className={`font-semibold ${isBalanced ? 'text-emerald-600' : 'text-amber-600'}`}>
+              {isBalanced ? 'Balanced' : 'Not Balanced'}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-slate-600 font-semibold">Pallet Packing</label>
+            <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
+              {(['YES', 'NO'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setPalletPacking(value)}
+                  className={`px-4 py-1.5 text-[11px] font-semibold ${
+                    palletPacking === value
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {requiresPalletQuantity && (
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Pallet Quantity</label>
+              <input
+                type="number"
+                min={0}
+                value={palletQuantity}
+                onChange={(event) => setPalletQuantity(Number(event.target.value))}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+                required
+              />
+            </div>
           )}
 
-          <div className="flex items-center gap-3">
+          <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
             <button
               type="button"
               onClick={closeDrawer}
-              className="px-4 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-100"
+              className="px-3.5 py-2 border border-slate-300 rounded-lg font-semibold text-slate-600 hover:bg-slate-100"
             >
               Cancel
             </button>
             <button
               type="submit"
-              form="jobForm"
-              disabled={!isRecordValid}
-              className={`px-5 py-2 text-xs font-bold text-white rounded-lg shadow-xs flex items-center gap-2 ${
-                isRecordValid
-                  ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
-                  : 'bg-slate-300 cursor-not-allowed'
-              }`}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold flex items-center gap-1.5"
             >
-              <Save className="w-4 h-4" /> Save Job to Plan
+              <Save className="w-3.5 h-3.5" /> Save Changes
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );
