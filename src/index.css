@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@layer utilities {
+  /* Custom thin scrollbars for industrial data tables */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+}
+
+@media print {
+  header,
+  aside,
+  button {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}

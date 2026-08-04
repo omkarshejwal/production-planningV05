@@ -1,0 +1,8 @@
+{
+  "name": "Vitrum Glass Production Planning",
+  "description": "Industrial Glass Manufacturing ERP for production planning, machine monitoring, quality control, inventory, and dispatch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
