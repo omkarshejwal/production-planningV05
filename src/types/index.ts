@@ -2,9 +2,11 @@ export type BottleColor = 'Flint' | 'Amber' | 'Emerald Green' | 'Cobalt Blue' | 
 
 export type SectionType = 'Single Gob' | 'Double Gob' | 'Triple Gob' | 'Quad Gob';
 
-export type JobStatus = 'Running' | 'Completed' | 'Pending' | 'Changeover';
+export type JobStatus = 'Planned' | 'Running' | 'Completed' | 'Hold' | 'Pending' | 'Changeover';
 
 export type JobPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
+
+export type PlanningLifecycleStatus = 'ACTIVE' | 'COMPLETED';
 
 export type PackingCategory = 'Palletized' | 'Carton Pack' | 'Shrink Wrapped' | 'Bulk Tray';
 
@@ -75,6 +77,16 @@ export interface ProductionJob {
   palletType: PalletType;
   changeoverHours?: number; // e.g. 4.5 hours if Changeover
   remarks?: string;
+
+  // Scheduler-specific fields (single-day planning unit)
+  date?: string; // YYYY-MM-DD
+  startTime?: string; // HH:mm
+  expectedEndTime?: string; // HH:mm
+  productionQuantity?: number; // Planned quantity for this specific day job
+  linkedJobGroupId?: string;
+  sequenceNumber?: number; // Vertical stack order inside machine-day cell
+  lifecycleStatus?: PlanningLifecycleStatus;
+  locked?: boolean;
 }
 
 export interface DailyPlanningEntry {
