@@ -1,0 +1,341 @@
+# 🏭 Vitrum Glass Production Planning System
+
+<div align="center">
+
+### Production Planning & Manufacturing Execution Platform for Glass Manufacturing
+
+*A modern, intelligent, and scalable production planning system designed to streamline manufacturing operations, optimize machine utilization, and improve production efficiency.*
+
+![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge\&logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge\&logo=typescript)
+![Vite](https://img.shields.io/badge/Vite-Latest-646CFF?style=for-the-badge\&logo=vite)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4.x-38B2AC?style=for-the-badge\&logo=tailwind-css)
+![Status](https://img.shields.io/badge/Status-Development-orange?style=for-the-badge)
+
+</div>
+
+---
+
+# 📖 Overview
+
+The **Vitrum Glass Production Planning System** is an enterprise-grade manufacturing application developed specifically for the glass manufacturing industry.
+
+The platform helps production planners create, manage, and monitor manufacturing schedules while optimizing machine capacity, reducing downtime, and ensuring efficient production planning across multiple production lines.
+
+The application provides an intuitive dashboard for production planning, bottle master management, machine allocation, job scheduling, packing configuration, and real-time production tracking.
+
+---
+
+# ✨ Key Features
+
+## 📊 Production Dashboard
+
+* Live production planning overview
+* Machine-wise production status
+* Production timeline visualization
+* Daily production summary
+* Capacity utilization monitoring
+
+---
+
+## 🏭 Machine Management
+
+* Support for multiple production machines
+* Machine capacity allocation
+* Automatic job assignment
+* Manual job scheduling
+* Changeover management
+* Machine availability tracking
+
+---
+
+## 🍾 Bottle Master Management
+
+* Centralized bottle database
+* Bottle specification management
+* Capacity configuration
+* Bottle category management
+* Production speed configuration
+* Machine compatibility settings
+
+---
+
+## 📅 Production Planning
+
+* Create production jobs
+* Drag-and-drop scheduling
+* Production calendar
+* Manual start/end time adjustment
+* Automatic planning suggestions
+* Conflict detection
+
+---
+
+## 📦 Packing Configuration
+
+* Multiple packing categories
+* Shrink Tray
+* Bottom Tray
+* Naked Packing
+* Pallet Configuration
+* Quantity distribution across packing types
+
+---
+
+## ⚙ Machine Section Configuration
+
+* Dynamic section configuration
+
+### Machine 1
+
+* 6 Sections
+* 7 Sections
+* 8 Sections
+
+### Machine 2
+
+* 8 Sections
+* 9 Sections
+* 10 Sections
+
+### Machine 3
+
+* 8 Sections
+* 9 Sections
+* 10 Sections
+
+### Machine 4
+
+* 6 Sections
+* 7 Sections
+* 8 Sections
+
+---
+
+## 📈 Planning Intelligence
+
+* Production time calculation
+* Automatic completion estimation
+* Machine load balancing
+* Capacity validation
+* Planning conflict alerts
+* Schedule optimization
+
+---
+
+## 📋 Job Management
+
+* Create production jobs
+* Edit jobs
+* Delete jobs
+* Duplicate production orders
+* Production priority management
+* Order tracking
+
+---
+
+## 📊 Reports
+
+* Production Summary
+* Machine Utilization
+* Production History
+* Planning Report
+* Downtime Analysis
+* Performance Analytics
+
+---
+
+# 🛠 Tech Stack
+
+| Technology   | Purpose               |
+| ------------ | --------------------- |
+| React 19     | Frontend Framework    |
+| TypeScript   | Type Safety           |
+| Vite         | Build Tool            |
+| Tailwind CSS | UI Styling            |
+| React Router | Routing               |
+| React Hooks  | State Management      |
+| REST API     | Backend Communication |
+
+---
+
+# 📂 Project Structure
+
+```
+vitrum-production-planning/
+│
+├── public/
+│
+├── src/
+│   ├── assets/
+│   ├── components/
+│   ├── pages/
+│   ├── layouts/
+│   ├── hooks/
+│   ├── services/
+│   ├── utils/
+│   ├── context/
+│   ├── types/
+│   ├── styles/
+│   └── App.tsx
+│
+├── package.json
+├── vite.config.ts
+├── tsconfig.json
+└── README.md
+```
+
+---
+
+# 🚀 Getting Started
+
+## Prerequisites
+
+* Node.js 20+
+* npm
+* Git
+
+---
+
+## Installation
+
+Clone the repository
+
+```bash
+git clone https://github.com/your-username/vitrum-production-planning.git
+```
+
+Go into the project directory
+
+```bash
+cd vitrum-production-planning
+```
+
+Install dependencies
+
+```bash
+npm install
+```
+
+Start the development server
+
+```bash
+npm run dev
+```
+
+Open your browser
+
+```
+http://localhost:5173
+```
+
+---
+
+# 📦 Available Scripts
+
+```bash
+npm run dev
+```
+
+Runs the application in development mode.
+
+```bash
+npm run build
+```
+
+Builds the application for production.
+
+```bash
+npm run preview
+```
+
+Previews the production build.
+
+```bash
+npm run lint
+```
+
+Runs ESLint.
+
+---
+
+# 🎯 Modules
+
+* Dashboard
+* Production Planning
+* Bottle Master
+* Machine Master
+* Job Management
+* Planning Calendar
+* Packing Management
+* Reports
+* Settings
+
+---
+
+# 🔐 Planned Features
+
+* User Authentication
+* Role-Based Access Control
+* Real-Time Production Monitoring
+* ERP Integration
+* Inventory Management
+* Quality Control Module
+* Maintenance Planning
+* Excel Import/Export
+* Production KPI Dashboard
+* Notification System
+* Audit Logs
+* Mobile Responsive Interface
+
+---
+
+# 🌟 Project Goals
+
+* Improve production planning efficiency
+* Reduce machine idle time
+* Optimize manufacturing schedules
+* Minimize production conflicts
+* Increase overall equipment utilization
+* Simplify production planning workflow
+* Deliver a modern user experience for manufacturing teams
+
+---
+
+# 🤝 Contributing
+
+1. Create a feature branch
+
+```bash
+git checkout -b feature/your-feature
+```
+
+2. Commit your changes
+
+```bash
+git commit -m "Add your feature"
+```
+
+3. Push the branch
+
+```bash
+git push origin feature/your-feature
+```
+
+4. Create a Pull Request
+
+---
+
+# 📄 License
+
+This project is proprietary software developed for **Vitrum Glass**. Unauthorized copying, distribution, or modification without permission is prohibited.
+
+---
+
+# 👨‍💻 Developer
+
+**Ashish Mankar**
+
+Frontend Developer
+
+Built with ❤️ for **Vitrum Glass Production Planning**.
