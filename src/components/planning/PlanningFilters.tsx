@@ -1,37 +1,18 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Printer,
   FileSpreadsheet,
   RotateCw,
   Plus,
-  Filter,
-  X,
-  Search,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { exportToCSV, printPage } from '../../utils/calculations';
 
 interface PlanningFiltersProps {
-  statusFilter: string;
-  setStatusFilter: (s: string) => void;
-  machineFilter: string;
-  setMachineFilter: (m: string) => void;
-  colorFilter: string;
-  setColorFilter: (c: string) => void;
-  customerFilter: string;
-  setCustomerFilter: (cust: string) => void;
   onRefresh: () => void;
 }
 
 export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
-  statusFilter,
-  setStatusFilter,
-  machineFilter,
-  setMachineFilter,
-  colorFilter,
-  setColorFilter,
-  customerFilter,
-  setCustomerFilter,
   onRefresh,
 }) => {
   const {
@@ -41,13 +22,10 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
     setFromDate,
     toDate,
     setToDate,
-    machines,
-    bottles,
     openDrawerForEdit,
     planningEntries,
+    totalRawMaterialConsumptionTons,
   } = useERP();
-
-  const [showFilters, setShowFilters] = useState(true);
 
   // Handle Export Excel / CSV
   const handleExportExcel = () => {
@@ -89,10 +67,6 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
   const handleResetDate = () => {
     setFromDate('2026-08-01');
     setToDate('2026-08-31');
-    setStatusFilter('');
-    setMachineFilter('');
-    setColorFilter('');
-    setCustomerFilter('');
   };
 
   return (
@@ -111,8 +85,17 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
           </p>
         </div>
 
-        {/* Right Top Buttons */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          <div className="min-w-56 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right shadow-2xs">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Total Raw Material Consumption
+            </div>
+            <div className="mt-1 text-lg font-bold text-slate-900">
+              {totalRawMaterialConsumptionTons.toFixed(2)} T
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={printPage}
             className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 flex items-center gap-1.5 shadow-2xs transition-colors"
@@ -140,15 +123,13 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
           >
             <Plus className="w-4 h-4" /> Add Production Job
           </button>
+          </div>
         </div>
       </div>
 
       {/* Date Filter & Month Selector Row */}
-      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 flex flex-wrap items-center gap-3 text-xs">
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5 font-bold text-slate-700">
-            <Filter className="w-3.5 h-3.5 text-blue-600" /> Filters
-          </div>
 
           <div className="flex items-center gap-2">
             <label className="text-slate-500 font-medium">Month:</label>
@@ -196,47 +177,6 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
           >
             Reset
           </button>
-        </div>
-
-        {/* Machine & Status multi-filters */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={machineFilter}
-            onChange={(e) => setMachineFilter(e.target.value)}
-            className="bg-white border border-slate-300 rounded-md px-2 py-1 text-slate-700 font-medium"
-          >
-            <option value="">All Machines ({machines.length})</option>
-            {machines.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="bg-white border border-slate-300 rounded-md px-2 py-1 text-slate-700 font-medium"
-          >
-            <option value="">All Statuses</option>
-            <option value="Running">Running (Blue)</option>
-            <option value="Completed">Completed (Green)</option>
-            <option value="Pending">Pending (Gray)</option>
-            <option value="Changeover">Changeover (Orange)</option>
-          </select>
-
-          <select
-            value={colorFilter}
-            onChange={(e) => setColorFilter(e.target.value)}
-            className="bg-white border border-slate-300 rounded-md px-2 py-1 text-slate-700 font-medium"
-          >
-            <option value="">All Bottle Colors</option>
-            <option value="Flint">Flint (Clear)</option>
-            <option value="Amber">Amber</option>
-            <option value="Emerald Green">Emerald Green</option>
-            <option value="Cobalt Blue">Cobalt Blue</option>
-            <option value="Olive Green">Olive Green</option>
-          </select>
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useMemo, useState } from 'react';
 import {
   ActiveModule,
   BottleMaster,
@@ -13,18 +13,25 @@ import {
   ShiftProductionReport,
 } from '../types';
 import {
-  INITIAL_BOTTLES,
-  INITIAL_BOTTLE_MASTER,
   INITIAL_DISPATCH,
   INITIAL_INVENTORY,
-  INITIAL_JOBS,
-  INITIAL_MACHINES,
   INITIAL_NOTIFICATIONS,
   INITIAL_QUALITY_INSPECTIONS,
   INITIAL_SHIFT_REPORTS,
-  generateInitialPlanningEntries,
 } from '../data/mockData';
-import { calculateDrawTonsPerDay, calculateGrossDayQuantity } from '../utils/calculations';
+import {
+  BottleConfigurationRow,
+  JobStatusSchema,
+  ProductionJobRow,
+} from '../data/planningSchema';
+import {
+  calculateDrawTonsPerDay,
+  calculateEstimatedCompletionDays,
+  calculateGoodBottlesPerDay,
+  calculateDailyProductionPcs,
+  formatDateTime,
+} from '../utils/calculations';
+import { planningRepository } from '../services/planningRepository';
 
 interface ERPContextType {
   activeModule: ActiveModule;
@@ -34,6 +41,7 @@ interface ERPContextType {
   bottleMasterRecords: BottleMasterRecord[];
   jobs: ProductionJob[];
   planningEntries: DailyPlanningEntry[];
+  totalRawMaterialConsumptionTons: number;
   shiftReports: ShiftProductionReport[];
   inventory: InventoryItem[];
   qualityInspections: QualityInspection[];
@@ -47,18 +55,31 @@ interface ERPContextType {
   setFromDate: (d: string) => void;
   toDate: string;
   setToDate: (d: string) => void;
-  
-  // Drawer state
+
   isDrawerOpen: boolean;
   editingJob: ProductionJob | null;
   drawerDefaultMachineId?: string;
   drawerDefaultDate?: string;
-  openDrawerForEdit: (job?: ProductionJob | null, defaultMachineId?: string, defaultDate?: string) => void;
+  drawerSourceJobId?: string;
+  drawerSuggestedStartTime?: string;
+  openDrawerForEdit: (
+    job?: ProductionJob | null,
+    defaultMachineId?: string,
+    defaultDate?: string,
+    sourceJobId?: string,
+    suggestedStartTime?: string
+  ) => void;
   closeDrawer: () => void;
-  
-  // Actions
-  saveJob: (jobData: Partial<ProductionJob>) => void;
-  deleteJob: (jobId: string) => void;
+
+  saveJob: (jobData: Partial<ProductionJob>) => boolean;
+  deleteJob: (jobId: string) => boolean;
+  updateJobInline: (
+    jobId: string,
+    patch: Partial<Pick<ProductionJob, 'sectionCount' | 'weightGrams' | 'cutPerMin' | 'productionQuantity' | 'grossQuantity' | 'drawTonsPerDay'>>
+  ) => boolean;
+  extendJob: (jobId: string, numberOfDays: number) => boolean;
+  finishJob: (jobId: string) => boolean;
+  getBottleConfiguration: (machineId: string, bottleId: string, section: number) => BottleConfigurationRow | undefined;
   addBottle: (bottle: BottleMaster) => void;
   updateMachineStatus: (machineId: string, status: ISMachine['status']) => void;
   updateMachineSectionsCount: (machineId: string, sectionsCount: number) => void;
@@ -76,29 +97,90 @@ interface ERPContextType {
 
 const ERPContext = createContext<ERPContextType | undefined>(undefined);
 
+const jobIdFromRow = (row: ProductionJobRow): string =>
+  [row.plan_date, row.machine_no, row.bottle_id, row.section, row.start_time].join('|');
+
+const addDays = (date: string, days: number): string => {
+  const dt = new Date(`${date}T00:00:00`);
+  dt.setDate(dt.getDate() + days);
+  return dt.toISOString().split('T')[0];
+};
+
+const schemaStatusToUiStatus = (status: JobStatusSchema): ProductionJob['status'] => {
+  if (status === 'Planned') return 'Planned';
+  if (status === 'Running') return 'Running';
+  if (status === 'Completed') return 'Completed';
+  return 'Hold';
+};
+
+const uiStatusToSchemaStatus = (status?: ProductionJob['status']): JobStatusSchema => {
+  if (status === 'Completed') return 'Completed';
+  if (status === 'Hold') return 'Hold';
+  if (status === 'Running') return 'Running';
+  return 'Planned';
+};
+
+const getMachineDisplayName = (machineNo: string) => {
+  const suffix = machineNo.split('-')[1] || machineNo;
+  const parsed = Number(suffix);
+  return Number.isNaN(parsed) ? machineNo : `Machine No ${parsed}`;
+};
+
+const SHIFT_START_TIMES = ['07:00', '15:00', '23:00'];
+
+const parseDateTime = (date: string, time: string): Date => {
+  const [year, month, day] = date.split('-').map(Number);
+  const [hours, minutes] = time.split(':').map(Number);
+  return new Date(year, month - 1, day, hours, minutes, 0, 0);
+};
+
+const formatTimeOnly = (date: Date): string =>
+  `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+const getNextShiftStart = (endDateTime: Date): Date => {
+  const candidates = SHIFT_START_TIMES.map((time) => {
+    const [hours, minutes] = time.split(':').map(Number);
+    const candidate = new Date(endDateTime);
+    candidate.setHours(hours, minutes, 0, 0);
+    if (candidate <= endDateTime) {
+      candidate.setDate(candidate.getDate() + 1);
+    }
+    return candidate;
+  });
+
+  return candidates.sort((a, b) => a.getTime() - b.getTime())[0];
+};
+
+const getDerivedJobWindow = (job: ProductionJob): { start: Date; end: Date } => {
+  const start = parseDateTime(job.date || job.startDate, job.startTime || '07:00');
+  const goodBottlesPerDay = calculateGoodBottlesPerDay(job.cutPerMin);
+  const durationDays = goodBottlesPerDay > 0 ? (job.productionQuantity || job.grossQuantity) / goodBottlesPerDay : 0;
+  const end = new Date(start.getTime() + durationDays * 24 * 60 * 60 * 1000);
+  return { start, end };
+};
+
 export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeModule, setActiveModule] = useState<ActiveModule>('Production Planning');
-  const [machines, setMachines] = useState<ISMachine[]>(INITIAL_MACHINES);
-  const [bottles, setBottles] = useState<BottleMaster[]>(INITIAL_BOTTLES);
-  const [bottleMasterRecords, setBottleMasterRecords] = useState<BottleMasterRecord[]>(INITIAL_BOTTLE_MASTER);
-  const [jobs, setJobs] = useState<ProductionJob[]>(INITIAL_JOBS);
-  const [planningEntries, setPlanningEntries] = useState<DailyPlanningEntry[]>(generateInitialPlanningEntries());
-  const [shiftReports, setShiftReports] = useState<ShiftProductionReport[]>(INITIAL_SHIFT_REPORTS);
-  const [inventory, setInventory] = useState<InventoryItem[]>(INITIAL_INVENTORY);
-  const [qualityInspections, setQualityInspections] = useState<QualityInspection[]>(INITIAL_QUALITY_INSPECTIONS);
-  const [dispatchOrders, setDispatchOrders] = useState<DispatchOrder[]>(INITIAL_DISPATCH);
-  const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
-  
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMonth, setSelectedMonth] = useState('2026-08');
   const [fromDate, setFromDate] = useState('2026-08-01');
   const [toDate, setToDate] = useState('2026-08-31');
 
-  // Job Drawer state
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ProductionJob | null>(null);
   const [drawerDefaultMachineId, setDrawerDefaultMachineId] = useState<string | undefined>();
   const [drawerDefaultDate, setDrawerDefaultDate] = useState<string | undefined>();
+  const [drawerSourceJobId, setDrawerSourceJobId] = useState<string | undefined>();
+  const [drawerSuggestedStartTime, setDrawerSuggestedStartTime] = useState<string | undefined>();
+
+  const [machineSectionOverrides, setMachineSectionOverrides] = useState<Record<string, number>>({});
+  const [plannerVersion, setPlannerVersion] = useState(0);
+
+  const [shiftReports] = useState<ShiftProductionReport[]>(INITIAL_SHIFT_REPORTS);
+  const [inventory] = useState<InventoryItem[]>(INITIAL_INVENTORY);
+  const [qualityInspections] = useState<QualityInspection[]>(INITIAL_QUALITY_INSPECTIONS);
+  const [dispatchOrders] = useState<DispatchOrder[]>(INITIAL_DISPATCH);
+  const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
 
   const [user] = useState({
     name: 'Ahmed S.',
@@ -107,10 +189,173 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     plantLocation: 'Furnace Line #2 - Vitrum Glass Ind.',
   });
 
-  const openDrawerForEdit = (job?: ProductionJob | null, defaultMachineId?: string, defaultDate?: string) => {
+  const refreshPlanner = () => setPlannerVersion((v) => v + 1);
+
+  const machines = useMemo<ISMachine[]>(() => {
+    void plannerVersion;
+    return planningRepository.getMachines().map((row) => {
+      const sectionCap = Math.max(1, row.max_section);
+      const sectionStart = Math.max(1, sectionCap - 2);
+      const sectionOptions = Array.from({ length: sectionCap - sectionStart + 1 }, (_, i) => sectionStart + i);
+      const selectedSections = machineSectionOverrides[row.machine_no] || row.max_section;
+
+      return {
+        id: row.machine_no,
+        name: getMachineDisplayName(row.machine_no),
+        code: row.machine_no,
+        sectionsCount: Math.min(sectionCap, Math.max(1, selectedSections)),
+        defaultSectionsCount: row.max_section,
+        availableSections: sectionOptions,
+        sectionType: (row.gob_type as ISMachine['sectionType']) || 'Double Gob',
+        status: 'Running',
+        feederTemperatureC: 0,
+        gobCutSpeed: 0,
+        oeePercent: 0,
+        packRatePercent: 0,
+        dailyTargetTons: 0,
+      };
+    });
+  }, [machineSectionOverrides, plannerVersion]);
+
+  const bottles = useMemo<BottleMaster[]>(() => {
+    void plannerVersion;
+    return planningRepository.getBottles().map((row) => {
+      const config = planningRepository
+        .getBottleConfigurations('MAC-01', row.bottle_id)[0] ||
+        planningRepository
+          .getMachines()
+          .map((m) => planningRepository.getBottleConfigurations(m.machine_no, row.bottle_id)[0])
+          .find(Boolean);
+
+      return {
+        id: row.bottle_id,
+        name: row.bottle_name,
+        drawingNumber: row.bottle_id,
+        weightGrams: config?.weight || 0,
+        capacityMl: 0,
+        color: 'Flint',
+        sectionType: 'Double Gob',
+        standardCutPerMin: config?.speeds || 0,
+        customerName: '',
+        category: 'Beverage',
+      };
+    });
+  }, [plannerVersion]);
+
+  const bottleMasterRecords = useMemo<BottleMasterRecord[]>(() => {
+    void plannerVersion;
+    const rows = planningRepository.getMachines().flatMap((machine) => {
+      return planningRepository
+        .getBottles()
+        .flatMap((bottle) => planningRepository.getBottleConfigurations(machine.machine_no, bottle.bottle_id));
+    });
+
+    return rows.map((row) => {
+      const bottle = planningRepository.getBottles().find((b) => b.bottle_id === row.bottle_id);
+      return {
+        id: `${row.machine_no}-${row.bottle_id}-${row.section}`,
+        mch: row.machine_no,
+        bottleName: bottle?.bottle_name || row.bottle_id,
+        drawingNumber: row.bottle_id,
+        section: row.section,
+        weightGrams: row.weight,
+        speed: row.speeds,
+        color: 'Flint',
+      };
+    });
+  }, [plannerVersion]);
+
+  const jobs = useMemo<ProductionJob[]>(() => {
+    void plannerVersion;
+    const rows = planningRepository.getProductionJobs();
+
+    return rows.map((row) => {
+      const config = planningRepository.getBottleConfiguration(row.machine_no, row.bottle_id, row.section);
+      const resolvedWeight = config?.weight ?? row.weight;
+      const resolvedCutSpeed = config?.speeds ?? row.speeds;
+      const resolvedDailyProduction = calculateDailyProductionPcs(resolvedCutSpeed);
+      const resolvedGoodBottles = calculateGoodBottlesPerDay(resolvedCutSpeed);
+      const resolvedEstimatedDays = calculateEstimatedCompletionDays(row.quantity, resolvedGoodBottles);
+      const startDateTime = parseDateTime(row.plan_date, row.start_time);
+      const endDateTime = new Date(startDateTime.getTime() + resolvedEstimatedDays * 24 * 60 * 60 * 1000);
+      const resolvedEndDate = endDateTime.toISOString().split('T')[0];
+      const resolvedEndTime = formatTimeOnly(endDateTime);
+
+      const maxSeqForDayMachine = rows
+        .filter((j) => j.plan_date === row.plan_date && j.machine_no === row.machine_no)
+        .sort((a, b) => a.start_time.localeCompare(b.start_time));
+      const sequenceNumber = maxSeqForDayMachine.findIndex((j) => jobIdFromRow(j) === jobIdFromRow(row)) + 1;
+
+      return {
+        id: jobIdFromRow(row),
+        jobNumber: `JOB-${row.plan_date}-${row.machine_no}-${row.start_time}`,
+        machineId: row.machine_no,
+        bottleId: row.bottle_id,
+        customerName: '',
+        sectionCount: row.section,
+        weightGrams: resolvedWeight,
+        cutPerMin: resolvedCutSpeed,
+        grossQuantity: row.quantity,
+        producedQuantity: 0,
+        remainingQuantity: row.quantity,
+        drawTonsPerDay: Number(calculateDrawTonsPerDay(resolvedCutSpeed, resolvedWeight).toFixed(2)),
+        startDate: row.plan_date,
+        endDate: resolvedEndDate,
+        status: schemaStatusToUiStatus(row.status),
+        priority: 'Medium',
+        packingCategory: 'Palletized',
+        palletType: 'Wooden Standard (1200x1000)',
+        remarks: '',
+        date: row.plan_date,
+        startTime: row.start_time,
+        expectedEndTime: resolvedEndTime,
+        productionQuantity: row.quantity,
+        linkedJobGroupId: `${row.machine_no}|${row.bottle_id}|${row.section}|${row.start_time}`,
+        sequenceNumber,
+        lifecycleStatus: row.status === 'Completed' ? 'COMPLETED' : 'ACTIVE',
+        locked: row.status === 'Completed',
+        changeoverHours: (row.changeover_minutes || 0) / 60,
+      };
+    });
+  }, [plannerVersion]);
+
+  const planningEntries = useMemo<DailyPlanningEntry[]>(() => {
+    return jobs.map((job) => {
+      const bottle = bottles.find((b) => b.id === job.bottleId);
+      return {
+        date: job.date || job.startDate,
+        machineId: job.machineId,
+        jobId: job.id,
+        bottleName: bottle?.name || job.bottleId,
+        bottleColor: bottle?.color || 'Flint',
+        drawingNumber: bottle?.drawingNumber || job.bottleId,
+        section: job.sectionCount,
+        weightGrams: job.weightGrams,
+        cutPerMin: job.cutPerMin,
+        dayQuantity: job.productionQuantity || job.grossQuantity,
+        drawTons: job.drawTonsPerDay,
+        status: job.status,
+        changeoverHours: job.changeoverHours,
+      };
+    });
+  }, [jobs, bottles]);
+
+  const totalRawMaterialConsumptionTons = useMemo(() => {
+    return jobs.reduce((sum, job) => sum + (job.drawTonsPerDay || 0), 0);
+  }, [jobs]);
+
+  const openDrawerForEdit = (
+    job?: ProductionJob | null,
+    defaultMachineId?: string,
+    defaultDate?: string,
+    sourceJobId?: string,
+    suggestedStartTime?: string
+  ) => {
     setEditingJob(job || null);
     setDrawerDefaultMachineId(defaultMachineId);
     setDrawerDefaultDate(defaultDate);
+    setDrawerSourceJobId(sourceJobId);
+    setDrawerSuggestedStartTime(suggestedStartTime);
     setIsDrawerOpen(true);
   };
 
@@ -119,158 +364,263 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setEditingJob(null);
     setDrawerDefaultMachineId(undefined);
     setDrawerDefaultDate(undefined);
+    setDrawerSourceJobId(undefined);
+    setDrawerSuggestedStartTime(undefined);
   };
+
+  const saveJob = (jobData: Partial<ProductionJob>): boolean => {
+    const machine_no = jobData.machineId || drawerDefaultMachineId;
+    const plan_date = jobData.date || jobData.startDate || drawerDefaultDate;
+    const bottle_id = jobData.bottleId;
+    const start_time = jobData.startTime || drawerSuggestedStartTime || '07:00';
+
+    if (!machine_no || !plan_date || !bottle_id) {
+      alert('Machine, date and bottle are required.');
+      return false;
+    }
+
+    const machine = planningRepository.getMachines().find((m) => m.machine_no === machine_no);
+    if (!machine) {
+      alert('Machine does not exist in machine_master.');
+      return false;
+    }
+
+    const section = jobData.sectionCount || machine.max_section;
+    const resolvedConfig = planningRepository.getBottleConfiguration(machine_no, bottle_id, section);
+
+    if (!resolvedConfig) {
+      alert('No configuration found in bottle_configuration for selected machine and bottle.');
+      return false;
+    }
+
+    const weight = resolvedConfig.weight;
+    const speeds = resolvedConfig.speeds;
+    const quantity = jobData.productionQuantity || jobData.grossQuantity || 0;
+    const goodBottles = calculateGoodBottlesPerDay(speeds);
+    const estimatedDays = calculateEstimatedCompletionDays(quantity, goodBottles);
+    const draw = Number(calculateDrawTonsPerDay(speeds, weight).toFixed(2));
+
+    const startDateTime = parseDateTime(plan_date, start_time);
+    const estimatedCompletionDateTime = new Date(startDateTime.getTime() + estimatedDays * 24 * 60 * 60 * 1000);
+    const estimated_completion = formatTimeOnly(estimatedCompletionDateTime);
+
+    const row: ProductionJobRow = {
+      plan_date,
+      machine_no,
+      bottle_id,
+      section: resolvedConfig.section,
+      weight,
+      speeds,
+      draw,
+      quantity,
+      start_time,
+      estimated_completion,
+      completion_time: jobData.lifecycleStatus === 'COMPLETED' ? estimated_completion : undefined,
+      changeover_minutes: Math.round((jobData.changeoverHours || 0) * 60),
+      status: uiStatusToSchemaStatus(jobData.status),
+    };
+
+    if (editingJob) {
+      const updated = planningRepository.updateProductionJob(
+        {
+          plan_date: editingJob.date || editingJob.startDate,
+          machine_no: editingJob.machineId,
+          bottle_id: editingJob.bottleId,
+          section: editingJob.sectionCount,
+          start_time: editingJob.startTime || '07:00',
+        },
+        row
+      );
+      if (!updated.ok) {
+        alert(updated.error || 'Unable to update production job.');
+        return false;
+      }
+    } else {
+      const created = planningRepository.createProductionJob(row);
+      if (!created.ok) {
+        alert(created.error || 'Unable to create production job.');
+        return false;
+      }
+    }
+
+    closeDrawer();
+    refreshPlanner();
+    return true;
+  };
+
+  const deleteJob = (jobId: string): boolean => {
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+    if (job.lifecycleStatus === 'COMPLETED' || job.locked) {
+      alert('Completed jobs are locked and cannot be deleted.');
+      return false;
+    }
+
+    planningRepository.deleteProductionJob({
+      plan_date: job.date || job.startDate,
+      machine_no: job.machineId,
+      bottle_id: job.bottleId,
+      section: job.sectionCount,
+      start_time: job.startTime || '07:00',
+    });
+    refreshPlanner();
+    return true;
+  };
+
+  const updateJobInline = (
+    jobId: string,
+    patch: Partial<Pick<ProductionJob, 'sectionCount' | 'weightGrams' | 'cutPerMin' | 'productionQuantity' | 'grossQuantity' | 'drawTonsPerDay'>>
+  ): boolean => {
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+    if (job.lifecycleStatus === 'COMPLETED' || job.locked) {
+      alert('Completed or locked jobs cannot be edited.');
+      return false;
+    }
+
+    const result = planningRepository.patchProductionJob(
+      {
+        plan_date: job.date || job.startDate,
+        machine_no: job.machineId,
+        bottle_id: job.bottleId,
+        section: job.sectionCount,
+        start_time: job.startTime || '07:00',
+      },
+      {
+        section: patch.sectionCount,
+        weight: patch.weightGrams,
+        speeds: patch.cutPerMin,
+        quantity: patch.productionQuantity ?? patch.grossQuantity,
+        draw: patch.drawTonsPerDay,
+      }
+    );
+
+    if (!result.ok) {
+      alert(result.error || 'Unable to update job.');
+      return false;
+    }
+
+    refreshPlanner();
+    return true;
+  };
+
+  const extendJob = (jobId: string, numberOfDays: number): boolean => {
+    const source = jobs.find((j) => j.id === jobId);
+    if (!source || numberOfDays < 1) return false;
+
+    const continuationRows: ProductionJobRow[] = [];
+    let nextStart = parseDateTime(source.date || source.startDate, source.startTime || '07:00');
+
+    for (let d = 1; d <= numberOfDays; d += 1) {
+      nextStart = getNextShiftStart(nextStart);
+      const nextPlanDate = nextStart.toISOString().split('T')[0];
+      const nextStartTime = formatTimeOnly(nextStart);
+      const quantity = source.productionQuantity || source.grossQuantity;
+      const draw = Number(calculateDrawTonsPerDay(source.cutPerMin, source.weightGrams).toFixed(2));
+      const goodBottles = calculateGoodBottlesPerDay(source.cutPerMin);
+      const estimatedDays = calculateEstimatedCompletionDays(quantity, goodBottles);
+      const estimatedCompletion = formatTimeOnly(new Date(nextStart.getTime() + estimatedDays * 24 * 60 * 60 * 1000));
+
+      continuationRows.push({
+        plan_date: nextPlanDate,
+        machine_no: source.machineId,
+        bottle_id: source.bottleId,
+        section: source.sectionCount,
+        weight: source.weightGrams,
+        speeds: source.cutPerMin,
+        draw,
+        quantity,
+        start_time: nextStartTime,
+        estimated_completion: estimatedCompletion,
+        completion_time: source.lifecycleStatus === 'COMPLETED' ? estimatedCompletion : undefined,
+        changeover_minutes: Math.round((source.changeoverHours || 0) * 60),
+        status: source.lifecycleStatus === 'COMPLETED' ? 'Completed' : 'Planned',
+      });
+
+      nextStart = new Date(parseDateTime(nextPlanDate, nextStartTime).getTime() + estimatedDays * 24 * 60 * 60 * 1000);
+    }
+
+    const created = planningRepository.createProductionJobsBatch(continuationRows);
+    if (!created.ok) {
+      alert(created.error || 'Failed to extend production job.');
+      refreshPlanner();
+      return false;
+    }
+
+    refreshPlanner();
+    return true;
+  };
+
+  const finishJob = (jobId: string): boolean => {
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    const updated = planningRepository.updateProductionJob(
+      {
+        plan_date: job.date || job.startDate,
+        machine_no: job.machineId,
+        bottle_id: job.bottleId,
+        section: job.sectionCount,
+        start_time: job.startTime || '07:00',
+      },
+      {
+        plan_date: job.date || job.startDate,
+        machine_no: job.machineId,
+        bottle_id: job.bottleId,
+        section: job.sectionCount,
+        weight: job.weightGrams,
+        speeds: job.cutPerMin,
+        draw: job.drawTonsPerDay,
+        quantity: job.productionQuantity || job.grossQuantity,
+        start_time: job.startTime || '07:00',
+        estimated_completion: job.expectedEndTime || '23:00',
+        completion_time: job.expectedEndTime || '23:00',
+        changeover_minutes: Math.round((job.changeoverHours || 0) * 60),
+        status: 'Completed',
+      }
+    );
+
+    if (!updated.ok) {
+      alert(updated.error || 'Unable to finish job.');
+      return false;
+    }
+
+    refreshPlanner();
+    return true;
+  };
+
+  const getBottleConfiguration = (machineId: string, bottleId: string, section: number) =>
+    planningRepository.getBottleConfiguration(machineId, bottleId, section);
 
   const updateMachineSectionsCount = (machineId: string, sectionsCount: number) => {
-    setMachines((prev) =>
-      prev.map((m) => (m.id === machineId ? { ...m, sectionsCount } : m))
-    );
-
-    // Automatically update existing planning entries for this machine to reflect new section count and corresponding speed
-    setPlanningEntries((prev) =>
-      prev.map((entry) => {
-        if (entry.machineId !== machineId) return entry;
-        const targetMachine = machines.find((m) => m.id === machineId);
-        if (!targetMachine) return entry;
-
-        // Try to look up the bottle master record for this bottle name, machine name, and new section
-        const matchingRecord = bottleMasterRecords.find(
-          (r) =>
-            (r.mch === targetMachine.name || r.mch === targetMachine.id) &&
-            r.bottleName === entry.bottleName &&
-            r.section === sectionsCount
-        );
-
-        const newSpeed = matchingRecord ? matchingRecord.speed : entry.cutPerMin;
-        const newWeight = matchingRecord ? matchingRecord.weightGrams : entry.weightGrams;
-        const dayQty = calculateGrossDayQuantity(newSpeed, sectionsCount);
-        const drawTons = calculateDrawTonsPerDay(newSpeed, sectionsCount, newWeight);
-
-        return {
-          ...entry,
-          section: sectionsCount,
-          cutPerMin: newSpeed,
-          weightGrams: newWeight,
-          dayQuantity: entry.status === 'Changeover' ? dayQty / 2 : dayQty,
-          drawTons: entry.status === 'Changeover' ? drawTons / 2 : drawTons,
-        };
-      })
-    );
+    const machine = planningRepository.getMachines().find((m) => m.machine_no === machineId);
+    if (!machine) return;
+    const safeValue = Math.max(1, Math.min(sectionsCount, machine.max_section));
+    setMachineSectionOverrides((prev) => ({ ...prev, [machineId]: safeValue }));
   };
 
-  const importBottleMasterData = (records: BottleMasterRecord[]) => {
-    setBottleMasterRecords(records);
+  const addBottle = (_bottle: BottleMaster) => {
+    alert('Bottle master is managed by bottle_master table and is read-only in this UI.');
+  };
+
+  const updateMachineStatus = (_machineId: string, _status: ISMachine['status']) => {
+    // Machine runtime status is not persisted in machine_master schema.
+  };
+
+  const importBottleMasterData = (_records: BottleMasterRecord[]) => {
+    alert('Bottle configuration source-of-truth is bottle_configuration table.');
   };
 
   const resetBottleMasterData = () => {
-    setBottleMasterRecords(INITIAL_BOTTLE_MASTER);
-  };
-
-  const saveJob = (jobData: Partial<ProductionJob>) => {
-    let updatedJobs: ProductionJob[];
-    const isEdit = Boolean(jobData.id);
-    const bottleObj = bottles.find((b) => b.id === jobData.bottleId);
-
-    const calculatedDraw = calculateDrawTonsPerDay(
-      jobData.cutPerMin || 28,
-      jobData.sectionCount || 8,
-      jobData.weightGrams || bottleObj?.weightGrams || 400
-    );
-
-    const fullJob: ProductionJob = {
-      id: jobData.id || `JOB-2026-${Math.floor(100 + Math.random() * 900)}`,
-      jobNumber: jobData.jobNumber || `JOB-2026-${Math.floor(100 + Math.random() * 900)}`,
-      machineId: jobData.machineId || 'MAC-01',
-      bottleId: jobData.bottleId || bottles[0].id,
-      customerName: jobData.customerName || bottleObj?.customerName || 'Standard Production',
-      sectionCount: jobData.sectionCount || 8,
-      weightGrams: jobData.weightGrams || bottleObj?.weightGrams || 400,
-      cutPerMin: jobData.cutPerMin || 28,
-      grossQuantity: jobData.grossQuantity || 300000,
-      producedQuantity: jobData.producedQuantity || 0,
-      remainingQuantity: (jobData.grossQuantity || 300000) - (jobData.producedQuantity || 0),
-      drawTonsPerDay: calculatedDraw,
-      startDate: jobData.startDate || '2026-08-01',
-      endDate: jobData.endDate || '2026-08-15',
-      status: jobData.status || 'Pending',
-      priority: jobData.priority || 'Medium',
-      packingCategory: jobData.packingCategory || 'Palletized',
-      palletType: jobData.palletType || 'Wooden Standard (1200x1000)',
-      changeoverHours: jobData.changeoverHours || 0,
-      remarks: jobData.remarks || '',
-    };
-
-    if (isEdit) {
-      updatedJobs = jobs.map((j) => (j.id === fullJob.id ? fullJob : j));
-    } else {
-      updatedJobs = [...jobs, fullJob];
-    }
-    setJobs(updatedJobs);
-
-    // Update Planning entries for the specified machine and date range
-    const updatedEntries = [...planningEntries];
-    const targetBottle = bottles.find((b) => b.id === fullJob.bottleId);
-    
-    // Replace matching entries or append
-    const start = new Date(fullJob.startDate);
-    const end = new Date(fullJob.endDate);
-    
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      const index = updatedEntries.findIndex(
-        (e) => e.date === dateStr && e.machineId === fullJob.machineId
-      );
-
-      const dayQty = calculateGrossDayQuantity(fullJob.cutPerMin, fullJob.sectionCount);
-      const entryData: DailyPlanningEntry = {
-        date: dateStr,
-        machineId: fullJob.machineId,
-        jobId: fullJob.id,
-        bottleName: targetBottle?.name || 'Bottle',
-        bottleColor: targetBottle?.color || 'Flint',
-        drawingNumber: targetBottle?.drawingNumber || 'DWG-100',
-        section: fullJob.sectionCount,
-        weightGrams: fullJob.weightGrams,
-        cutPerMin: fullJob.cutPerMin,
-        dayQuantity: fullJob.status === 'Changeover' ? dayQty / 2 : dayQty,
-        drawTons: fullJob.status === 'Changeover' ? fullJob.drawTonsPerDay / 2 : fullJob.drawTonsPerDay,
-        status: fullJob.status,
-        changeoverHours: fullJob.changeoverHours,
-      };
-
-      if (index >= 0) {
-        updatedEntries[index] = entryData;
-      } else {
-        updatedEntries.push(entryData);
-      }
-    }
-    setPlanningEntries(updatedEntries);
-    closeDrawer();
-  };
-
-  const deleteJob = (jobId: string) => {
-    setJobs(jobs.filter((j) => j.id !== jobId));
-    setPlanningEntries(planningEntries.filter((e) => e.jobId !== jobId));
-  };
-
-  const addBottle = (bottle: BottleMaster) => {
-    setBottles([...bottles, bottle]);
-  };
-
-  const updateMachineStatus = (machineId: string, status: ISMachine['status']) => {
-    setMachines(
-      machines.map((m) => (m.id === machineId ? { ...m, status } : m))
-    );
+    refreshPlanner();
   };
 
   const markNotificationRead = (id: string) => {
-    setNotifications(
-      notifications.map((n) => (n.id === id ? { ...n, read: true } : n))
-    );
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   };
 
   const clearAllNotifications = () => {
-    setNotifications(notifications.map((n) => ({ ...n, read: true })));
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   };
 
   return (
@@ -283,6 +633,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bottleMasterRecords,
         jobs,
         planningEntries,
+        totalRawMaterialConsumptionTons,
         shiftReports,
         inventory,
         qualityInspections,
@@ -300,10 +651,16 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         editingJob,
         drawerDefaultMachineId,
         drawerDefaultDate,
+        drawerSourceJobId,
+        drawerSuggestedStartTime,
         openDrawerForEdit,
         closeDrawer,
         saveJob,
         deleteJob,
+        updateJobInline,
+        extendJob,
+        finishJob,
+        getBottleConfiguration,
         addBottle,
         updateMachineStatus,
         updateMachineSectionsCount,

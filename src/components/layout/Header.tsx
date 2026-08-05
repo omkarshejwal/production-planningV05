@@ -67,7 +67,7 @@ export const Header: React.FC = () => {
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-4 md:px-6 flex items-center justify-between sticky top-0 z-40 shadow-xs">
       {/* Left: Brand Logo & Title */}
-      <div className="flex items-center gap-3 min-w-[220px]">
+      <div className="flex items-center gap-3 min-w-56">
         <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-xs">
           <Factory className="w-5 h-5" />
         </div>
