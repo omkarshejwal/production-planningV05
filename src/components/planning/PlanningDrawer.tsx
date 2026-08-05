@@ -1,9 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Save, X } from 'lucide-react';
+import { Save, Search, X } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { JobPackagingRow } from '../../data/planningSchema';
 import { planningRepository } from '../../services/planningRepository';
-import { calculateDrawTonsPerDay } from '../../utils/calculations';
+import {
+  calculateDailyProductionPcs,
+  calculateDrawTonsPerDay,
+  calculateEstimatedCompletionDays,
+  calculateGoodBottlesPerDay,
+  formatDecimal,
+  formatNumber,
+  formatDateTime,
+} from '../../utils/calculations';
 
 type PackagingCode = 'ST' | 'SN' | 'SB' | 'BT';
 
@@ -37,19 +45,16 @@ export const PlanningDrawer: React.FC = () => {
     saveJob,
     bottles,
     machines,
-    bottleMasterRecords,
+    getBottleConfiguration,
   } = useERP();
 
   const [machineId, setMachineId] = useState('MAC-01');
   const [date, setDate] = useState('2026-08-01');
   const [bottleId, setBottleId] = useState('');
+  const [bottleQuery, setBottleQuery] = useState('');
   const [sectionCount, setSectionCount] = useState(8);
   const [quantity, setQuantity] = useState(0);
-  const [weightGrams, setWeightGrams] = useState(400);
-  const [cutPerMin, setCutPerMin] = useState(28);
-  const [drawTons, setDrawTons] = useState(0);
   const [startTime, setStartTime] = useState('07:00');
-  const [expectedEndTime, setExpectedEndTime] = useState('23:00');
   const [customerName, setCustomerName] = useState('');
 
   const [selectedPackaging, setSelectedPackaging] = useState<PackagingCode[]>([]);
@@ -63,21 +68,38 @@ export const PlanningDrawer: React.FC = () => {
   const [palletQuantity, setPalletQuantity] = useState(0);
 
   const machine = machines.find((m) => m.id === machineId);
+  const bottleOptions = useMemo(() => {
+    const query = bottleQuery.trim().toLowerCase();
+    if (!query) return bottles;
+    return bottles.filter((bottle) => bottle.name.toLowerCase().includes(query));
+  }, [bottleQuery, bottles]);
 
-  const availableBottles = useMemo(() => {
-    const currentMachine = machines.find((m) => m.id === machineId);
-    const names = new Set(
-      bottleMasterRecords
-        .filter((record) => record.mch === currentMachine?.name || record.mch === machineId)
-        .map((record) => record.bottleName)
-    );
+  const availableSections = useMemo(() => {
+    return planningRepository
+      .getBottleConfigurations(machineId, bottleId)
+      .map((row) => row.section);
+  }, [machineId, bottleId]);
 
-    const matchedBottles = bottles.filter((b) => names.has(b.name));
-    return matchedBottles.length > 0 ? matchedBottles : bottles;
-  }, [bottleMasterRecords, bottles, machineId, machines]);
+  const selectedConfiguration = useMemo(() => {
+    return getBottleConfiguration(machineId, bottleId, sectionCount);
+  }, [getBottleConfiguration, machineId, bottleId, sectionCount]);
 
-  const dailyCapacity = Math.max(1, cutPerMin * sectionCount * 60 * 24);
-  const estimatedDays = quantity > 0 ? quantity / dailyCapacity : 0;
+  const dailyProduction = selectedConfiguration ? calculateDailyProductionPcs(selectedConfiguration.speeds) : 0;
+  const hourlyProduction = selectedConfiguration ? Math.round(selectedConfiguration.speeds * 60) : 0;
+  const plannedProduction = Math.round(dailyProduction * 0.9);
+  const goodBottlesPerDay = selectedConfiguration ? calculateGoodBottlesPerDay(selectedConfiguration.speeds) : 0;
+  const estimatedDays = quantity > 0 ? calculateEstimatedCompletionDays(quantity, goodBottlesPerDay) : 0;
+  const drawTons = selectedConfiguration
+    ? calculateDrawTonsPerDay(selectedConfiguration.speeds, selectedConfiguration.weight)
+    : 0;
+  const completionDateTime = useMemo(() => {
+    if (!quantity || !selectedConfiguration) return null;
+    const [year, month, day] = date.split('-').map(Number);
+    const [hours, minutes] = startTime.split(':').map(Number);
+    const start = new Date(year, month - 1, day, hours, minutes, 0, 0);
+    return new Date(start.getTime() + estimatedDays * 24 * 60 * 60 * 1000);
+  }, [date, startTime, estimatedDays, quantity, selectedConfiguration]);
+  const goodBottleLabel = goodBottlesPerDay > 0 ? `${formatDecimal(goodBottlesPerDay / 100000, 2)}L` : '--';
 
   const allocatedQty = selectedPackaging.reduce(
     (sum, code) => sum + (packagingQuantities[code] || 0),
@@ -85,11 +107,6 @@ export const PlanningDrawer: React.FC = () => {
   );
   const isBalanced = quantity > 0 && allocatedQty === quantity;
   const requiresPalletQuantity = palletPacking === 'YES' && selectedPackaging.includes('SN');
-
-  useEffect(() => {
-    const derivedDraw = calculateDrawTonsPerDay(cutPerMin, sectionCount, weightGrams);
-    setDrawTons(derivedDraw);
-  }, [cutPerMin, sectionCount, weightGrams]);
 
   useEffect(() => {
     if (!isDrawerOpen) return;
@@ -105,13 +122,10 @@ export const PlanningDrawer: React.FC = () => {
       setMachineId(editingJob.machineId);
       setDate(editingJob.date || editingJob.startDate);
       setBottleId(editingJob.bottleId);
+      setBottleQuery(bottles.find((bottle) => bottle.id === editingJob.bottleId)?.name || '');
       setSectionCount(editingJob.sectionCount);
       setQuantity(editingJob.productionQuantity || editingJob.grossQuantity);
-      setWeightGrams(editingJob.weightGrams);
-      setCutPerMin(editingJob.cutPerMin);
-      setDrawTons(editingJob.drawTonsPerDay);
       setStartTime(editingJob.startTime || '07:00');
-      setExpectedEndTime(editingJob.expectedEndTime || '23:00');
       setCustomerName(editingJob.customerName || '');
 
       const records = planningRepository
@@ -147,25 +161,22 @@ export const PlanningDrawer: React.FC = () => {
     }
 
     const defaultMachineId = drawerDefaultMachineId || machines[0]?.id || 'MAC-01';
-    const fallbackBottleId = bottles[0]?.id || '';
-    const matchedMachine = machines.find((m) => m.id === defaultMachineId);
-    const machineBottleNames = new Set(
-      bottleMasterRecords
-        .filter((record) => record.mch === matchedMachine?.name || record.mch === defaultMachineId)
-        .map((record) => record.bottleName)
-    );
-    const firstBottle = bottles.find((b) => machineBottleNames.has(b.name)) || bottles[0];
+    const defaultBottle = bottles.find(
+      (bottle) => planningRepository.getBottleConfigurations(defaultMachineId, bottle.id).length > 0
+    ) || bottles[0];
 
     setMachineId(defaultMachineId);
     setDate(drawerDefaultDate || '2026-08-01');
-    setBottleId(firstBottle?.id || fallbackBottleId);
-    setSectionCount(matchedMachine?.sectionsCount || matchedMachine?.defaultSectionsCount || 8);
+    setBottleId(defaultBottle?.id || '');
+    setBottleQuery(defaultBottle?.name || '');
+    setSectionCount(
+      planningRepository.getBottleConfigurations(defaultMachineId, defaultBottle?.id || '')[0]?.section ||
+        machines.find((m) => m.id === defaultMachineId)?.defaultSectionsCount ||
+        8
+    );
     setQuantity(0);
-    setWeightGrams(firstBottle?.weightGrams || 400);
-    setCutPerMin(firstBottle?.standardCutPerMin || 28);
     setStartTime(drawerSuggestedStartTime || '07:00');
-    setExpectedEndTime('23:00');
-    setCustomerName(firstBottle?.customerName || '');
+    setCustomerName('');
     resetPackaging();
   }, [
     isDrawerOpen,
@@ -175,35 +186,30 @@ export const PlanningDrawer: React.FC = () => {
     drawerSuggestedStartTime,
     machines,
     bottles,
-    bottleMasterRecords,
   ]);
 
   useEffect(() => {
-    const selectedBottle = bottles.find((b) => b.id === bottleId);
-    if (!selectedBottle) return;
+    if (!bottleId) return;
+    const bottle = bottles.find((item) => item.id === bottleId);
+    if (bottle) setBottleQuery(bottle.name);
+  }, [bottleId, bottles]);
 
-    const matchedMaster = bottleMasterRecords.find((record) => {
-      const currentMachine = machines.find((m) => m.id === machineId);
-      return (
-        (record.mch === currentMachine?.name || record.mch === machineId) &&
-        record.bottleName === selectedBottle.name &&
-        record.section === sectionCount
-      );
-    });
-
-    if (matchedMaster) {
-      setWeightGrams(matchedMaster.weightGrams);
-      setCutPerMin(matchedMaster.speed);
-      setCustomerName(matchedMaster.customerName || selectedBottle.customerName || '');
-      return;
+  useEffect(() => {
+    if (!isDrawerOpen) return;
+    if (availableSections.length > 0 && !availableSections.includes(sectionCount)) {
+      setSectionCount(availableSections[0]);
     }
-
-    setWeightGrams(selectedBottle.weightGrams);
-    setCutPerMin(selectedBottle.standardCutPerMin);
-    setCustomerName(selectedBottle.customerName || '');
-  }, [bottleId, sectionCount, machineId, bottles, bottleMasterRecords, machines]);
+  }, [availableSections, sectionCount, isDrawerOpen]);
 
   if (!isDrawerOpen) return null;
+
+  const selectedBottle = bottles.find((b) => b.id === bottleId);
+  const completionLabel = completionDateTime
+    ? formatDateTime(
+        completionDateTime.toISOString().split('T')[0],
+        completionDateTime.toTimeString().slice(0, 5)
+      )
+    : '--';
 
   const togglePackaging = (code: PackagingCode) => {
     setSelectedPackaging((prev) =>
@@ -213,6 +219,11 @@ export const PlanningDrawer: React.FC = () => {
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
+
+    if (!selectedConfiguration) {
+      alert('No bottle_configuration row exists for the selected bottle and section.');
+      return;
+    }
 
     if (selectedPackaging.length > 0 && !isBalanced) {
       alert('Packaging allocation is not balanced with required bottles.');
@@ -237,10 +248,6 @@ export const PlanningDrawer: React.FC = () => {
       grossQuantity: quantity,
       productionQuantity: quantity,
       producedQuantity: 0,
-      weightGrams,
-      cutPerMin,
-      drawTonsPerDay: drawTons,
-      expectedEndTime,
       startTime,
       linkedJobGroupId: editingJob?.linkedJobGroupId,
       sequenceNumber: editingJob?.sequenceNumber,
@@ -273,10 +280,10 @@ export const PlanningDrawer: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-center items-center bg-slate-900/40 backdrop-blur-xs p-4">
-      <div className="w-full max-w-xl bg-white rounded-xl border border-slate-200 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-900">
-            Edit Bottle - {machine?.name || 'Machine'}
+            {editingJob ? 'Edit Production Job' : 'Add Production Job'} - {machine?.name || 'Machine'}
           </h3>
           <button
             onClick={closeDrawer}
@@ -288,68 +295,181 @@ export const PlanningDrawer: React.FC = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
-          <div className="space-y-1.5">
-            <label className="text-slate-600 font-semibold">Start Time</label>
-            <input
-              type="time"
-              value={startTime}
-              onChange={(event) => setStartTime(event.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2"
-              required
-            />
-          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Start Time</label>
+              <input
+                type="time"
+                value={startTime}
+                onChange={(event) => setStartTime(event.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+                required
+              />
+            </div>
 
-          <div className="space-y-1.5">
-            <label className="text-slate-600 font-semibold">Machine Number</label>
-            <div className="w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2 text-slate-700 font-semibold">
-              {machine?.name || machineId}
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Machine Number</label>
+              <div className="w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2 text-slate-700 font-semibold">
+                {machine?.name || machineId}
+              </div>
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-slate-600 font-semibold">Bottle Name</label>
-            <select
-              value={bottleId}
-              onChange={(event) => setBottleId(event.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2"
-              required
-            >
-              {availableBottles.map((bottle) => (
-                <option key={bottle.id} value={bottle.id}>
-                  {bottle.name}
-                </option>
-              ))}
-            </select>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Bottle Name</label>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="search"
+                  value={bottleQuery}
+                  onChange={(event) => {
+                    const nextQuery = event.target.value;
+                    setBottleQuery(nextQuery);
+                    const exactMatch = bottles.find(
+                      (bottle) => bottle.name.toLowerCase() === nextQuery.trim().toLowerCase()
+                    );
+                    setBottleId(exactMatch?.id || '');
+                  }}
+                  placeholder="Search bottle master..."
+                  list="bottle-master-options"
+                  className="w-full border border-slate-300 rounded-lg px-9 py-2"
+                  required
+                />
+                <datalist id="bottle-master-options">
+                  {bottles.map((bottle) => (
+                    <option key={bottle.id} value={bottle.name} />
+                  ))}
+                </datalist>
+
+                {bottleQuery.trim() && bottleOptions.length > 0 && bottleOptions.length < bottles.length && (
+                  <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                    {bottleOptions.slice(0, 8).map((bottle) => (
+                      <button
+                        key={bottle.id}
+                        type="button"
+                        onClick={() => {
+                          setBottleId(bottle.id);
+                          setBottleQuery(bottle.name);
+                        }}
+                        className="block w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
+                      >
+                        <div className="font-semibold text-slate-800">{bottle.name}</div>
+                        <div className="text-[10px] text-slate-400">Bottle Master</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Section</label>
+              <select
+                value={sectionCount}
+                onChange={(event) => setSectionCount(Number(event.target.value))}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+                required
+              >
+                {(availableSections.length > 0 ? availableSections : machine?.availableSections || []).map((section) => (
+                  <option key={section} value={section}>
+                    {section}
+                  </option>
+                ))}
+              </select>
+              {bottleId && availableSections.length === 0 && (
+                <div className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  This bottle is not available for the selected machine and section.
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-slate-600 font-semibold">Required Bottles</label>
-            <input
-              type="number"
-              min={0}
-              value={quantity}
-              onChange={(event) => setQuantity(Number(event.target.value))}
-              placeholder="Enter required bottle quantity"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2"
-              required
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Required Bottles</label>
+              <input
+                type="number"
+                min={0}
+                value={quantity}
+                onChange={(event) => setQuantity(Number(event.target.value))}
+                placeholder="Enter required bottle quantity"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+                required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Estimated Completion</label>
+              <div className="w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2 text-slate-700 font-semibold">
+                {quantity > 0 ? `≈ ${estimatedDays.toFixed(2)} Days` : 'Enter bottles to calculate'}
+              </div>
+            </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="text-slate-600 font-semibold">Estimated Completion</label>
-            {quantity > 0 ? (
-              <p className="text-slate-600">
-                Estimated Completion
-                <span className="ml-1 font-semibold text-slate-800">~ {estimatedDays.toFixed(2)} Days</span>
-              </p>
-            ) : (
-              <p className="text-slate-500">Enter bottle quantity to calculate completion time.</p>
-            )}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Weight</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {selectedConfiguration ? `${selectedConfiguration.weight} g` : '--'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cut Speed</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {selectedConfiguration ? formatDecimal(selectedConfiguration.speeds, 2) : '--'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Hourly Production</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {hourlyProduction > 0 ? `${formatNumber(hourlyProduction)} bottles` : '--'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">24 Hour Production</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {dailyProduction > 0 ? `${formatNumber(dailyProduction)} bottles` : '--'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Planned Production</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {plannedProduction > 0 ? `${formatNumber(plannedProduction)} bottles` : '--'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Draw</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {drawTons > 0 ? `${formatDecimal(drawTons, 2)} T` : '--'}
+              </div>
+            </div>
           </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Good Bottles / Day</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {goodBottlesPerDay > 0 ? `${goodBottleLabel} (${formatNumber(goodBottlesPerDay)} bottles)` : '--'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Estimated Completion</div>
+              <div className="mt-1 text-sm font-bold text-emerald-700">
+                {completionDateTime ? `≈ ${completionLabel}` : '--'}
+              </div>
+            </div>
+          </div>
+
+          {!selectedConfiguration && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 font-semibold">
+              No bottle_configuration row exists for the selected bottle and section.
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-slate-600 font-semibold">Packaging Category</label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {PACKAGING_OPTIONS.map((option) => {
                 const selected = selectedPackaging.includes(option.code);
                 return (
@@ -401,44 +521,46 @@ export const PlanningDrawer: React.FC = () => {
 
           <div className="rounded-lg border border-slate-200 px-3 py-2 flex items-center justify-between text-[11px]">
             <span className="text-slate-600">
-              Allocated: <span className="font-semibold text-slate-800">{allocatedQty.toLocaleString()} / {quantity.toLocaleString()}</span>
+              Allocated: <span className="font-semibold text-slate-800">{formatNumber(allocatedQty)} / {formatNumber(quantity)}</span>
             </span>
             <span className={`font-semibold ${isBalanced ? 'text-emerald-600' : 'text-amber-600'}`}>
-              {isBalanced ? 'Balanced' : 'Not Balanced'}
+              {isBalanced ? 'Balanced' : `Remaining Allocation ${formatNumber(Math.max(quantity - allocatedQty, 0))}`}
             </span>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-slate-600 font-semibold">Pallet Packing</label>
-            <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
-              {(['YES', 'NO'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setPalletPacking(value)}
-                  className={`px-4 py-1.5 text-[11px] font-semibold ${
-                    palletPacking === value
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-          </div>
+          {selectedPackaging.includes('SN') && (
+            <div className="space-y-2">
+              <label className="text-slate-600 font-semibold">Pallet Packing</label>
+              <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
+                {(['YES', 'NO'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setPalletPacking(value)}
+                    className={`px-4 py-1.5 text-[11px] font-semibold ${
+                      palletPacking === value
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
 
-          {requiresPalletQuantity && (
-            <div className="space-y-1.5">
-              <label className="text-slate-600 font-semibold">Pallet Quantity</label>
-              <input
-                type="number"
-                min={0}
-                value={palletQuantity}
-                onChange={(event) => setPalletQuantity(Number(event.target.value))}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2"
-                required
-              />
+              {requiresPalletQuantity && (
+                <div className="space-y-1.5">
+                  <label className="text-slate-600 font-semibold">Pallet Quantity</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={palletQuantity}
+                    onChange={(event) => setPalletQuantity(Number(event.target.value))}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2"
+                    required
+                  />
+                </div>
+              )}
             </div>
           )}
 

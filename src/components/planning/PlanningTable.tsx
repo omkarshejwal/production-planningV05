@@ -2,7 +2,17 @@ import React, { useMemo, useState } from 'react';
 import { Edit2, Plus, Trash2 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { ProductionJob } from '../../types';
-import { formatDateDisplay, formatDecimal, generateMonthDates } from '../../utils/calculations';
+import {
+  calculateDailyProductionPcs,
+  calculateEstimatedCompletionDays,
+  calculateGoodBottlesPerDay,
+  calculateDrawTonsPerDay,
+  formatDateDisplay,
+  formatDateTime,
+  formatDecimal,
+  formatNumber,
+  generateMonthDates,
+} from '../../utils/calculations';
 
 type DraftFields = {
   sectionCount?: string;
@@ -43,7 +53,9 @@ export const PlanningTable: React.FC = () => {
     selectedMonth,
     openDrawerForEdit,
     deleteJob,
+    extendJob,
     updateJobInline,
+    getBottleConfiguration,
     searchQuery,
   } = useERP();
 
@@ -67,6 +79,28 @@ export const PlanningTable: React.FC = () => {
     bottles.forEach((b) => map.set(b.id, b));
     return map;
   }, [bottles]);
+
+  const packagingByJobKey = useMemo(() => {
+    const map = new Map<string, Array<{ packaging_type: string; quantity: number; pallet_packing: string; pallet_quantity: number }>>();
+    const currentPackaging = JSON.parse(localStorage.getItem('vitrum-job_packaging-v1') || '[]') as Array<{
+      plan_date: string;
+      machine_no: string;
+      bottle_id: string;
+      section: number;
+      start_time: string;
+      packaging_type: string;
+      quantity: number;
+      pallet_packing: string;
+      pallet_quantity: number;
+    }>;
+
+    currentPackaging.forEach((row) => {
+      const key = [row.plan_date, row.machine_no, row.bottle_id, row.section, row.start_time].join('|');
+      const current = map.get(key) || [];
+      map.set(key, [...current, row]);
+    });
+    return map;
+  }, [jobs]);
 
   const passesFilters = (job: ProductionJob): boolean => {
     const q = searchQuery.trim().toLowerCase();
@@ -94,6 +128,51 @@ export const PlanningTable: React.FC = () => {
     const activeJobs = cellJobs.filter((job) => !isCompletedJob(job));
     if (activeJobs.length === 0) return undefined;
     return activeJobs[activeJobs.length - 1].id;
+  };
+
+  const getJobKey = (job: ProductionJob): string =>
+    [job.date || job.startDate, job.machineId, job.bottleId, job.sectionCount, job.startTime || '07:00'].join('|');
+
+  const getJobSummary = (job: ProductionJob) => {
+    const bottle = bottleById.get(job.bottleId);
+    const config = getBottleConfiguration(job.machineId, job.bottleId, job.sectionCount);
+    const weight = config?.weight ?? job.weightGrams;
+    const cutSpeed = config?.speeds ?? job.cutPerMin;
+    const hourlyProduction = calculateDailyProductionPcs(cutSpeed) / 24;
+    const dailyProduction = calculateDailyProductionPcs(cutSpeed);
+    const plannedProduction = Math.round(dailyProduction * 0.9);
+    const goodPerDay = calculateGoodBottlesPerDay(cutSpeed);
+    const estimatedDays = calculateEstimatedCompletionDays(job.productionQuantity || job.grossQuantity, goodPerDay);
+    const startDateTime = new Date(`${job.date || job.startDate}T${job.startTime || '07:00'}:00`);
+    const completion = new Date(startDateTime.getTime() + estimatedDays * 24 * 60 * 60 * 1000);
+    const draw = Number(calculateDrawTonsPerDay(cutSpeed, weight).toFixed(2));
+    const packagingRows = packagingByJobKey.get(getJobKey(job)) || [];
+    const selectedPackaging = ['ST', 'SN', 'SB', 'BT']
+      .map((code) => ({
+        code,
+        quantity: packagingRows.filter((row) => row.packaging_type === code).reduce((sum, row) => sum + row.quantity, 0),
+      }))
+      .filter((item) => item.quantity > 0);
+
+    return {
+      bottleName: bottle?.name || job.bottleId,
+      bottleWeight: `${weight} g`,
+      machineNumber: job.machineId,
+      sections: job.sectionCount,
+      cutSpeed: formatDecimal(cutSpeed, 2),
+      hourlyProduction: formatNumber(Math.round(hourlyProduction)),
+      dailyProduction: formatNumber(dailyProduction),
+      plannedProduction: formatNumber(plannedProduction),
+      goodBottlesLabel: `${formatDecimal(goodPerDay / 100000, 2)}L (${formatNumber(goodPerDay)} bottles)`,
+      startDateTime: formatDateTime(job.date || job.startDate, job.startTime || '07:00'),
+      endDateTime: formatDateTime(completion.toISOString().split('T')[0], completion.toTimeString().slice(0, 5)),
+      totalRequired: formatNumber(job.productionQuantity || job.grossQuantity),
+      jobDuration: `${estimatedDays.toFixed(2)} Days`,
+      draw: `${formatDecimal(draw, 2)} T`,
+      selectedPackaging,
+      palletPacking: packagingRows.some((row) => row.pallet_packing === 'YES') ? 'YES' : 'NO',
+      palletQuantity: packagingRows.find((row) => row.packaging_type === 'SN')?.pallet_quantity || 0,
+    };
   };
 
   const calculateDailyRunningSections = (date: string): number => {
@@ -230,10 +309,111 @@ export const PlanningTable: React.FC = () => {
                             return (
                               <div
                                 key={job.id}
-                                className={`grid grid-cols-[minmax(140px,1fr)_56px_52px_52px_56px_52px] border-l-2 ${
+                                className={`group relative grid grid-cols-[minmax(140px,1fr)_56px_52px_52px_56px_52px] border-l-2 ${
                                   isLocked ? 'border-slate-300 bg-[#ECECEC]' : 'border-emerald-500 bg-white'
                                 }`}
                               >
+                                <div className="pointer-events-none absolute left-full top-0 z-50 ml-3 hidden w-80 rounded-2xl border border-slate-700 bg-slate-900 p-4 text-[11px] text-white shadow-2xl group-hover:block">
+                                  {(() => {
+                                    const summary = getJobSummary(job);
+                                    return (
+                                      <div className="space-y-3">
+                                        <div>
+                                          <div className="text-[10px] uppercase tracking-[0.25em] text-slate-400">Bottle</div>
+                                          <div className="mt-1 text-sm font-bold text-white">{summary.bottleName}</div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 grid grid-cols-2 gap-2 text-[11px]">
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Bottle Weight</div>
+                                            <div className="font-semibold text-cyan-300">{summary.bottleWeight}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Machine Number</div>
+                                            <div className="font-semibold text-cyan-300">{summary.machineNumber}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Sections</div>
+                                            <div className="font-semibold text-cyan-300">{summary.sections}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Cut Speed</div>
+                                            <div className="font-semibold text-cyan-300">{summary.cutSpeed}</div>
+                                          </div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 grid grid-cols-2 gap-2 text-[11px]">
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Hourly Production</div>
+                                            <div className="font-semibold text-white">{summary.hourlyProduction}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">24 Hour Production</div>
+                                            <div className="font-semibold text-white">{summary.dailyProduction}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Planned Production</div>
+                                            <div className="font-semibold text-emerald-300">{summary.plannedProduction}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Job Duration</div>
+                                            <div className="font-semibold text-emerald-300">{summary.jobDuration}</div>
+                                          </div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
+                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Start Date &amp; Time</div>
+                                          <div className="font-semibold text-cyan-300">{summary.startDateTime}</div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
+                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Daily Good Bottles</div>
+                                          <div className="font-semibold text-cyan-300">{summary.goodBottlesLabel}</div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
+                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Total Required Bottles</div>
+                                          <div className="font-semibold text-amber-300">{summary.totalRequired}</div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
+                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">End Date &amp; Time</div>
+                                          <div className="font-semibold text-emerald-300">{summary.endDateTime}</div>
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 space-y-2">
+                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Packing Allocation</div>
+                                          {summary.selectedPackaging.length > 0 ? (
+                                            <div className="space-y-1.5">
+                                              {summary.selectedPackaging.map((item) => (
+                                                <div key={item.code} className="flex items-center justify-between gap-2">
+                                                  <span className="font-semibold text-white">{item.code}</span>
+                                                  <span className="font-semibold text-cyan-300">{formatNumber(item.quantity)}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : (
+                                            <div className="text-slate-400">No packaging selected</div>
+                                          )}
+                                        </div>
+
+                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
+                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Pallet Packing</div>
+                                          <div className="inline-flex rounded-full bg-emerald-500/15 px-2.5 py-1 font-bold text-emerald-300">
+                                            {summary.palletPacking}
+                                          </div>
+                                        </div>
+
+                                        {summary.palletPacking === 'YES' && summary.palletQuantity > 0 && (
+                                          <div className="border-t border-slate-700 pt-3 space-y-1.5">
+                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Pallet Quantity</div>
+                                            <div className="font-semibold text-white">{formatNumber(summary.palletQuantity)}</div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
                                 <div className="p-1.5 border-r border-slate-200">
                                   <div className="font-bold text-slate-900 truncate text-[12px]">{bottle?.name || 'Bottle'}</div>
                                   <div className="text-[10px] text-slate-600">
@@ -252,16 +432,21 @@ export const PlanningTable: React.FC = () => {
 
                                     <button
                                       onClick={() =>
-                                        openDrawerForEdit(
-                                          null,
-                                          machine.id,
-                                          date,
+                                        extendJob(
                                           job.id,
-                                          job.expectedEndTime || '07:00'
+                                          Math.max(
+                                            1,
+                                            Math.ceil(
+                                              calculateEstimatedCompletionDays(
+                                                job.productionQuantity || job.grossQuantity,
+                                                calculateGoodBottlesPerDay(job.cutPerMin)
+                                              )
+                                            ) - 1
+                                          )
                                         )
                                       }
                                       disabled={isLocked}
-                                      title="Add Next Job"
+                                      title="Extend Job"
                                       className="w-5 h-5 inline-flex items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                       <Plus className="w-3 h-3" />
