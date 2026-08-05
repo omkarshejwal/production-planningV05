@@ -1,6 +1,5 @@
 import React from 'react';
-import { ModulePlaceholder } from '../common/ModulePlaceholder';
 
 export const MachinesModule: React.FC = () => {
-  return <ModulePlaceholder moduleName="Machines" />;
+  return <div className="p-4 md:p-6 max-w-[1920px] mx-auto min-h-[calc(100vh-9rem)]" />;
 };

@@ -9,12 +9,7 @@ import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { DashboardModule } from './components/dashboard/DashboardModule';
 import { PlanningModule } from './components/planning/PlanningModule';
-import { ProductionReportModule } from './components/reports/ProductionReportModule';
 import { MachinesModule } from './components/machines/MachinesModule';
-import { InventoryModule } from './components/inventory/InventoryModule';
-import { QualityControlModule } from './components/quality/QualityControlModule';
-import { DispatchModule } from './components/dispatch/DispatchModule';
-import { ReportsModule } from './components/reports/ReportsModule';
 import { SettingsModule } from './components/settings/SettingsModule';
 import { ProfileModule } from './components/profile/ProfileModule';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
@@ -23,7 +18,7 @@ const MainLayout: React.FC = () => {
   const { activeModule } = useERP();
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans text-slate-900 antialiased selection:bg-blue-500 selection:text-white">
+    <div className="min-h-screen bg-[#F8FAFC] flex flex-col font-sans text-slate-900 antialiased selection:bg-blue-500 selection:text-white">
       {/* Top Navigation Header */}
       <Header />
 
@@ -31,16 +26,11 @@ const MainLayout: React.FC = () => {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
 
-        <main className="flex-1 overflow-y-auto bg-slate-100 pb-6 flex flex-col justify-between">
+        <main className="flex-1 overflow-y-auto bg-[#F8FAFC] pb-6 flex flex-col justify-between">
           <ErrorBoundary>
             {activeModule === 'Dashboard' && <DashboardModule />}
             {activeModule === 'Production Planning' && <PlanningModule />}
-            {activeModule === 'Production Report' && <ProductionReportModule />}
             {activeModule === 'Machines' && <MachinesModule />}
-            {activeModule === 'Inventory' && <InventoryModule />}
-            {activeModule === 'Quality Control' && <QualityControlModule />}
-            {activeModule === 'Dispatch' && <DispatchModule />}
-            {activeModule === 'Reports' && <ReportsModule />}
             {activeModule === 'Settings' && <SettingsModule />}
             {activeModule === 'Profile' && <ProfileModule />}
           </ErrorBoundary>

@@ -1,5 +1,17 @@
 import React, { useMemo, useState } from 'react';
-import { Edit2, Plus, Trash2 } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardPlus,
+  Clock,
+  Edit2,
+  Lock,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { ProductionJob } from '../../types';
 import {
@@ -22,6 +34,12 @@ type DraftFields = {
   drawTonsPerDay?: string;
 };
 
+const PAGE_SIZE = 20;
+
+interface PlanningTableProps {
+  onRefresh?: () => void;
+}
+
 const getJobDate = (job: ProductionJob): string => job.date || job.startDate;
 
 const toMinutes = (value?: string): number => {
@@ -43,7 +61,7 @@ const formatTimeDisplay = (time?: string): string => {
 const isCompletedJob = (job: ProductionJob): boolean =>
   job.lifecycleStatus === 'COMPLETED' || Boolean(job.locked);
 
-export const PlanningTable: React.FC = () => {
+export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
   const {
     machines,
     jobs,
@@ -56,10 +74,23 @@ export const PlanningTable: React.FC = () => {
     extendJob,
     updateJobInline,
     getBottleConfiguration,
+    saveJob,
     searchQuery,
   } = useERP();
 
   const [drafts, setDrafts] = useState<Record<string, DraftFields>>({});
+  const [page, setPage] = useState(1);
+  const [showSection, setShowSection] = useState(true);
+  const [tooltip, setTooltip] = useState<{ job: ProductionJob; x: number; y: number } | null>(null);
+
+  const [activeEntry, setActiveEntry] = useState<{ date: string; machineId: string } | null>(null);
+  const [entryBottleQuery, setEntryBottleQuery] = useState('');
+  const [entryBottleId, setEntryBottleId] = useState('');
+  const [entrySectionCount, setEntrySectionCount] = useState(8);
+  const [entryWeight, setEntryWeight] = useState('');
+  const [entryCut, setEntryCut] = useState('');
+  const [entryQty, setEntryQty] = useState('');
+  const [entryDraw, setEntryDraw] = useState('');
 
   const displayedMachines = machines;
 
@@ -73,6 +104,15 @@ export const PlanningTable: React.FC = () => {
     if (toDate && date > toDate) return false;
     return true;
   });
+
+  const totalEntries = filteredDates.length;
+  const pageCount = Math.max(1, Math.ceil(totalEntries / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const visibleDates = filteredDates.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const firstEntry = totalEntries === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
+  const lastEntry = Math.min(safePage * PAGE_SIZE, totalEntries);
+
+  const isDirty = activeEntry !== null || Object.keys(drafts).length > 0;
 
   const bottleById = useMemo(() => {
     const map = new Map<string, (typeof bottles)[number]>();
@@ -124,12 +164,6 @@ export const PlanningTable: React.FC = () => {
       });
   };
 
-  const getLatestActiveJobId = (cellJobs: ProductionJob[]): string | undefined => {
-    const activeJobs = cellJobs.filter((job) => !isCompletedJob(job));
-    if (activeJobs.length === 0) return undefined;
-    return activeJobs[activeJobs.length - 1].id;
-  };
-
   const getJobKey = (job: ProductionJob): string =>
     [job.date || job.startDate, job.machineId, job.bottleId, job.sectionCount, job.startTime || '07:00'].join('|');
 
@@ -175,15 +209,10 @@ export const PlanningTable: React.FC = () => {
     };
   };
 
-  const calculateDailyRunningSections = (date: string): number => {
-    return displayedMachines.reduce((sum, machine) => {
-      const sectionTotal = jobs
-        .filter((job) => job.machineId === machine.id && getJobDate(job) === date)
-        .filter((job) => job.lifecycleStatus !== 'COMPLETED')
-        .reduce((acc, job) => acc + (job.sectionCount || 0), 0);
-
-      return sum + sectionTotal;
-    }, 0);
+  const calculateTotalDraw = (date: string): number => {
+    return jobs
+      .filter((job) => getJobDate(job) === date)
+      .reduce((sum, job) => sum + (job.drawTonsPerDay || 0), 0);
   };
 
   const setDraft = (jobId: string, field: keyof DraftFields, value: string) => {
@@ -200,7 +229,13 @@ export const PlanningTable: React.FC = () => {
     setDrafts((prev) => {
       const current = { ...(prev[jobId] || {}) };
       delete current[field];
-      return { ...prev, [jobId]: current };
+      const next = { ...prev };
+      if (Object.keys(current).length === 0) {
+        delete next[jobId];
+      } else {
+        next[jobId] = current;
+      }
+      return next;
     });
   };
 
@@ -232,327 +267,601 @@ export const PlanningTable: React.FC = () => {
     if (ok) clearDraftField(job.id, field);
   };
 
+  const resetEntryDraft = () => {
+    setEntryBottleQuery('');
+    setEntryBottleId('');
+    setEntryWeight('');
+    setEntryCut('');
+    setEntryQty('');
+    setEntryDraw('');
+  };
+
+  const startEntry = (date: string, machineId: string) => {
+    const machine = displayedMachines.find((m) => m.id === machineId);
+    resetEntryDraft();
+    setEntrySectionCount(machine?.defaultSectionsCount || 8);
+    setActiveEntry({ date, machineId });
+  };
+
+  const applyEntryConfig = (machineId: string, bottleId: string, section: number) => {
+    const config = getBottleConfiguration(machineId, bottleId, section);
+    if (!config) return;
+    setEntryWeight(String(config.weight));
+    setEntryCut(formatDecimal(config.speeds, 2));
+    setEntryDraw(formatDecimal(Number(calculateDrawTonsPerDay(config.speeds, config.weight).toFixed(2)), 1));
+  };
+
+  const handleEntryBottleChange = (machineId: string, value: string) => {
+    setEntryBottleQuery(value);
+    const match = bottles.find((b) => b.name.toLowerCase() === value.trim().toLowerCase());
+    setEntryBottleId(match?.id || '');
+    if (match) applyEntryConfig(machineId, match.id, entrySectionCount);
+  };
+
+  const handleEntrySectionChange = (machineId: string, value: number) => {
+    setEntrySectionCount(value);
+    if (entryBottleId) applyEntryConfig(machineId, entryBottleId, value);
+  };
+
+  const handleSaveChanges = () => {
+    if (activeEntry) {
+      if (!entryBottleId) {
+        alert('Select a bottle from the bottle master to create the job.');
+        return;
+      }
+      const qty = Number(entryQty);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        alert('Enter a valid quantity for the job.');
+        return;
+      }
+
+      const saved = saveJob({
+        machineId: activeEntry.machineId,
+        date: activeEntry.date,
+        startDate: activeEntry.date,
+        endDate: activeEntry.date,
+        bottleId: entryBottleId,
+        sectionCount: entrySectionCount,
+        grossQuantity: qty,
+        productionQuantity: qty,
+        startTime: '07:00',
+      });
+
+      if (!saved) return;
+
+      setActiveEntry(null);
+      resetEntryDraft();
+      onRefresh?.();
+      return;
+    }
+
+    onRefresh?.();
+  };
+
+  const showTooltip = (e: React.MouseEvent, job: ProductionJob) => {
+    setTooltip({ job, x: e.clientX, y: e.clientY });
+  };
+  const moveTooltip = (e: React.MouseEvent) => {
+    if (tooltip) setTooltip((t) => (t ? { ...t, x: e.clientX, y: e.clientY } : null));
+  };
+  const hideTooltip = () => setTooltip(null);
+
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
-      <div className="overflow-x-auto max-h-[72vh] overflow-y-auto">
-        <table className="w-full min-w-355 border-collapse text-xs">
-          <thead className="sticky top-0 z-30 bg-slate-100 text-slate-700">
-            <tr>
-              <th className="sticky left-0 z-40 bg-slate-200 p-2.5 border border-slate-300 text-left w-36">
-                Date
-              </th>
+    <div className="space-y-4">
+      {/* Table Container */}
+      <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden">
+        {/* Toolbar */}
+        <div className="flex items-center justify-between px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
+          <span className="text-xs font-medium text-[#6B7280]">Production Register</span>
+          <button
+            onClick={() => setShowSection((s) => !s)}
+            className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
+              ${showSection
+                ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+              }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showSection ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+            Section {showSection ? 'ON' : 'OFF'}
+          </button>
+        </div>
 
-              {displayedMachines.map((machine) => (
-                <th key={machine.id} className="p-2 border border-slate-300 bg-blue-50 min-w-[320px]">
-                  <div className="font-bold text-slate-900 text-[13px]">{machine.name}</div>
+        <div className="overflow-x-auto max-h-[calc(100vh-240px)]">
+          <table className="w-full min-w-[1500px] border-collapse text-sm">
+            <thead className="sticky top-0 z-10">
+              {/* Machine group header */}
+              <tr className="bg-[#DBEAFE] border-b border-[#BFDBFE]">
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-[110px] sticky left-0 z-40 bg-[#DBEAFE]">
+                  Date
                 </th>
-              ))}
-
-              <th className="p-2 border border-slate-300 bg-slate-200 text-slate-900 w-24 text-center">
-                Total
-              </th>
-            </tr>
-
-            <tr className="text-[10px] uppercase bg-slate-50">
-              <th className="sticky left-0 z-40 bg-slate-200 p-2 border border-slate-300 text-left text-slate-600">
-                Planner
-              </th>
-
-              {displayedMachines.map((machine) => (
-                <th key={`sub-${machine.id}`} className="p-0 border border-slate-300">
-                  <div className="grid grid-cols-[minmax(140px,1fr)_56px_52px_52px_56px_52px] text-slate-600 bg-slate-50">
-                    <div className="p-1.5 border-r border-slate-200 font-bold text-blue-700">Bottle Name</div>
-                    <div className="p-1.5 border-r border-slate-200 text-center font-semibold text-purple-700">Sec</div>
-                    <div className="p-1.5 border-r border-slate-200 text-center font-semibold">Wt</div>
-                    <div className="p-1.5 border-r border-slate-200 text-center font-semibold">Cut</div>
-                    <div className="p-1.5 border-r border-slate-200 text-center font-semibold">Qty</div>
-                    <div className="p-1.5 text-center font-semibold">Draw</div>
-                  </div>
+                {displayedMachines.map((machine) => (
+                  <th key={machine.id} colSpan={showSection ? 6 : 5} className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE]">
+                    {machine.name}
+                  </th>
+                ))}
+                <th className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] w-[80px]">
+                  Total Draw
                 </th>
-              ))}
+              </tr>
+              {/* Sub-header */}
+              <tr className="bg-[#EFF6FF] border-b border-[#E5E7EB]">
+                <th className="px-3 py-2 text-left text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] sticky left-0 z-40 bg-[#EFF6FF]"></th>
+                {displayedMachines.map((machine) => (
+                  <React.Fragment key={`sub-${machine.id}`}>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#2563EB] border-r border-[#E5E7EB] w-[160px] bg-[#EFF6FF]">
+                      Bottle Name
+                    </th>
+                    {showSection && (
+                      <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-[40px] bg-[#F5F3FF]">Sec</th>
+                    )}
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[55px]">Wt</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[60px]">Cut</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[60px]">Qty</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[55px]">Draw</th>
+                  </React.Fragment>
+                ))}
+                <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151]"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleDates.map((date, displayIdx) => {
+                const baseBg = displayIdx % 2 === 0 ? 'bg-white' : 'bg-[#F8FAFC]';
+                const totalDraw = calculateTotalDraw(date);
 
-              <th className="p-1.5 border border-slate-300 bg-slate-200 text-center text-slate-700 font-bold">
-                Sections
-              </th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {filteredDates.map((date) => (
-              <tr key={date} className="align-top">
-                <td className="sticky left-0 z-20 bg-slate-100 border border-slate-300 p-2 font-bold whitespace-nowrap">
-                  {formatDateDisplay(date)}
-                </td>
-
-                {displayedMachines.map((machine) => {
+                const machineSlots = displayedMachines.map((machine) => {
                   const cellJobs = getCellJobs(date, machine.id);
-                  const latestActiveJobId = getLatestActiveJobId(cellJobs);
+                  const completed = cellJobs.filter(isCompletedJob);
+                  const activeJobs = cellJobs.filter((job) => !isCompletedJob(job));
+                  const running = activeJobs[activeJobs.length - 1] || null;
+                  return { machine, completed, running };
+                });
+
+                const maxSlots = Math.max(1, ...machineSlots.map((s) => s.completed.length + 1));
+
+                return Array.from({ length: maxSlots }, (_, slotIdx) => {
+                  const isFirstSlot = slotIdx === 0;
+                  const isLastSlot = slotIdx === maxSlots - 1;
 
                   return (
-                    <td key={`${date}-${machine.id}`} className="border border-slate-300 p-0 bg-white align-top">
-                      {cellJobs.length === 0 ? (
-                        <button
-                          onClick={() => openDrawerForEdit(null, machine.id, date)}
-                          className="w-full min-h-16 text-slate-500 hover:text-blue-700 hover:bg-blue-50/70 transition-all flex flex-col items-center justify-center border-0"
-                        >
-                          <Plus className="w-4 h-4 mb-0.5" />
-                          <span className="font-semibold">Add Job</span>
-                        </button>
-                      ) : (
-                        <div className="divide-y divide-slate-200">
-                          {cellJobs.map((job) => {
-                            const bottle = bottleById.get(job.bottleId);
-                            const isCompleted = isCompletedJob(job);
-                            const isLatestActive = !isCompleted && job.id === latestActiveJobId;
-                            const isLocked = isCompleted || !isLatestActive;
+                    <tr key={`${date}-${slotIdx}`}
+                      className={`${baseBg} ${isLastSlot ? 'border-b border-[#E5E7EB]' : 'border-b border-[#F0F4F8]'}`}>
+                      {isFirstSlot && (
+                        <td rowSpan={maxSlots}
+                          className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 z-20 align-top pt-2.5 ${baseBg}`}>
+                          {formatDateDisplay(date)}
+                        </td>
+                      )}
 
-                            return (
-                              <div
-                                key={job.id}
-                                className={`group relative grid grid-cols-[minmax(140px,1fr)_56px_52px_52px_56px_52px] border-l-2 ${
-                                  isLocked ? 'border-slate-300 bg-[#ECECEC]' : 'border-emerald-500 bg-white'
-                                }`}
-                              >
-                                <div className="pointer-events-none absolute left-full top-0 z-50 ml-3 hidden w-80 rounded-2xl border border-slate-700 bg-slate-900 p-4 text-[11px] text-white shadow-2xl group-hover:block">
-                                  {(() => {
-                                    const summary = getJobSummary(job);
-                                    return (
-                                      <div className="space-y-3">
-                                        <div>
-                                          <div className="text-[10px] uppercase tracking-[0.25em] text-slate-400">Bottle</div>
-                                          <div className="mt-1 text-sm font-bold text-white">{summary.bottleName}</div>
-                                        </div>
+                      {machineSlots.map(({ machine, completed, running }) => {
+                        const isRunningSlot = slotIdx === maxSlots - 1;
+                        const completedOffset = maxSlots - 1 - completed.length;
+                        const completedIdx = slotIdx - completedOffset;
+                        const completedJob = !isRunningSlot && completedIdx >= 0 && completedIdx < completed.length
+                          ? completed[completedIdx]
+                          : null;
+                        const isEmpty = !isRunningSlot && completedJob === null;
 
-                                        <div className="border-t border-slate-700 pt-3 grid grid-cols-2 gap-2 text-[11px]">
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Bottle Weight</div>
-                                            <div className="font-semibold text-cyan-300">{summary.bottleWeight}</div>
-                                          </div>
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Machine Number</div>
-                                            <div className="font-semibold text-cyan-300">{summary.machineNumber}</div>
-                                          </div>
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Sections</div>
-                                            <div className="font-semibold text-cyan-300">{summary.sections}</div>
-                                          </div>
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Cut Speed</div>
-                                            <div className="font-semibold text-cyan-300">{summary.cutSpeed}</div>
-                                          </div>
-                                        </div>
+                        if (isEmpty) {
+                          return (
+                            <React.Fragment key={machine.id}>
+                              <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
+                              {showSection && <td className={`border-r border-[#E5E7EB] ${baseBg}`} />}
+                              <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
+                              <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
+                              <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
+                              <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
+                            </React.Fragment>
+                          );
+                        }
 
-                                        <div className="border-t border-slate-700 pt-3 grid grid-cols-2 gap-2 text-[11px]">
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Hourly Production</div>
-                                            <div className="font-semibold text-white">{summary.hourlyProduction}</div>
-                                          </div>
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">24 Hour Production</div>
-                                            <div className="font-semibold text-white">{summary.dailyProduction}</div>
-                                          </div>
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Planned Production</div>
-                                            <div className="font-semibold text-emerald-300">{summary.plannedProduction}</div>
-                                          </div>
-                                          <div>
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Job Duration</div>
-                                            <div className="font-semibold text-emerald-300">{summary.jobDuration}</div>
-                                          </div>
-                                        </div>
-
-                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
-                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Start Date &amp; Time</div>
-                                          <div className="font-semibold text-cyan-300">{summary.startDateTime}</div>
-                                        </div>
-
-                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
-                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Daily Good Bottles</div>
-                                          <div className="font-semibold text-cyan-300">{summary.goodBottlesLabel}</div>
-                                        </div>
-
-                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
-                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Total Required Bottles</div>
-                                          <div className="font-semibold text-amber-300">{summary.totalRequired}</div>
-                                        </div>
-
-                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
-                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">End Date &amp; Time</div>
-                                          <div className="font-semibold text-emerald-300">{summary.endDateTime}</div>
-                                        </div>
-
-                                        <div className="border-t border-slate-700 pt-3 space-y-2">
-                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Packing Allocation</div>
-                                          {summary.selectedPackaging.length > 0 ? (
-                                            <div className="space-y-1.5">
-                                              {summary.selectedPackaging.map((item) => (
-                                                <div key={item.code} className="flex items-center justify-between gap-2">
-                                                  <span className="font-semibold text-white">{item.code}</span>
-                                                  <span className="font-semibold text-cyan-300">{formatNumber(item.quantity)}</span>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          ) : (
-                                            <div className="text-slate-400">No packaging selected</div>
-                                          )}
-                                        </div>
-
-                                        <div className="border-t border-slate-700 pt-3 space-y-1.5">
-                                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Pallet Packing</div>
-                                          <div className="inline-flex rounded-full bg-emerald-500/15 px-2.5 py-1 font-bold text-emerald-300">
-                                            {summary.palletPacking}
-                                          </div>
-                                        </div>
-
-                                        {summary.palletPacking === 'YES' && summary.palletQuantity > 0 && (
-                                          <div className="border-t border-slate-700 pt-3 space-y-1.5">
-                                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Pallet Quantity</div>
-                                            <div className="font-semibold text-white">{formatNumber(summary.palletQuantity)}</div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })()}
+                        if (completedJob) {
+                          const cellBg = 'bg-[#F3F4F6]';
+                          const txt = 'text-[10px] text-[#6B7280]';
+                          const qty = completedJob.productionQuantity || completedJob.grossQuantity || 0;
+                          const good = Math.round(qty * 0.9);
+                          return (
+                            <React.Fragment key={machine.id}>
+                              <td className={`px-2 py-1.5 border-l-2 border-r border-[#E5E7EB] ${cellBg}`}
+                                style={{ borderLeftColor: '#9CA3AF' }}>
+                                <div className="flex items-center gap-1 mb-0.5">
+                                  <Lock size={7} className="text-[#9CA3AF] flex-shrink-0" />
+                                  <span className="text-[9px] font-bold text-[#9CA3AF]">JOB {completedIdx + 1}</span>
                                 </div>
-                                <div className="p-1.5 border-r border-slate-200">
-                                  <div className="font-bold text-slate-900 truncate text-[12px]">{bottle?.name || 'Bottle'}</div>
-                                  <div className="text-[10px] text-slate-600">
-                                    {formatTimeDisplay(job.startTime)} - {formatTimeDisplay(job.expectedEndTime)}
-                                  </div>
+                                <p className="text-[10px] font-semibold text-[#4B5563] truncate leading-tight">
+                                  {bottleById.get(completedJob.bottleId)?.name || completedJob.bottleId}
+                                </p>
+                                <div className="flex items-center gap-0.5 mt-0.5">
+                                  <Clock size={7} className="text-[#9CA3AF] flex-shrink-0" />
+                                  <span className="text-[8px] text-[#9CA3AF]">
+                                    {formatTimeDisplay(completedJob.startTime)} → {formatTimeDisplay(completedJob.expectedEndTime)}
+                                  </span>
+                                </div>
+                                <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
+                                  <span className="text-[8px] text-[#1D4ED8] font-semibold">
+                                    Good: {good.toLocaleString()} bottles
+                                  </span>
+                                </div>
+                              </td>
+                              {showSection && (
+                                <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                  <span className={txt}>{completedJob.sectionCount ?? '—'}</span>
+                                </td>
+                              )}
+                              <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                <span className={txt}>{completedJob.weightGrams || '—'}</span>
+                              </td>
+                              <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                <span className={txt}>{completedJob.cutPerMin || '—'}</span>
+                              </td>
+                              <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                <span className={txt}>{qty > 0 ? `${(qty * 0.9 / 100000).toFixed(2)}L` : '—'}</span>
+                              </td>
+                              <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                <span className={txt}>
+                                  {completedJob.drawTonsPerDay > 0 ? completedJob.drawTonsPerDay.toFixed(1) : '—'}
+                                </span>
+                              </td>
+                            </React.Fragment>
+                          );
+                        }
 
-                                  <div className="flex items-center gap-1 mt-1">
+                        // ── Running slot ──────────────────────────────────────
+                        const isEntryActive = activeEntry !== null &&
+                          activeEntry.date === date &&
+                          activeEntry.machineId === machine.id;
+                        const cellBg = 'bg-white';
+                        const isLowSec = running !== null && running.sectionCount < machine.defaultSectionsCount;
+                        const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+
+                        return (
+                          <React.Fragment key={machine.id}>
+                            <td className={`px-2 py-1.5 border-l-2 border-r border-[#E5E7EB] ${cellBg}`}
+                              style={{ borderLeftColor: accentColor }}>
+                              {isEntryActive ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => setActiveEntry(null)}
+                                    title="Cancel entry"
+                                    className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                    <X size={8} />
+                                  </button>
+                                  <input
+                                    type="search"
+                                    value={entryBottleQuery}
+                                    onChange={(e) => handleEntryBottleChange(machine.id, e.target.value)}
+                                    placeholder="Bottle name..."
+                                    list="planning-inline-bottles"
+                                    className="w-full min-w-0 h-5 text-[10px] border border-[#BFDBFE] rounded px-1 bg-white focus:outline-none focus:border-[#2563EB]"
+                                  />
+                                  <datalist id="planning-inline-bottles">
+                                    {bottles.map((bottle) => (
+                                      <option key={bottle.id} value={bottle.name} />
+                                    ))}
+                                  </datalist>
+                                </div>
+                              ) : running ? (
+                                <>
+                                  <div className="flex items-center gap-1 mb-0.5">
+                                    <p
+                                      onMouseEnter={(e) => showTooltip(e, running)}
+                                      onMouseMove={moveTooltip}
+                                      onMouseLeave={hideTooltip}
+                                      className="text-[11px] font-semibold truncate leading-tight flex-1 cursor-default text-[#111827]">
+                                      {bottleById.get(running.bottleId)?.name || running.bottleId}
+                                    </p>
                                     <button
-                                      onClick={() => openDrawerForEdit(job, machine.id, date)}
-                                      disabled={isLocked}
-                                      title="Edit Job"
-                                      className="w-5 h-5 inline-flex items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      <Edit2 className="w-3 h-3" />
+                                      onClick={() => openDrawerForEdit(running, machine.id, date)}
+                                      title="Edit"
+                                      className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                      <Edit2 size={7} />
                                     </button>
-
-                                    <button
-                                      onClick={() =>
-                                        extendJob(
-                                          job.id,
-                                          Math.max(
-                                            1,
-                                            Math.ceil(
-                                              calculateEstimatedCompletionDays(
-                                                job.productionQuantity || job.grossQuantity,
-                                                calculateGoodBottlesPerDay(job.cutPerMin)
-                                              )
-                                            ) - 1
-                                          )
-                                        )
-                                      }
-                                      disabled={isLocked}
-                                      title="Extend Job"
-                                      className="w-5 h-5 inline-flex items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      <Plus className="w-3 h-3" />
-                                    </button>
-
                                     <button
                                       onClick={() => {
-                                        const ok = window.confirm('Delete Job?');
-                                        if (!ok) return;
-                                        deleteJob(job.id);
+                                        if (window.confirm('Delete Job?')) deleteJob(running.id);
                                       }}
-                                      disabled={isLocked}
-                                      title="Delete Job"
-                                      className="w-5 h-5 inline-flex items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
+                                      title="Remove job"
+                                      className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                      <Trash2 size={7} />
                                     </button>
                                   </div>
+                                  <div className="flex items-center gap-0.5 mb-1">
+                                    <Clock size={7} className="text-[#6B7280] flex-shrink-0" />
+                                    <span className="text-[8px] text-[#6B7280]">{formatTimeDisplay(running.startTime)}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    <button
+                                      onClick={() => extendJob(running.id, 1)}
+                                      title="Continue to next day"
+                                      className="w-5 h-5 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors">
+                                      <Plus size={8} />
+                                    </button>
+                                    <button
+                                      onClick={() => openDrawerForEdit(null, machine.id, date)}
+                                      title="Schedule a new job"
+                                      className="flex items-center gap-0.5 h-5 px-1.5 text-[9px] font-semibold text-[#7C3AED] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#DDD6FE] rounded transition-colors whitespace-nowrap">
+                                      <ClipboardPlus size={8} /> Add Job
+                                    </button>
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="flex items-center gap-1 py-0.5">
+                                  <button
+                                    onClick={() => startEntry(date, machine.id)}
+                                    title="Add Job"
+                                    className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                    <Edit2 size={8} />
+                                  </button>
                                 </div>
-
-                                <div className="p-1 border-r border-slate-200 flex items-center justify-center">
+                              )}
+                            </td>
+                            {/* Sec */}
+                            <td className={`px-0.5 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                              {isEntryActive ? (
+                                <select
+                                  value={entrySectionCount}
+                                  onChange={(e) => handleEntrySectionChange(machine.id, Number(e.target.value))}
+                                  className="w-full text-xs font-semibold text-[#7C3AED] border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]">
+                                  {(machine.availableSections || []).map((section) => (
+                                    <option key={section} value={section}>{section}</option>
+                                  ))}
+                                </select>
+                              ) : running ? (
+                                <div className="relative inline-flex items-center justify-center">
                                   <select
-                                    value={String(job.sectionCount)}
+                                    value={String(running.sectionCount)}
                                     onChange={(event) => {
                                       const nextSection = Number(event.target.value);
-                                      updateJobInline(job.id, { sectionCount: nextSection });
+                                      updateJobInline(running.id, { sectionCount: nextSection });
                                     }}
-                                    disabled={isLocked}
-                                    className="w-full h-6 border border-slate-300 rounded px-1 text-[11px] text-purple-700 font-bold bg-white disabled:bg-slate-200 disabled:cursor-not-allowed"
-                                  >
+                                    className={`text-xs font-semibold appearance-none bg-transparent focus:outline-none cursor-pointer pr-3 ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`}>
                                     {(machine.availableSections || []).map((section) => (
-                                      <option key={section} value={section}>
-                                        {section}
-                                      </option>
+                                      <option key={section} value={section}>{section}</option>
                                     ))}
                                   </select>
+                                  <ChevronDown size={8}
+                                    className={`absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`} />
                                 </div>
+                              ) : null}
+                            </td>
+                            {/* Wt */}
+                            <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                              {isEntryActive ? (
+                                <input
+                                  type="number"
+                                  value={entryWeight}
+                                  onChange={(e) => setEntryWeight(e.target.value)}
+                                  placeholder="0"
+                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
+                                />
+                              ) : running ? (
+                                <input
+                                  type="number"
+                                  step="1"
+                                  min={0}
+                                  value={getDraftValue(running, 'weightGrams', String(running.weightGrams))}
+                                  onChange={(event) => setDraft(running.id, 'weightGrams', event.target.value)}
+                                  onBlur={() => commitNumeric(running, 'weightGrams', 'weightGrams', 0)}
+                                  className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
+                                />
+                              ) : null}
+                            </td>
+                            {/* Cut */}
+                            <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                              {isEntryActive ? (
+                                <input
+                                  type="number"
+                                  value={entryCut}
+                                  onChange={(e) => setEntryCut(e.target.value)}
+                                  placeholder="0.00"
+                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
+                                />
+                              ) : running ? (
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min={0}
+                                  value={getDraftValue(running, 'cutPerMin', formatDecimal(running.cutPerMin, 2))}
+                                  onChange={(event) => setDraft(running.id, 'cutPerMin', event.target.value)}
+                                  onBlur={() => commitNumeric(running, 'cutPerMin', 'cutPerMin', 2)}
+                                  className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
+                                />
+                              ) : null}
+                            </td>
+                            {/* Qty */}
+                            <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                              {isEntryActive ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={entryQty}
+                                  onChange={(e) => setEntryQty(e.target.value)}
+                                  placeholder="Qty"
+                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
+                                />
+                              ) : running ? (
+                                <input
+                                  type="number"
+                                  step="1"
+                                  min={0}
+                                  value={getDraftValue(running, 'quantity', String(running.productionQuantity || running.grossQuantity))}
+                                  onChange={(event) => setDraft(running.id, 'quantity', event.target.value)}
+                                  onBlur={() => commitNumeric(running, 'quantity', 'productionQuantity', 0)}
+                                  className="w-full bg-transparent text-sm font-medium text-[#111827] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
+                                />
+                              ) : null}
+                            </td>
+                            {/* Draw */}
+                            <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                              {isEntryActive ? (
+                                <input
+                                  type="number"
+                                  value={entryDraw}
+                                  onChange={(e) => setEntryDraw(e.target.value)}
+                                  placeholder="0.0"
+                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
+                                />
+                              ) : running ? (
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min={0}
+                                  value={getDraftValue(running, 'drawTonsPerDay', formatDecimal(running.drawTonsPerDay, 1))}
+                                  onChange={(event) => setDraft(running.id, 'drawTonsPerDay', event.target.value)}
+                                  onBlur={() => commitNumeric(running, 'drawTonsPerDay', 'drawTonsPerDay', 1)}
+                                  className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
+                                />
+                              ) : null}
+                            </td>
+                          </React.Fragment>
+                        );
+                      })}
 
-                                <div className="p-1 border-r border-slate-200 flex items-center justify-center">
-                                  <input
-                                    type="number"
-                                    step="1"
-                                    min={0}
-                                    value={getDraftValue(job, 'weightGrams', String(job.weightGrams))}
-                                    onChange={(event) => setDraft(job.id, 'weightGrams', event.target.value)}
-                                    onBlur={() => commitNumeric(job, 'weightGrams', 'weightGrams', 0)}
-                                    disabled={isLocked}
-                                    className="w-full h-6 border border-slate-300 rounded px-1 text-[11px] text-center bg-white disabled:bg-slate-200 disabled:cursor-not-allowed"
-                                  />
-                                </div>
-
-                                <div className="p-1 border-r border-slate-200 flex items-center justify-center">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min={0}
-                                    value={getDraftValue(job, 'cutPerMin', formatDecimal(job.cutPerMin, 2))}
-                                    onChange={(event) => setDraft(job.id, 'cutPerMin', event.target.value)}
-                                    onBlur={() => commitNumeric(job, 'cutPerMin', 'cutPerMin', 2)}
-                                    disabled={isLocked}
-                                    className="w-full h-6 border border-slate-300 rounded px-1 text-[11px] text-center bg-white disabled:bg-slate-200 disabled:cursor-not-allowed"
-                                  />
-                                </div>
-
-                                <div className="p-1 border-r border-slate-200 flex items-center justify-center">
-                                  <input
-                                    type="number"
-                                    step="1"
-                                    min={0}
-                                    value={getDraftValue(job, 'quantity', String(job.productionQuantity || job.grossQuantity))}
-                                    onChange={(event) => setDraft(job.id, 'quantity', event.target.value)}
-                                    onBlur={() => commitNumeric(job, 'quantity', 'productionQuantity', 0)}
-                                    disabled={isLocked}
-                                    className="w-full h-6 border border-slate-300 rounded px-1 text-[11px] text-center bg-white disabled:bg-slate-200 disabled:cursor-not-allowed"
-                                  />
-                                </div>
-
-                                <div className="p-1 flex items-center justify-center">
-                                  <input
-                                    type="number"
-                                    step="0.1"
-                                    min={0}
-                                    value={getDraftValue(job, 'drawTonsPerDay', formatDecimal(job.drawTonsPerDay, 1))}
-                                    onChange={(event) => setDraft(job.id, 'drawTonsPerDay', event.target.value)}
-                                    onBlur={() => commitNumeric(job, 'drawTonsPerDay', 'drawTonsPerDay', 1)}
-                                    disabled={isLocked}
-                                    className="w-full h-6 border border-slate-300 rounded px-1 text-[11px] text-center bg-white disabled:bg-slate-200 disabled:cursor-not-allowed"
-                                  />
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                      {/* Total Draw — only on the last slot row */}
+                      {isLastSlot ? (
+                        <td className="px-3 text-center text-sm font-semibold text-[#111827]">
+                          {totalDraw > 0 ? `${totalDraw.toFixed(1)} T` : '—'}
+                        </td>
+                      ) : (
+                        <td className={baseBg} />
                       )}
-                    </td>
+                    </tr>
                   );
-                })}
+                });
+              })}
+            </tbody>
+          </table>
+        </div>
 
-                <td className="border border-slate-300 p-2 text-center font-bold text-slate-800 bg-slate-50">
-                  {calculateDailyRunningSections(date)}
-                </td>
-              </tr>
+        {/* Pagination */}
+        <div className="flex items-center justify-between px-4 py-3 border-t border-[#E5E7EB]">
+          <span className="text-sm text-[#6B7280]">
+            Showing {firstEntry}–{lastEntry} of {totalEntries} entries
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              className="h-8 w-8 flex items-center justify-center rounded border border-[#E5E7EB] text-[#374151] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#F8FAFC] transition-colors">
+              <ChevronLeft size={14} />
+            </button>
+            {Array.from({ length: pageCount }, (_, i) => i + 1).map((p) => (
+              <button key={p} onClick={() => setPage(p)}
+                className={`h-8 w-8 text-sm rounded border transition-colors
+                  ${p === safePage
+                    ? 'bg-[#2563EB] border-[#2563EB] text-white font-semibold'
+                    : 'border-[#E5E7EB] text-[#374151] hover:bg-[#F8FAFC]'
+                  }`}>
+                {p}
+              </button>
             ))}
-          </tbody>
-        </table>
+            <button
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={safePage >= pageCount}
+              className="h-8 w-8 flex items-center justify-center rounded border border-[#E5E7EB] text-[#374151] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#F8FAFC] transition-colors">
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </div>
       </div>
+
+      {/* ── Save Bar ── */}
+      <div className={`flex items-center justify-between gap-4 bg-white border rounded-lg px-5 py-3 transition-colors ${isDirty ? 'border-[#BFDBFE] bg-[#EFF6FF]' : 'border-[#E5E7EB]'}`}>
+        <div className="flex items-center gap-2.5">
+          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isDirty ? 'bg-[#F59E0B]' : 'bg-[#16A34A]'}`} />
+          <span className="text-sm text-[#374151]">
+            {isDirty
+              ? 'You have unsaved changes. Click Save to store them in the database.'
+              : 'All changes are saved.'}
+          </span>
+        </div>
+        <button
+          onClick={handleSaveChanges}
+          disabled={!isDirty}
+          className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
+            ${isDirty
+              ? 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
+              : 'bg-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed'
+            }`}>
+          <Save size={15} />
+          Save Changes
+        </button>
+      </div>
+
+      {/* Fixed-position tooltip */}
+      {tooltip && (
+        <div
+          className="pointer-events-none fixed z-[9999]"
+          style={{ left: tooltip.x + 14, top: tooltip.y - 8, transform: 'translateY(-100%)' }}
+        >
+          <div className="bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 min-w-[240px] text-xs space-y-2.5">
+            {(() => {
+              const s = getJobSummary(tooltip.job);
+              return (
+                <>
+                  <div className="pb-2 border-b border-[#334155]">
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Bottle</p>
+                    <p className="font-bold text-white text-sm leading-tight">{s.bottleName}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    <div>
+                      <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Machine</p>
+                      <p className="font-semibold text-[#38BDF8] text-sm">{s.machineNumber}</p>
+                    </div>
+                    <div>
+                      <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Sections</p>
+                      <p className="font-semibold text-[#38BDF8] text-sm">{s.sections}</p>
+                    </div>
+                    <div>
+                      <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Weight</p>
+                      <p className="font-semibold text-white text-sm">{s.bottleWeight}</p>
+                    </div>
+                    <div>
+                      <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Cut Speed</p>
+                      <p className="font-semibold text-white text-sm">{s.cutSpeed}</p>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Daily Good Bottles (90%)</p>
+                    <p className="font-bold text-[#38BDF8] text-sm">{s.goodBottlesLabel}</p>
+                  </div>
+                  <div>
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Total Required Bottles</p>
+                    <p className="font-semibold text-[#FCD34D] text-sm">{s.totalRequired}</p>
+                  </div>
+                  <div>
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Estimated Completion</p>
+                    <p className="font-semibold text-[#34D399] text-sm">{s.jobDuration} · {s.endDateTime}</p>
+                  </div>
+                  <div className="border-t border-[#334155] pt-2 space-y-2">
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Packing Allocation</p>
+                    {s.selectedPackaging.length > 0 ? (
+                      <div className="space-y-0.5">
+                        {s.selectedPackaging.map((item) => (
+                          <div key={item.code} className="flex items-center justify-between">
+                            <span className="text-white text-xs">
+                              <span className="bg-[#334155] px-1.5 py-0.5 rounded mr-1.5 font-bold text-[10px]">{item.code}</span>
+                            </span>
+                            <span className="text-[#38BDF8] font-semibold text-xs">{formatNumber(item.quantity)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[#94A3B8] text-xs">No packaging selected</p>
+                    )}
+                  </div>
+                  <div className="border-t border-[#334155] pt-2 flex items-center justify-between">
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px]">Pallet Packing</p>
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${s.palletPacking === 'YES' ? 'bg-[#16A34A] text-white' : 'bg-[#DC2626] text-white'}`}>
+                      {s.palletPacking}
+                    </span>
+                  </div>
+                </>
+              );
+            })()}
+            <div className="absolute top-full left-4 border-l-[5px] border-r-[5px] border-t-[5px] border-l-transparent border-r-transparent border-t-[#1E293B]" />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

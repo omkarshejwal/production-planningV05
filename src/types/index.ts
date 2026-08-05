@@ -175,11 +175,6 @@ export interface NotificationItem {
 export type ActiveModule =
   | 'Dashboard'
   | 'Production Planning'
-  | 'Production Report'
   | 'Machines'
-  | 'Inventory'
-  | 'Quality Control'
-  | 'Dispatch'
-  | 'Reports'
   | 'Settings'
   | 'Profile';

@@ -1,182 +1,120 @@
-import React from 'react';
-import {
-  Printer,
-  FileSpreadsheet,
-  RotateCw,
-  Plus,
-} from 'lucide-react';
+import React, { useState } from 'react';
+import { Download, Filter, Printer, RefreshCw } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { exportToCSV, printPage } from '../../utils/calculations';
 
 interface PlanningFiltersProps {
-  onRefresh: () => void;
+  onRefresh?: () => void;
 }
 
-export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
-  onRefresh,
-}) => {
-  const {
-    selectedMonth,
-    setSelectedMonth,
-    fromDate,
-    setFromDate,
-    toDate,
-    setToDate,
-    openDrawerForEdit,
-    planningEntries,
-    totalRawMaterialConsumptionTons,
-  } = useERP();
+export const PlanningFilters: React.FC<PlanningFiltersProps> = ({ onRefresh }) => {
+  const { selectedMonth, jobs, setFromDate, setToDate } = useERP();
 
-  // Handle Export Excel / CSV
-  const handleExportExcel = () => {
-    const headers = [
-      'Date',
-      'Machine',
-      'Bottle Name',
-      'Color',
-      'Drawing #',
-      'Section',
-      'Weight (g)',
-      'Cut/min',
-      'Day Quantity (pcs)',
-      'Draw (Tons/day)',
-      'Status',
-    ];
+  const [year, month] = selectedMonth.split('-').map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const monthLabel = new Date(year, month - 1, 1).toLocaleDateString('en-GB', {
+    month: 'long',
+    year: 'numeric',
+  });
 
-    const rows = planningEntries.map((e) => [
-      e.date,
-      e.machineId,
-      e.bottleName,
-      e.bottleColor,
-      e.drawingNumber,
-      e.section,
-      e.weightGrams,
-      e.cutPerMin,
-      e.dayQuantity,
-      e.drawTons,
-      e.status,
-    ]);
+  const [fromDate, setFrom] = useState(`${selectedMonth}-01`);
+  const [toDate, setTo] = useState(`${selectedMonth}-${String(daysInMonth).padStart(2, '0')}`);
 
-    exportToCSV(`Vitrum_Glass_Production_Plan_${selectedMonth}`, headers, rows);
+  const handleApply = () => {
+    setFromDate(fromDate);
+    setToDate(toDate);
   };
 
-  const handleApplyDate = () => {
-    // Dates are bound to state, table reacts automatically
+  const handleReset = () => {
+    setFrom(`${selectedMonth}-01`);
+    setTo(`${selectedMonth}-${String(daysInMonth).padStart(2, '0')}`);
+    setFromDate('');
+    setToDate('');
   };
 
-  const handleResetDate = () => {
-    setFromDate('2026-08-01');
-    setToDate('2026-08-31');
+  const handleExport = () => {
+    exportToCSV(
+      'production_register',
+      ['Date', 'Machine', 'Bottle ID', 'Section', 'Weight (g)', 'Cut', 'Qty', 'Draw (T)'],
+      jobs.map((j) => [
+        j.date || j.startDate,
+        j.machineId,
+        j.bottleId,
+        j.sectionCount,
+        j.weightGrams,
+        j.cutPerMin,
+        j.productionQuantity || j.grossQuantity,
+        j.drawTonsPerDay,
+      ])
+    );
   };
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4 shadow-2xs mb-4">
-      {/* Top Header Row */}
+    <div className="space-y-4">
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Production Planning</h1>
-            <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-semibold border border-blue-200">
-              August 2026 — Current Month
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            IS Machine Glass Furnace Draw & Daily Production Matrix
+          <h1 className="text-[22px] font-bold text-[#111827]">Production Planning</h1>
+          <p className="text-sm text-[#6B7280] mt-0.5">
+            {monthLabel} &mdash; Current Month
           </p>
         </div>
-
-        <div className="flex items-center gap-3 flex-wrap justify-end">
-          <div className="min-w-56 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right shadow-2xs">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-              Total Raw Material Consumption
-            </div>
-            <div className="mt-1 text-lg font-bold text-slate-900">
-              {totalRawMaterialConsumptionTons.toFixed(2)} T
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
           <button
             onClick={printPage}
-            className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 flex items-center gap-1.5 shadow-2xs transition-colors"
-          >
-            <Printer className="w-3.5 h-3.5" /> Print
+            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+            <Printer size={14} /> Print
           </button>
-
           <button
-            onClick={handleExportExcel}
-            className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 flex items-center gap-1.5 shadow-2xs transition-colors"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" /> Export Excel
+            onClick={handleExport}
+            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+            <Download size={14} /> Export
           </button>
-
           <button
             onClick={onRefresh}
-            className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 flex items-center gap-1.5 shadow-2xs transition-colors"
-          >
-            <RotateCw className="w-3.5 h-3.5" /> Refresh
+            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+            <RefreshCw size={14} /> Refresh
           </button>
-
-          <button
-            onClick={() => openDrawerForEdit(null)}
-            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Add Production Job
-          </button>
-          </div>
         </div>
       </div>
 
-      {/* Date Filter & Month Selector Row */}
-      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 flex flex-wrap items-center gap-3 text-xs">
-        <div className="flex items-center gap-3 flex-wrap">
-
-          <div className="flex items-center gap-2">
-            <label className="text-slate-500 font-medium">Month:</label>
-            <select
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="bg-white border border-slate-300 rounded-md px-2.5 py-1 font-semibold text-slate-800"
-            >
-              <option value="2026-08">August 2026 (Current)</option>
-              <option value="2026-09">September 2026</option>
-              <option value="2026-10">October 2026</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <label className="text-slate-500 font-medium">From Date:</label>
+      {/* Filters */}
+      <div className="bg-white border border-[#E5E7EB] rounded-lg p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Filter size={14} className="text-[#6B7280]" />
+          <span className="text-sm font-semibold text-[#374151]">Filters</span>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs font-medium text-[#6B7280] mb-1">From Date</label>
             <input
               type="date"
               value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="bg-white border border-slate-300 rounded-md px-2 py-1 font-medium text-slate-800"
+              onChange={(e) => setFrom(e.target.value)}
+              className="h-9 px-2.5 text-sm border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]"
             />
           </div>
-
-          <div className="flex items-center gap-2">
-            <label className="text-slate-500 font-medium">To Date:</label>
+          <div>
+            <label className="block text-xs font-medium text-[#6B7280] mb-1">To Date</label>
             <input
               type="date"
               value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="bg-white border border-slate-300 rounded-md px-2 py-1 font-medium text-slate-800"
+              onChange={(e) => setTo(e.target.value)}
+              className="h-9 px-2.5 text-sm border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]"
             />
           </div>
-
-          <button
-            onClick={handleApplyDate}
-            className="px-3 py-1 bg-blue-600 text-white rounded-md font-bold hover:bg-blue-700 transition-colors"
-          >
-            Apply
-          </button>
-
-          <button
-            onClick={handleResetDate}
-            className="px-2.5 py-1 text-slate-600 border border-slate-300 bg-white rounded-md font-medium hover:bg-slate-100 transition-colors"
-          >
-            Reset
-          </button>
+          <div className="flex items-end gap-2">
+            <button
+              onClick={handleApply}
+              className="h-9 px-4 text-sm font-semibold bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors">
+              Apply
+            </button>
+            <button
+              onClick={handleReset}
+              className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+              Reset
+            </button>
+          </div>
         </div>
       </div>
     </div>

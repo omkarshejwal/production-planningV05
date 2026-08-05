@@ -2,12 +2,7 @@ import React, { useState } from 'react';
 import {
   LayoutDashboard,
   CalendarDays,
-  FileSpreadsheet,
   Cpu,
-  Boxes,
-  ShieldCheck,
-  Truck,
-  BarChart3,
   Sliders,
   User,
   LogOut,
@@ -27,12 +22,7 @@ interface MenuNavItem {
 const NAV_ITEMS: MenuNavItem[] = [
   { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, badge: 'Excel' },
-  { id: 'Production Report', label: 'Production Report', icon: FileSpreadsheet },
   { id: 'Machines', label: 'Machines', icon: Cpu },
-  { id: 'Inventory', label: 'Inventory', icon: Boxes },
-  { id: 'Quality Control', label: 'Quality Control', icon: ShieldCheck },
-  { id: 'Dispatch', label: 'Dispatch', icon: Truck },
-  { id: 'Reports', label: 'Reports', icon: BarChart3 },
   { id: 'Settings', label: 'Settings', icon: Sliders },
   { id: 'Profile', label: 'Profile', icon: User },
 ];
