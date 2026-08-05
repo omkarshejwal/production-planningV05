@@ -2,16 +2,51 @@ import { DailyPlanningEntry, ISMachine, ProductionJob } from '../types';
 
 /**
  * Calculates Glass Melt Draw in Metric Tons Per Day
- * Formula: (Cut/min * 60 min/hr * 24 hrs/day * Sections * Weight in Grams) / 1,000,000 g/Ton
+ * Formula: (Cut/min * 60 min/hr * 24 hrs/day * Weight in Grams) / 1,000,000 g/Ton
  */
 export function calculateDrawTonsPerDay(
   cutPerMin: number,
-  sections: number,
-  weightGrams: number
+  sectionsOrWeight: number,
+  weightGrams?: number
 ): number {
-  if (!cutPerMin || !sections || !weightGrams) return 0;
-  const totalGrams = cutPerMin * 60 * 24 * sections * weightGrams;
+  const resolvedWeight = weightGrams ?? sectionsOrWeight;
+  if (!cutPerMin || !resolvedWeight) return 0;
+  const totalGrams = cutPerMin * 60 * 24 * resolvedWeight;
   return Number((totalGrams / 1000000).toFixed(2));
+}
+
+/**
+ * Calculates good bottles per day using a 90% yield.
+ */
+export function calculateGoodBottlesPerDay(cutPerMin: number): number {
+  if (!cutPerMin) return 0;
+  return Math.round(calculateDailyProductionPcs(cutPerMin) * 0.9);
+}
+
+/**
+ * Calculates estimated production days from required bottles and good bottles per day.
+ */
+export function calculateEstimatedCompletionDays(requiredBottles: number, goodBottlesPerDay: number): number {
+  if (!requiredBottles || !goodBottlesPerDay) return 0;
+  return Number((requiredBottles / goodBottlesPerDay).toFixed(2));
+}
+
+/**
+ * Formats a date/time pair in a human readable form.
+ */
+export function formatDateTime(dateStr: string, timeStr: string): string {
+  if (!dateStr || !timeStr) return '';
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  const date = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  return date.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
 }
 
 /**
@@ -42,11 +77,13 @@ export function calculateBottlesPerHour(speed: number, sections: number): number
 }
 
 /**
- * Calculates Daily Production in Pieces (24 hours)
+ * Calculates Daily Production in Pieces (24 hours).
+ * When sections are supplied, preserves the legacy section-aware behavior.
  */
-export function calculateDailyProductionPcs(speed: number, sections: number): number {
-  if (!speed || !sections) return 0;
-  return speed * sections * 60 * 24;
+export function calculateDailyProductionPcs(speed: number, sections?: number): number {
+  if (!speed) return 0;
+  if (!sections) return Math.round(speed * 60 * 24);
+  return Math.round(speed * sections * 60 * 24);
 }
 
 /**

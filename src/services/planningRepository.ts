@@ -8,6 +8,7 @@ import {
   JobPackagingRow,
   ProductionJobRow,
 } from '../data/planningSchema';
+import { calculateGoodBottlesPerDay } from '../utils/calculations';
 
 const JOBS_STORAGE_KEY = 'vitrum-production_job-v1';
 const PACKAGING_STORAGE_KEY = 'vitrum-job_packaging-v1';
@@ -30,6 +31,28 @@ const writeRows = <T>(key: string, rows: T[]): void => {
 const jobKey = (row: ProductionJobRow): string =>
   [row.plan_date, row.machine_no, row.bottle_id, row.section, row.start_time].join('|');
 
+const parseTimeToMinutes = (time: string): number => {
+  const [hours, minutes] = time.split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+const buildDateTime = (date: string, time: string): Date => {
+  const [year, month, day] = date.split('-').map(Number);
+  const [hours, minutes] = time.split(':').map(Number);
+  return new Date(year, month - 1, day, hours, minutes, 0, 0);
+};
+
+const formatTime = (date: Date): string =>
+  `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+const estimateJobWindow = (row: ProductionJobRow): { start: Date; end: Date } => {
+  const start = buildDateTime(row.plan_date, row.start_time);
+  const goodBottlesPerDay = calculateGoodBottlesPerDay(row.speeds);
+  const durationMinutes = goodBottlesPerDay > 0 ? (row.quantity / goodBottlesPerDay) * 24 * 60 : 0;
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  return { start, end };
+};
+
 export const planningRepository = {
   getMachines() {
     return MACHINE_MASTER;
@@ -43,6 +66,10 @@ export const planningRepository = {
     return BOTTLE_CONFIGURATION
       .filter((row) => row.machine_no === machine_no && row.bottle_id === bottle_id)
       .sort((a, b) => a.section - b.section);
+  },
+
+  getBottleConfiguration(machine_no: string, bottle_id: string, section: number): BottleConfigurationRow | undefined {
+    return this.getBottleConfigurations(machine_no, bottle_id).find((row) => row.section === section);
   },
 
   getProductionJobs(): ProductionJobRow[] {
@@ -107,12 +134,7 @@ export const planningRepository = {
       return { ok: false, error: 'Section out of machine range' };
     }
 
-    const config = BOTTLE_CONFIGURATION.find(
-      (c) =>
-        c.machine_no === payload.machine_no &&
-        c.bottle_id === payload.bottle_id &&
-        c.section === payload.section
-    );
+    const config = this.getBottleConfiguration(payload.machine_no, payload.bottle_id, payload.section);
 
     if (!config) {
       return { ok: false, error: 'No bottle_configuration for selected machine, bottle, and section' };
@@ -120,19 +142,12 @@ export const planningRepository = {
 
     const jobs = this.getProductionJobs();
 
-    // Same-day overlap check on machine
-    const toMin = (time: string) => {
-      const [h, m] = time.split(':').map(Number);
-      return h * 60 + m;
-    };
-    const nextStart = toMin(payload.start_time);
-    const nextEnd = toMin(payload.estimated_completion);
+    const nextWindow = estimateJobWindow(payload);
 
     const overlaps = jobs.some((job) => {
-      if (job.machine_no !== payload.machine_no || job.plan_date !== payload.plan_date) return false;
-      const existingStart = toMin(job.start_time);
-      const existingEnd = toMin(job.estimated_completion);
-      return nextStart < existingEnd && nextEnd > existingStart;
+      if (job.machine_no !== payload.machine_no) return false;
+      const existingWindow = estimateJobWindow(job);
+      return nextWindow.start < existingWindow.end && nextWindow.end > existingWindow.start;
     });
 
     if (overlaps) {
@@ -146,6 +161,51 @@ export const planningRepository = {
 
     const persisted = [...jobs, payload];
     writeRows(JOBS_STORAGE_KEY, persisted);
+    return { ok: true };
+  },
+
+  createProductionJobsBatch(payloads: ProductionJobRow[]): { ok: boolean; error?: string } {
+    if (payloads.length === 0) return { ok: true };
+
+    const existingJobs = this.getProductionJobs();
+    const staged: ProductionJobRow[] = [];
+
+    for (const payload of payloads) {
+      const machine = MACHINE_MASTER.find((m) => m.machine_no === payload.machine_no);
+      if (!machine) return { ok: false, error: 'Invalid machine_no' };
+
+      const bottle = BOTTLE_MASTER.find((b) => b.bottle_id === payload.bottle_id);
+      if (!bottle) return { ok: false, error: 'Invalid bottle_id' };
+
+      if (payload.section > machine.max_section || payload.section <= 0) {
+        return { ok: false, error: 'Section out of machine range' };
+      }
+
+      const config = this.getBottleConfiguration(payload.machine_no, payload.bottle_id, payload.section);
+      if (!config) {
+        return { ok: false, error: 'No bottle_configuration for selected machine, bottle, and section' };
+      }
+
+      const duplicateKey = [...existingJobs, ...staged].some((job) => jobKey(job) === jobKey(payload));
+      if (duplicateKey) {
+        return { ok: false, error: 'Duplicate production_job key fields' };
+      }
+
+      const nextWindow = estimateJobWindow(payload);
+      const overlaps = [...existingJobs, ...staged].some((job) => {
+        if (job.machine_no !== payload.machine_no) return false;
+        const existingWindow = estimateJobWindow(job);
+        return nextWindow.start < existingWindow.end && nextWindow.end > existingWindow.start;
+      });
+
+      if (overlaps) {
+        return { ok: false, error: 'Overlapping job schedule on same machine' };
+      }
+
+      staged.push(payload);
+    }
+
+    writeRows(JOBS_STORAGE_KEY, [...existingJobs, ...staged]);
     return { ok: true };
   },
 

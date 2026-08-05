@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Printer,
   FileSpreadsheet,
@@ -24,9 +24,8 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
     setToDate,
     openDrawerForEdit,
     planningEntries,
+    totalRawMaterialConsumptionTons,
   } = useERP();
-
-  const [showFilters, setShowFilters] = useState(true);
 
   // Handle Export Excel / CSV
   const handleExportExcel = () => {
@@ -86,8 +85,17 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
           </p>
         </div>
 
-        {/* Right Top Buttons */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          <div className="min-w-56 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right shadow-2xs">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Total Raw Material Consumption
+            </div>
+            <div className="mt-1 text-lg font-bold text-slate-900">
+              {totalRawMaterialConsumptionTons.toFixed(2)} T
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={printPage}
             className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 flex items-center gap-1.5 shadow-2xs transition-colors"
@@ -115,6 +123,7 @@ export const PlanningFilters: React.FC<PlanningFiltersProps> = ({
           >
             <Plus className="w-4 h-4" /> Add Production Job
           </button>
+          </div>
         </div>
       </div>
 
