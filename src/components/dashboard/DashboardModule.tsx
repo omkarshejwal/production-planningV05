@@ -29,7 +29,7 @@ import {
   Legend,
 } from 'recharts';
 import { useERP } from '../../context/ERPContext';
-import { formatNumber, formatDecimal } from '../../utils/calculations';
+import { calculateProductionMetrics, formatNumber, formatDecimal } from '../../utils/calculations';
 import { StatusBadge, PriorityBadge } from '../common/StatusBadge';
 
 const PRODUCTION_TREND_DATA = [
@@ -339,6 +339,14 @@ export const DashboardModule: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium text-slate-800">
                 {jobs.map((j) => (
+                  (() => {
+                    const draw = calculateProductionMetrics(
+                      j.cutPerMin,
+                      j.weightGrams,
+                      j.machineId,
+                      j.productionQuantity || j.grossQuantity
+                    ).drawTons;
+                    return (
                   <tr
                     key={j.id}
                     onClick={() => openDrawerForEdit(j)}
@@ -348,7 +356,7 @@ export const DashboardModule: React.FC = () => {
                     <td className="p-2.5">{j.customerName}</td>
                     <td className="p-2.5 font-mono">{j.machineId}</td>
                     <td className="p-2.5 font-mono font-bold">{formatNumber(j.grossQuantity)}</td>
-                    <td className="p-2.5 font-mono">{j.drawTonsPerDay} T</td>
+                    <td className="p-2.5 font-mono">{formatDecimal(draw, 2)} T</td>
                     <td className="p-2.5">
                       <PriorityBadge priority={j.priority} />
                     </td>
@@ -356,6 +364,8 @@ export const DashboardModule: React.FC = () => {
                       <StatusBadge status={j.status} />
                     </td>
                   </tr>
+                    );
+                  })()
                 ))}
               </tbody>
             </table>

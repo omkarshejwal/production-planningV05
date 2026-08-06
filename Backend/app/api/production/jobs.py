@@ -43,9 +43,10 @@ def create_job(
         raise HTTPException(status_code=404, detail="Bottle configuration not found for this machine/section")
 
     # 2. Execute Factory Formula (The Calculation Engine)
-    running_minutes = 1440 - job_in.changeover_minutes
-    speed = bottle_config.speeds 
-    calculated_qty = speed * machine.gob_type * running_minutes
+    speed = bottle_config.speeds
+    multiplier = 3 if job_in.machine_no in (1, 4) else 2
+    calculated_qty = speed * multiplier * 60 * 24
+    calculated_draw = (calculated_qty * bottle_config.weight) / Decimal("1000000")
 
     # 3. Create the Job
     new_job = ProductionJob(
@@ -56,7 +57,7 @@ def create_job(
         section=job_in.section,
         weight=bottle_config.weight, # Automatically pulled from DB Configuration!
         speeds=speed,                # Automatically pulled from DB Configuration!
-        draw=job_in.draw,
+        draw=calculated_draw,
         quantity=calculated_qty,     # Automatically Calculated!
         estimated_completion=job_in.estimated_completion,
         changeover_minutes=job_in.changeover_minutes

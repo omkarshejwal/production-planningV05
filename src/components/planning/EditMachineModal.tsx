@@ -66,8 +66,7 @@ export function EditMachineModal({
   const cutSpeed = selected !== 'None' ? (lookupSpeed(machineNo, selected, section) || bottleRef.speeds) : 0;
   const bottle: BottleEntry = { name: bottleRef.name, wt: bottleRef.wt, speeds: cutSpeed };
 
-  const cut = bottle.wt > 0 ? Math.floor(bottle.wt * 0.94) : 0;
-  const prodQty = cut > 0 ? calcQty(cut, machineNo) : 0;
+  const prodQty = cutSpeed > 0 ? calcQty(cutSpeed, machineNo) : 0;
 
   const reqNum = parseFloat(requiredBottles);
   const estDays = prodQty > 0 && !isNaN(reqNum) && reqNum > 0 ? reqNum / prodQty : null;
@@ -142,7 +141,7 @@ export function EditMachineModal({
             <label className="block text-xs font-medium text-[#374151] mb-1.5">Estimated Completion</label>
             {estDays !== null ? (
               <div className="flex items-center gap-2.5 bg-[#F0FDF4] border border-[#BBF7D0] rounded-lg px-3 py-2.5">
-                <CalendarDays size={15} className="text-[#16A34A] flex-shrink-0" />
+                <CalendarDays size={15} className="text-[#16A34A] shrink-0" />
                 <p className="text-sm font-bold text-[#15803D]">≈ {estDays.toFixed(2)} Days</p>
               </div>
             ) : (
@@ -162,7 +161,7 @@ export function EditMachineModal({
                     className={`rounded-lg border transition-colors ${isSelected ? 'border-[#2563EB] bg-[#EFF6FF]' : 'border-[#E5E7EB] bg-white'}`}>
                     <div className="flex items-center gap-3 px-3 py-2.5">
                       <button type="button" onClick={() => toggleCategory(opt.key)}
-                        className={`w-4 h-4 flex-shrink-0 rounded border-2 flex items-center justify-center transition-colors
+                        className={`w-4 h-4 shrink-0 rounded border-2 flex items-center justify-center transition-colors
                           ${isSelected ? 'bg-[#2563EB] border-[#2563EB]' : 'border-[#D1D5DB] bg-white'}`}>
                         {isSelected && (
                           <svg width="8" height="6" viewBox="0 0 8 6" fill="none">

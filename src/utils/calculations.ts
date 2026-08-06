@@ -1,26 +1,114 @@
 import { DailyPlanningEntry, ISMachine, ProductionJob } from '../types';
 
+export interface ProductionMetrics {
+  totalQuantity: number;
+  goodBottles: number;
+  goodLiters: number;
+  drawTons: number;
+  drawQuantity: number;
+  hourlyQuantity: number;
+  machineGob: number;
+}
+
+export const MACHINE_GOB_COUNTS: Record<number, number> = {
+  1: 3,
+  2: 2,
+  3: 2,
+  4: 3,
+};
+
+export function calculateDraw(quantity: number, weightGrams: number): number {
+  const safeQuantity = normalizePositive(quantity);
+  const safeWeight = normalizePositive(weightGrams);
+  return safeQuantity > 0 && safeWeight > 0
+    ? Number(((safeQuantity * safeWeight) / 1000000).toFixed(2))
+    : 0;
+}
+
+const normalizePositive = (value: number): number => {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value;
+};
+
+const resolveMachineNumber = (machineNo?: string | number): number | null => {
+  if (machineNo === undefined || machineNo === null) return null;
+  if (typeof machineNo === 'number') return Number.isFinite(machineNo) ? machineNo : null;
+  const digits = machineNo.match(/\d+/g);
+  if (!digits || digits.length === 0) return null;
+  const parsed = Number(digits[digits.length - 1]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+export const resolveMachineGob = (
+  machine?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
+): number => {
+  if (machine && typeof machine === 'object') {
+    const explicitGob = Number(machine.gobCount);
+    if (Number.isFinite(explicitGob) && explicitGob > 0) {
+      return explicitGob;
+    }
+    const fromId = resolveMachineNumber(machine.id);
+    if (fromId !== null && MACHINE_GOB_COUNTS[fromId]) {
+      return MACHINE_GOB_COUNTS[fromId];
+    }
+    return 1;
+  }
+
+  const machineNumber = resolveMachineNumber(machine);
+  if (machineNumber === null) return 1;
+  return MACHINE_GOB_COUNTS[machineNumber] ?? 1;
+};
+
+export function calculateProductionMetrics(
+  cutPerMin: number,
+  weightGrams: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>,
+  requiredQuantity?: number
+): ProductionMetrics {
+  const safeCut = normalizePositive(cutPerMin);
+  const safeWeight = normalizePositive(weightGrams);
+  const machineGob = resolveMachineGob(machineNo);
+
+  const totalQuantity = safeCut > 0
+    ? Math.round(safeCut * machineGob * 60 * 24)
+    : 0;
+  const requiredQty = normalizePositive(requiredQuantity ?? 0);
+  const drawQuantity = requiredQty > 0 ? Math.round(requiredQty) : totalQuantity;
+  const goodBottles = totalQuantity > 0 ? Math.round(totalQuantity * 0.90) : 0;
+  const drawTons = calculateDraw(drawQuantity, safeWeight);
+
+  return {
+    totalQuantity,
+    goodBottles,
+    goodLiters: goodBottles > 0 ? Number((goodBottles / 100000).toFixed(2)) : 0,
+    drawTons,
+    drawQuantity,
+    hourlyQuantity: totalQuantity > 0 ? Math.round(totalQuantity / 24) : 0,
+    machineGob,
+  };
+}
+
 /**
  * Calculates Glass Melt Draw in Metric Tons Per Day
  * Formula: (Cut/min * 60 min/hr * 24 hrs/day * Weight in Grams) / 1,000,000 g/Ton
  */
 export function calculateDrawTonsPerDay(
   cutPerMin: number,
-  sectionsOrWeight: number,
-  weightGrams?: number
+  weightGrams: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>,
+  requiredQuantity?: number
 ): number {
-  const resolvedWeight = weightGrams ?? sectionsOrWeight;
-  if (!cutPerMin || !resolvedWeight) return 0;
-  const totalGrams = cutPerMin * 60 * 24 * resolvedWeight;
-  return Number((totalGrams / 1000000).toFixed(2));
+  return calculateProductionMetrics(cutPerMin, weightGrams, machineNo, requiredQuantity).drawTons;
 }
 
 /**
  * Calculates good bottles per day using a 90% yield.
  */
-export function calculateGoodBottlesPerDay(cutPerMin: number): number {
-  if (!cutPerMin) return 0;
-  return Math.round(calculateDailyProductionPcs(cutPerMin) * 0.9);
+export function calculateGoodBottlesPerDay(
+  cutPerMin: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
+): number {
+  return calculateProductionMetrics(cutPerMin, 0, machineNo).goodBottles;
 }
 
 /**
@@ -50,38 +138,58 @@ export function formatDateTime(dateStr: string, timeStr: string): string {
 }
 
 /**
- * Calculates Gross Day Production Quantity in Pieces
- * Formula: Cut/min * 60 * 24 * Sections
+ * Calculates Gross Day Production Quantity in Pieces.
+ * Uses machine gob count when machineNo is provided; otherwise falls back to sections.
  */
-export function calculateGrossDayQuantity(cutPerMin: number, sections: number): number {
-  if (!cutPerMin || !sections) return 0;
-  return Math.round(cutPerMin * 60 * 24 * sections);
+export function calculateGrossDayQuantity(
+  cutPerMin: number,
+  sections?: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
+): number {
+  if (!cutPerMin) return 0;
+  if (machineNo !== undefined) {
+    return calculateProductionMetrics(cutPerMin, 0, machineNo).totalQuantity;
+  }
+  if (!sections) return 0;
+  return Math.round(cutPerMin * sections * 60 * 24);
 }
 
 /**
- * Calculates Bottles Per Minute
- * Formula: Production Speed (Cut/min) * Sections
+ * Calculates Bottles Per Minute.
+ * Uses machine gob count when machineNo is provided; otherwise falls back to sections.
  */
-export function calculateBottlesPerMin(speed: number, sections: number): number {
-  if (!speed || !sections) return 0;
+export function calculateBottlesPerMin(
+  speed: number,
+  sections?: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
+): number {
+  if (!speed) return 0;
+  const gob = machineNo !== undefined ? resolveMachineGob(machineNo) : 0;
+  if (gob > 0) return speed * gob;
+  if (!sections) return 0;
   return speed * sections;
 }
 
 /**
- * Calculates Bottles Per Hour
- * Formula: Speed * Sections * 60 min
+ * Calculates Bottles Per Hour.
+ * Uses machine gob count when machineNo is provided; otherwise falls back to sections.
  */
-export function calculateBottlesPerHour(speed: number, sections: number): number {
-  if (!speed || !sections) return 0;
-  return speed * sections * 60;
+export function calculateBottlesPerHour(
+  speed: number,
+  sections?: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
+): number {
+  return calculateBottlesPerMin(speed, sections, machineNo) * 60;
 }
 
 /**
  * Calculates Daily Production in Pieces (24 hours).
  * When sections are supplied, preserves the legacy section-aware behavior.
  */
-export function calculateDailyProductionPcs(speed: number, sections?: number): number {
+export function calculateDailyProductionPcs(speed: number, sections?: number, machineNo?: string | number): number {
   if (!speed) return 0;
+  const hasKnownMachine = machineNo !== undefined && machineNo !== null && resolveMachineNumber(machineNo) !== null;
+  if (hasKnownMachine) return calculateProductionMetrics(speed, 0, machineNo).totalQuantity;
   if (!sections) return Math.round(speed * 60 * 24);
   return Math.round(speed * sections * 60 * 24);
 }
@@ -90,9 +198,11 @@ export function calculateDailyProductionPcs(speed: number, sections?: number): n
  * Calculates Daily Production in Metric Tons
  */
 export function calculateDailyProductionTons(speed: number, sections: number, weightGrams: number): number {
-  if (!speed || !sections || !weightGrams) return 0;
-  const totalGrams = speed * sections * 60 * 24 * weightGrams;
-  return Number((totalGrams / 1000000).toFixed(2));
+  if (!speed || !weightGrams) return 0;
+  const totalQuantity = sections > 0
+    ? speed * sections * 60 * 24
+    : calculateProductionMetrics(speed, weightGrams).totalQuantity;
+  return calculateDraw(totalQuantity, weightGrams);
 }
 
 /**
@@ -106,8 +216,13 @@ export function calculateRemainingQuantity(grossTarget: number, produced: number
 /**
  * Calculates Production Duration in Days and Hours
  */
-export function calculateProductionDuration(remainingQuantity: number, speed: number, sections: number): { days: number; hours: number; durationText: string } {
-  const bpm = calculateBottlesPerHour(speed, sections);
+export function calculateProductionDuration(
+  remainingQuantity: number,
+  speed: number,
+  sections?: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
+): { days: number; hours: number; durationText: string } {
+  const bpm = calculateBottlesPerHour(speed, sections, machineNo);
   if (bpm <= 0 || remainingQuantity <= 0) {
     return { days: 0, hours: 0, durationText: '0d 0h' };
   }
@@ -128,33 +243,50 @@ export function calculateEstimatedCompletionDate(
   startDateStr: string,
   grossQuantity: number,
   cutPerMin: number,
-  sections: number
+  sections?: number,
+  machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
 ): string {
-  if (!startDateStr || !grossQuantity || !cutPerMin || !sections) return startDateStr;
-  const dailyPcs = calculateGrossDayQuantity(cutPerMin, sections);
+  if (!startDateStr || !grossQuantity || !cutPerMin) return startDateStr;
+  const dailyPcs = calculateGrossDayQuantity(cutPerMin, sections, machineNo);
   if (dailyPcs <= 0) return startDateStr;
   const daysNeeded = Math.ceil(grossQuantity / dailyPcs);
-  
+
   const start = new Date(startDateStr);
   start.setDate(start.getDate() + daysNeeded);
   return start.toISOString().split('T')[0];
+}
+
+export function addCalendarDays(date: Date, days: number): Date {
+  const nextDate = new Date(date);
+  if (!Number.isFinite(days) || days === 0) return nextDate;
+
+  const wholeDays = days >= 0 ? Math.floor(days) : Math.ceil(days);
+  const fractionalDays = days - wholeDays;
+
+  nextDate.setDate(nextDate.getDate() + wholeDays);
+  if (fractionalDays !== 0) {
+    nextDate.setMinutes(nextDate.getMinutes() + fractionalDays * 24 * 60);
+  }
+  return nextDate;
 }
 
 /**
  * Format numbers with commas (e.g. 125,000)
  */
 export function formatNumber(num: number): string {
-  return new Intl.NumberFormat('en-US').format(Math.round(num));
+  const safeNumber = Number.isFinite(num) ? num : 0;
+  return new Intl.NumberFormat('en-US').format(Math.round(safeNumber));
 }
 
 /**
  * Format decimal numbers (e.g. 12.50)
  */
 export function formatDecimal(num: number, decimals: number = 2): string {
+  const safeNumber = Number.isFinite(num) ? num : 0;
   return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
-  }).format(num);
+  }).format(safeNumber);
 }
 
 /**

@@ -15,10 +15,9 @@ import {
 import { useERP } from '../../context/ERPContext';
 import { ProductionJob } from '../../types';
 import {
-  calculateDailyProductionPcs,
+  addCalendarDays,
+  calculateProductionMetrics,
   calculateEstimatedCompletionDays,
-  calculateGoodBottlesPerDay,
-  calculateDrawTonsPerDay,
   formatDateDisplay,
   formatDateTime,
   formatDecimal,
@@ -28,10 +27,7 @@ import {
 
 type DraftFields = {
   sectionCount?: string;
-  weightGrams?: string;
-  cutPerMin?: string;
   quantity?: string;
-  drawTonsPerDay?: string;
 };
 
 const PAGE_SIZE = 20;
@@ -90,7 +86,13 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
   const [entryWeight, setEntryWeight] = useState('');
   const [entryCut, setEntryCut] = useState('');
   const [entryQty, setEntryQty] = useState('');
-  const [entryDraw, setEntryDraw] = useState('');
+  const entryMetrics = calculateProductionMetrics(
+    Number(entryCut || 0),
+    Number(entryWeight || 0),
+    activeEntry?.machineId,
+    Number(entryQty || 0)
+  );
+  const entryDraw = entryMetrics.drawTons;
 
   const displayedMachines = machines;
 
@@ -172,14 +174,25 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
     const config = getBottleConfiguration(job.machineId, job.bottleId, job.sectionCount);
     const weight = config?.weight ?? job.weightGrams;
     const cutSpeed = config?.speeds ?? job.cutPerMin;
-    const hourlyProduction = calculateDailyProductionPcs(cutSpeed) / 24;
-    const dailyProduction = calculateDailyProductionPcs(cutSpeed);
-    const plannedProduction = Math.round(dailyProduction * 0.9);
-    const goodPerDay = calculateGoodBottlesPerDay(cutSpeed);
-    const estimatedDays = calculateEstimatedCompletionDays(job.productionQuantity || job.grossQuantity, goodPerDay);
     const startDateTime = new Date(`${job.date || job.startDate}T${job.startTime || '07:00'}:00`);
-    const completion = new Date(startDateTime.getTime() + estimatedDays * 24 * 60 * 60 * 1000);
-    const draw = Number(calculateDrawTonsPerDay(cutSpeed, weight).toFixed(2));
+
+    const requiredQty =
+      job.productionQuantity || job.grossQuantity;
+
+    const metrics = calculateProductionMetrics(cutSpeed, weight, job.machineId, requiredQty);
+
+    const hourlyProduction = metrics.hourlyQuantity;
+    const dailyProduction = metrics.totalQuantity;
+    const plannedProduction = metrics.goodBottles;
+    const dailyPerDay = metrics.totalQuantity;
+
+    const estimatedDays =
+      calculateEstimatedCompletionDays(
+        requiredQty,
+        dailyPerDay
+      );
+
+    const completion = addCalendarDays(startDateTime, estimatedDays);
     const packagingRows = packagingByJobKey.get(getJobKey(job)) || [];
     const selectedPackaging = ['ST', 'SN', 'SB', 'BT']
       .map((code) => ({
@@ -193,16 +206,17 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
       bottleWeight: `${weight} g`,
       machineNumber: job.machineId,
       sections: job.sectionCount,
+      status: job.status,
       cutSpeed: formatDecimal(cutSpeed, 2),
-      hourlyProduction: formatNumber(Math.round(hourlyProduction)),
+      hourlyProduction: formatNumber(hourlyProduction),
       dailyProduction: formatNumber(dailyProduction),
       plannedProduction: formatNumber(plannedProduction),
-      goodBottlesLabel: `${formatDecimal(goodPerDay / 100000, 2)}L (${formatNumber(goodPerDay)} bottles)`,
+      // goodBottlesLabel: `${formatDecimal(metrics.goodLiters, 2)}L (${formatNumber(goodPerDay)} bottles)`,
       startDateTime: formatDateTime(job.date || job.startDate, job.startTime || '07:00'),
       endDateTime: formatDateTime(completion.toISOString().split('T')[0], completion.toTimeString().slice(0, 5)),
       totalRequired: formatNumber(job.productionQuantity || job.grossQuantity),
       jobDuration: `${estimatedDays.toFixed(2)} Days`,
-      draw: `${formatDecimal(draw, 2)} T`,
+      draw: `${formatDecimal(metrics.drawTons, 2)} T`,
       selectedPackaging,
       palletPacking: packagingRows.some((row) => row.pallet_packing === 'YES') ? 'YES' : 'NO',
       palletQuantity: packagingRows.find((row) => row.packaging_type === 'SN')?.pallet_quantity || 0,
@@ -212,7 +226,22 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
   const calculateTotalDraw = (date: string): number => {
     return jobs
       .filter((job) => getJobDate(job) === date)
-      .reduce((sum, job) => sum + (job.drawTonsPerDay || 0), 0);
+      .reduce((sum, job) => {
+        const quantity =
+          job.productionQuantity ||
+          job.grossQuantity;
+
+        const config = getBottleConfiguration(job.machineId, job.bottleId, job.sectionCount);
+        const resolvedWeight = config?.weight ?? job.weightGrams;
+        const resolvedCut = config?.speeds ?? job.cutPerMin;
+
+        return sum + calculateProductionMetrics(
+          resolvedCut,
+          resolvedWeight,
+          job.machineId,
+          quantity
+        ).drawTons;
+      }, 0);
   };
 
   const setDraft = (jobId: string, field: keyof DraftFields, value: string) => {
@@ -251,7 +280,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
   const commitNumeric = (
     job: ProductionJob,
     field: keyof DraftFields,
-    key: 'weightGrams' | 'cutPerMin' | 'productionQuantity' | 'drawTonsPerDay',
+    key: 'productionQuantity',
     decimals: number = 0
   ) => {
     const raw = drafts[job.id]?.[field];
@@ -273,7 +302,6 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
     setEntryWeight('');
     setEntryCut('');
     setEntryQty('');
-    setEntryDraw('');
   };
 
   const startEntry = (date: string, machineId: string) => {
@@ -288,7 +316,6 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
     if (!config) return;
     setEntryWeight(String(config.weight));
     setEntryCut(formatDecimal(config.speeds, 2));
-    setEntryDraw(formatDecimal(Number(calculateDrawTonsPerDay(config.speeds, config.weight).toFixed(2)), 1));
   };
 
   const handleEntryBottleChange = (machineId: string, value: string) => {
@@ -367,11 +394,11 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
         </div>
 
         <div className="overflow-x-auto max-h-[calc(100vh-240px)]">
-          <table className="w-full min-w-[1500px] border-collapse text-sm">
+          <table className="w-full min-w-375 border-collapse text-sm">
             <thead className="sticky top-0 z-10">
               {/* Machine group header */}
               <tr className="bg-[#DBEAFE] border-b border-[#BFDBFE]">
-                <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-[110px] sticky left-0 z-40 bg-[#DBEAFE]">
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-27.5 sticky left-0 z-40 bg-[#DBEAFE]">
                   Date
                 </th>
                 {displayedMachines.map((machine) => (
@@ -379,7 +406,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                     {machine.name}
                   </th>
                 ))}
-                <th className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] w-[80px]">
+                <th className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] w-20">
                   Total Draw
                 </th>
               </tr>
@@ -388,16 +415,16 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                 <th className="px-3 py-2 text-left text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] sticky left-0 z-40 bg-[#EFF6FF]"></th>
                 {displayedMachines.map((machine) => (
                   <React.Fragment key={`sub-${machine.id}`}>
-                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#2563EB] border-r border-[#E5E7EB] w-[160px] bg-[#EFF6FF]">
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#2563EB] border-r border-[#E5E7EB] w-40 bg-[#EFF6FF]">
                       Bottle Name
                     </th>
                     {showSection && (
-                      <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-[40px] bg-[#F5F3FF]">Sec</th>
+                      <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Sec</th>
                     )}
-                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[55px]">Wt</th>
-                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[60px]">Cut</th>
-                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[60px]">Qty</th>
-                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[55px]">Draw</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Wt</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Cut</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Qty</th>
+                    <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Draw</th>
                   </React.Fragment>
                 ))}
                 <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151]"></th>
@@ -457,21 +484,35 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                         if (completedJob) {
                           const cellBg = 'bg-[#F3F4F6]';
                           const txt = 'text-[10px] text-[#6B7280]';
-                          const qty = completedJob.productionQuantity || completedJob.grossQuantity || 0;
-                          const good = Math.round(qty * 0.9);
+                          const completedMetrics = calculateProductionMetrics(
+                            completedJob.cutPerMin,
+                            completedJob.weightGrams,
+                            completedJob.machineId
+                          );
+
+                          const completedQuantity =
+                            completedJob.productionQuantity || completedJob.grossQuantity;
+
+                          const completedDraw = calculateProductionMetrics(
+                            completedJob.cutPerMin,
+                            completedJob.weightGrams,
+                            completedJob.machineId,
+                            completedQuantity
+                          ).drawTons;
+                          const good = completedMetrics.goodBottles;
                           return (
                             <React.Fragment key={machine.id}>
                               <td className={`px-2 py-1.5 border-l-2 border-r border-[#E5E7EB] ${cellBg}`}
                                 style={{ borderLeftColor: '#9CA3AF' }}>
                                 <div className="flex items-center gap-1 mb-0.5">
-                                  <Lock size={7} className="text-[#9CA3AF] flex-shrink-0" />
+                                  <Lock size={7} className="text-[#9CA3AF] shrink-0" />
                                   <span className="text-[9px] font-bold text-[#9CA3AF]">JOB {completedIdx + 1}</span>
                                 </div>
                                 <p className="text-[10px] font-semibold text-[#4B5563] truncate leading-tight">
                                   {bottleById.get(completedJob.bottleId)?.name || completedJob.bottleId}
                                 </p>
                                 <div className="flex items-center gap-0.5 mt-0.5">
-                                  <Clock size={7} className="text-[#9CA3AF] flex-shrink-0" />
+                                  <Clock size={7} className="text-[#9CA3AF] shrink-0" />
                                   <span className="text-[8px] text-[#9CA3AF]">
                                     {formatTimeDisplay(completedJob.startTime)} → {formatTimeDisplay(completedJob.expectedEndTime)}
                                   </span>
@@ -494,12 +535,13 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                 <span className={txt}>{completedJob.cutPerMin || '—'}</span>
                               </td>
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                <span className={txt}>{qty > 0 ? `${(qty * 0.9 / 100000).toFixed(2)}L` : '—'}</span>
+                                {/* <span className={txt}>{completedMetrics.goodBottles > 0 ? `${formatDecimal(completedMetrics.goodLiters, 2)}L` : '—'}</span> */}
                               </td>
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 <span className={txt}>
-                                  {completedJob.drawTonsPerDay > 0 ? completedJob.drawTonsPerDay.toFixed(1) : '—'}
-                                </span>
+                                  {completedDraw > 0
+                                    ? formatDecimal(completedDraw, 2)
+                                    : '—'}                                </span>
                               </td>
                             </React.Fragment>
                           );
@@ -522,7 +564,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                   <button
                                     onClick={() => setActiveEntry(null)}
                                     title="Cancel entry"
-                                    className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                    className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
                                     <X size={8} />
                                   </button>
                                   <input
@@ -552,7 +594,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                     <button
                                       onClick={() => openDrawerForEdit(running, machine.id, date)}
                                       title="Edit"
-                                      className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                      className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                       <Edit2 size={7} />
                                     </button>
                                     <button
@@ -560,12 +602,12 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                         if (window.confirm('Delete Job?')) deleteJob(running.id);
                                       }}
                                       title="Remove job"
-                                      className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                      className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
                                       <Trash2 size={7} />
                                     </button>
                                   </div>
                                   <div className="flex items-center gap-0.5 mb-1">
-                                    <Clock size={7} className="text-[#6B7280] flex-shrink-0" />
+                                    <Clock size={7} className="text-[#6B7280] shrink-0" />
                                     <span className="text-[8px] text-[#6B7280]">{formatTimeDisplay(running.startTime)}</span>
                                   </div>
                                   <div className="flex items-center gap-1 flex-wrap">
@@ -627,44 +669,26 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                             <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                               {isEntryActive ? (
                                 <input
-                                  type="number"
+                                  type="text"
                                   value={entryWeight}
-                                  onChange={(e) => setEntryWeight(e.target.value)}
-                                  placeholder="0"
-                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
+                                  readOnly
+                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none"
                                 />
                               ) : running ? (
-                                <input
-                                  type="number"
-                                  step="1"
-                                  min={0}
-                                  value={getDraftValue(running, 'weightGrams', String(running.weightGrams))}
-                                  onChange={(event) => setDraft(running.id, 'weightGrams', event.target.value)}
-                                  onBlur={() => commitNumeric(running, 'weightGrams', 'weightGrams', 0)}
-                                  className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
-                                />
+                                <span className="text-sm text-[#6B7280]">{running.weightGrams || '—'}</span>
                               ) : null}
                             </td>
                             {/* Cut */}
                             <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                               {isEntryActive ? (
                                 <input
-                                  type="number"
+                                  type="text"
                                   value={entryCut}
-                                  onChange={(e) => setEntryCut(e.target.value)}
-                                  placeholder="0.00"
-                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
+                                  readOnly
+                                  className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none"
                                 />
                               ) : running ? (
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  min={0}
-                                  value={getDraftValue(running, 'cutPerMin', formatDecimal(running.cutPerMin, 2))}
-                                  onChange={(event) => setDraft(running.id, 'cutPerMin', event.target.value)}
-                                  onBlur={() => commitNumeric(running, 'cutPerMin', 'cutPerMin', 2)}
-                                  className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
-                                />
+                                <span className="text-sm text-[#6B7280]">{formatDecimal(running.cutPerMin, 2)}</span>
                               ) : null}
                             </td>
                             {/* Qty */}
@@ -694,22 +718,35 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                             <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                               {isEntryActive ? (
                                 <input
-                                  type="number"
-                                  value={entryDraw}
-                                  onChange={(e) => setEntryDraw(e.target.value)}
-                                  placeholder="0.0"
+                                  type="text"
+                                  value={formatDecimal(entryDraw, 2)}
+                                  readOnly
                                   className="w-full h-5 text-[10px] text-center border border-[#E5E7EB] rounded bg-white focus:outline-none focus:border-[#2563EB]"
                                 />
                               ) : running ? (
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  min={0}
-                                  value={getDraftValue(running, 'drawTonsPerDay', formatDecimal(running.drawTonsPerDay, 1))}
-                                  onChange={(event) => setDraft(running.id, 'drawTonsPerDay', event.target.value)}
-                                  onBlur={() => commitNumeric(running, 'drawTonsPerDay', 'drawTonsPerDay', 1)}
-                                  className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none focus:ring-1 focus:ring-[#2563EB] rounded"
-                                />
+                                (() => {
+                                  const runningQuantity =
+                                    running.productionQuantity || running.grossQuantity;
+
+                                  const runningQuantityValue = getDraftValue(running, 'quantity', String(runningQuantity));
+                                  const runningDraftQuantity = runningQuantityValue === '' ? runningQuantity : Number(runningQuantityValue);
+
+                                  const runningDraw = calculateProductionMetrics(
+                                    running.cutPerMin,
+                                    running.weightGrams,
+                                    running.machineId,
+                                    runningDraftQuantity
+                                  ).drawTons;
+
+                                  return (
+                                    <input
+                                      type="text"
+                                      value={formatDecimal(runningDraw, 2)}
+                                      readOnly
+                                      className="w-full bg-transparent text-sm text-[#6B7280] text-center focus:outline-none rounded"
+                                    />
+                                  );
+                                })()
                               ) : null}
                             </td>
                           </React.Fragment>
@@ -767,7 +804,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
       {/* ── Save Bar ── */}
       <div className={`flex items-center justify-between gap-4 bg-white border rounded-lg px-5 py-3 transition-colors ${isDirty ? 'border-[#BFDBFE] bg-[#EFF6FF]' : 'border-[#E5E7EB]'}`}>
         <div className="flex items-center gap-2.5">
-          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isDirty ? 'bg-[#F59E0B]' : 'bg-[#16A34A]'}`} />
+          <div className={`w-2 h-2 rounded-full shrink-0 ${isDirty ? 'bg-[#F59E0B]' : 'bg-[#16A34A]'}`} />
           <span className="text-sm text-[#374151]">
             {isDirty
               ? 'You have unsaved changes. Click Save to store them in the database.'
@@ -790,10 +827,10 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
       {/* Fixed-position tooltip */}
       {tooltip && (
         <div
-          className="pointer-events-none fixed z-[9999]"
+          className="pointer-events-none fixed z-9999"
           style={{ left: tooltip.x + 14, top: tooltip.y - 8, transform: 'translateY(-100%)' }}
         >
-          <div className="bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 min-w-[240px] text-xs space-y-2.5">
+          <div className="bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 min-w-60 text-xs space-y-2.5">
             {(() => {
               const s = getJobSummary(tooltip.job);
               return (
@@ -822,15 +859,33 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                   </div>
                   <div>
                     <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Daily Good Bottles (90%)</p>
-                    <p className="font-bold text-[#38BDF8] text-sm">{s.goodBottlesLabel}</p>
+                    {/* <p className="font-bold text-[#38BDF8] text-sm">{s.goodBottlesLabel}</p> */}
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    <div>
+                      <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Total Quantity (24h)</p>
+                      <p className="font-semibold text-white text-sm">{s.dailyProduction}</p>
+                    </div>
+                    <div>
+                      <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Draw (Ton)</p>
+                      <p className="font-semibold text-white text-sm">{s.draw}</p>
+                    </div>
                   </div>
                   <div>
                     <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Total Required Bottles</p>
                     <p className="font-semibold text-[#FCD34D] text-sm">{s.totalRequired}</p>
                   </div>
                   <div>
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Start Time</p>
+                    <p className="font-semibold text-white text-sm">{s.startDateTime}</p>
+                  </div>
+                  <div>
                     <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Estimated Completion</p>
                     <p className="font-semibold text-[#34D399] text-sm">{s.jobDuration} · {s.endDateTime}</p>
+                  </div>
+                  <div>
+                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Current Status</p>
+                    <p className="font-semibold text-white text-sm">{s.status}</p>
                   </div>
                   <div className="border-t border-[#334155] pt-2 space-y-2">
                     <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Packing Allocation</p>

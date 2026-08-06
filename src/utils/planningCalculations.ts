@@ -1,5 +1,6 @@
 import { BottleEntry, DateRow, MachineEntry, MachineLists } from '../types/planning';
 import { BOTTLE_SPEEDS, MACHINE_BOTTLES, NONE_ENTRY } from '../data/bottleReference';
+import { calculateDraw, calculateProductionMetrics } from './calculations';
 
 // Machine 1 & 4 → max 8 sections, Machine 2 & 3 → max 10 sections (mIdx is 0-based)
 export const MAX_SECTIONS = (mIdx: number) => (mIdx === 0 || mIdx === 3) ? 8 : 10;
@@ -27,9 +28,30 @@ let _eid = 1;
 export const nextEid = () => _eid++;
 
 export function calcQty(cut: number, machineNo: number): number {
-  if (cut === 0) return 0;
-  const multiplier = (machineNo === 1 || machineNo === 4) ? 3 : 2;
-  return cut * multiplier * 60 * 24;
+  return calculateProductionMetrics(cut, 0, machineNo).totalQuantity;
+}
+
+export function calcGoodBottles(totalQuantity: number): number {
+  return totalQuantity > 0 ? Math.round(totalQuantity * 0.9) : 0;
+}
+
+export function calcGoodLiters(goodBottles: number): number {
+  return goodBottles > 0 ? goodBottles / 100000 : 0;
+}
+
+export function calcProductionMetrics(cut: number, weightGrams: number, machineNo: number): {
+  totalQuantity: number;
+  goodBottles: number;
+  drawTons: number;
+  goodLiters: number;
+} {
+  const metrics = calculateProductionMetrics(cut, weightGrams, machineNo);
+  return {
+    totalQuantity: metrics.totalQuantity,
+    goodBottles: metrics.goodBottles,
+    drawTons: metrics.drawTons,
+    goodLiters: metrics.goodLiters,
+  };
 }
 
 // Add hours to a "HH:MM" 24-h string, wrapping at 24 h (shift day is 07:00–06:59).
@@ -59,12 +81,12 @@ export function isOvernightShift(time: string): boolean {
 
 // Draw in metric tons per day: (bottle weight g × daily qty bottles) ÷ 1,000,000
 export function calcDraw(wt: number, qty: number): number {
-  return wt > 0 && qty > 0 ? (wt * qty) / 1_000_000 : 0;
+  return calculateDraw(qty, wt);
 }
 
 export function makeEntry(name: string, machineNo: number): MachineEntry {
   const b = lookupBottle(machineNo, name);
-  const cut = b.wt > 0 ? Math.floor(b.wt * 0.94) : 0;
+  const cut = b.speeds > 0 ? b.speeds : 0;
   const qty = calcQty(cut, machineNo);
   const draw = calcDraw(b.wt, qty);
   return {

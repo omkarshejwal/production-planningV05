@@ -3,6 +3,7 @@ export type JobStatusSchema = 'Planned' | 'Running' | 'Completed' | 'Hold';
 export interface MachineMasterRow {
   machine_no: string;
   gob_type: string;
+  gob_count: number;
   max_section: number;
 }
 
@@ -28,6 +29,7 @@ export interface ProductionJobRow {
   speeds: number;
   draw: number;
   quantity: number;
+  production_hours?: number;
   start_time: string;
   estimated_completion: string;
   completion_time?: string;
@@ -49,10 +51,10 @@ export interface JobPackagingRow {
 
 // machine_master
 export const MACHINE_MASTER: MachineMasterRow[] = [
-  { machine_no: 'MAC-01', gob_type: 'Double Gob', max_section: 8 },
-  { machine_no: 'MAC-02', gob_type: 'Triple Gob', max_section: 10 },
-  { machine_no: 'MAC-03', gob_type: 'Double Gob', max_section: 10 },
-  { machine_no: 'MAC-04', gob_type: 'Double Gob', max_section: 8 },
+  { machine_no: 'MAC-01', gob_type: 'Triple Gob', gob_count: 3, max_section: 8 },
+  { machine_no: 'MAC-02', gob_type: 'Double Gob', gob_count: 2, max_section: 10 },
+  { machine_no: 'MAC-03', gob_type: 'Double Gob', gob_count: 2, max_section: 10 },
+  { machine_no: 'MAC-04', gob_type: 'Triple Gob', gob_count: 3, max_section: 8 },
 ];
 
 // bottle_master

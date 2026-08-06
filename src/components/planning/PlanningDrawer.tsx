@@ -4,10 +4,9 @@ import { useERP } from '../../context/ERPContext';
 import { JobPackagingRow } from '../../data/planningSchema';
 import { planningRepository } from '../../services/planningRepository';
 import {
-  calculateDailyProductionPcs,
-  calculateDrawTonsPerDay,
+  addCalendarDays,
+  calculateProductionMetrics,
   calculateEstimatedCompletionDays,
-  calculateGoodBottlesPerDay,
   formatDecimal,
   formatNumber,
   formatDateTime,
@@ -84,22 +83,28 @@ export const PlanningDrawer: React.FC = () => {
     return getBottleConfiguration(machineId, bottleId, sectionCount);
   }, [getBottleConfiguration, machineId, bottleId, sectionCount]);
 
-  const dailyProduction = selectedConfiguration ? calculateDailyProductionPcs(selectedConfiguration.speeds) : 0;
-  const hourlyProduction = selectedConfiguration ? Math.round(selectedConfiguration.speeds * 60) : 0;
-  const plannedProduction = Math.round(dailyProduction * 0.9);
-  const goodBottlesPerDay = selectedConfiguration ? calculateGoodBottlesPerDay(selectedConfiguration.speeds) : 0;
-  const estimatedDays = quantity > 0 ? calculateEstimatedCompletionDays(quantity, goodBottlesPerDay) : 0;
-  const drawTons = selectedConfiguration
-    ? calculateDrawTonsPerDay(selectedConfiguration.speeds, selectedConfiguration.weight)
-    : 0;
+  const metrics = selectedConfiguration
+    ? calculateProductionMetrics(
+        selectedConfiguration.speeds,
+        selectedConfiguration.weight,
+        machine || machineId,
+        quantity
+      )
+    : null;
+  const dailyProduction = metrics?.totalQuantity ?? 0;
+  const hourlyProduction = metrics?.hourlyQuantity ?? 0;
+  const plannedProduction = metrics?.goodBottles ?? 0;
+  const goodBottlesPerDay = metrics?.goodBottles ?? 0;
+  const estimatedDays = quantity > 0 ? calculateEstimatedCompletionDays(quantity, dailyProduction) : 0;
+  const drawTons = metrics?.drawTons ?? 0;
   const completionDateTime = useMemo(() => {
     if (!quantity || !selectedConfiguration) return null;
     const [year, month, day] = date.split('-').map(Number);
     const [hours, minutes] = startTime.split(':').map(Number);
     const start = new Date(year, month - 1, day, hours, minutes, 0, 0);
-    return new Date(start.getTime() + estimatedDays * 24 * 60 * 60 * 1000);
+    return addCalendarDays(start, estimatedDays);
   }, [date, startTime, estimatedDays, quantity, selectedConfiguration]);
-  const goodBottleLabel = goodBottlesPerDay > 0 ? `${formatDecimal(goodBottlesPerDay / 100000, 2)}L` : '--';
+  const goodBottleLabel = metrics && metrics.goodBottles > 0 ? `${formatDecimal(metrics.goodLiters, 2)}L` : '--';
 
   const allocatedQty = selectedPackaging.reduce(
     (sum, code) => sum + (packagingQuantities[code] || 0),
@@ -418,6 +423,12 @@ export const PlanningDrawer: React.FC = () => {
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cut Speed</div>
               <div className="mt-1 text-sm font-bold text-slate-900">
                 {selectedConfiguration ? formatDecimal(selectedConfiguration.speeds, 2) : '--'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Gob</div>
+              <div className="mt-1 text-sm font-bold text-slate-900">
+                {metrics ? metrics.machineGob : '--'}
               </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

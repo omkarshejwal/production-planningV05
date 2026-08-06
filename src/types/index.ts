@@ -43,6 +43,7 @@ export interface ISMachine {
   id: string;
   name: string;
   code: string;
+  gobCount: number;
   sectionsCount: number; // Current active section count
   defaultSectionsCount: number; // Default section count (8 or 10)
   availableSections: number[]; // Configurable section options e.g. [6,7,8] or [8,9,10]
@@ -83,6 +84,7 @@ export interface ProductionJob {
   startTime?: string; // HH:mm
   expectedEndTime?: string; // HH:mm
   productionQuantity?: number; // Planned quantity for this specific day job
+  productionHours?: number; // Planned production hours for this specific day job (max 24)
   linkedJobGroupId?: string;
   sequenceNumber?: number; // Vertical stack order inside machine-day cell
   lifecycleStatus?: PlanningLifecycleStatus;

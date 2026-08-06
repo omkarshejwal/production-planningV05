@@ -8,7 +8,7 @@ import {
   JobPackagingRow,
   ProductionJobRow,
 } from '../data/planningSchema';
-import { calculateGoodBottlesPerDay } from '../utils/calculations';
+import { calculateProductionMetrics } from '../utils/calculations';
 
 const JOBS_STORAGE_KEY = 'vitrum-production_job-v1';
 const PACKAGING_STORAGE_KEY = 'vitrum-job_packaging-v1';
@@ -47,8 +47,12 @@ const formatTime = (date: Date): string =>
 
 const estimateJobWindow = (row: ProductionJobRow): { start: Date; end: Date } => {
   const start = buildDateTime(row.plan_date, row.start_time);
-  const goodBottlesPerDay = calculateGoodBottlesPerDay(row.speeds);
-  const durationMinutes = goodBottlesPerDay > 0 ? (row.quantity / goodBottlesPerDay) * 24 * 60 : 0;
+  const dailyQty = calculateProductionMetrics(row.speeds, row.weight, row.machine_no).totalQuantity;
+  const hourlyQty = dailyQty > 0 ? dailyQty / 24 : 0;
+  const productionHours = row.production_hours && row.production_hours > 0
+    ? row.production_hours
+    : (hourlyQty > 0 ? row.quantity / hourlyQty : 0);
+  const durationMinutes = productionHours > 0 ? productionHours * 60 : 0;
   const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
   return { start, end };
 };
@@ -134,6 +138,15 @@ export const planningRepository = {
       return { ok: false, error: 'Section out of machine range' };
     }
 
+    if (payload.production_hours !== undefined) {
+      if (!Number.isFinite(payload.production_hours) || payload.production_hours <= 0) {
+        return { ok: false, error: 'production_hours must be a positive number' };
+      }
+      if (payload.production_hours > 24) {
+        return { ok: false, error: 'A production row cannot exceed 24 hours' };
+      }
+    }
+
     const config = this.getBottleConfiguration(payload.machine_no, payload.bottle_id, payload.section);
 
     if (!config) {
@@ -179,6 +192,15 @@ export const planningRepository = {
 
       if (payload.section > machine.max_section || payload.section <= 0) {
         return { ok: false, error: 'Section out of machine range' };
+      }
+
+      if (payload.production_hours !== undefined) {
+        if (!Number.isFinite(payload.production_hours) || payload.production_hours <= 0) {
+          return { ok: false, error: 'production_hours must be a positive number' };
+        }
+        if (payload.production_hours > 24) {
+          return { ok: false, error: 'A production row cannot exceed 24 hours' };
+        }
       }
 
       const config = this.getBottleConfiguration(payload.machine_no, payload.bottle_id, payload.section);
@@ -274,7 +296,7 @@ export const planningRepository = {
       section: number;
       start_time: string;
     },
-    patch: Partial<Pick<ProductionJobRow, 'section' | 'weight' | 'speeds' | 'draw' | 'quantity'>>
+    patch: Partial<Pick<ProductionJobRow, 'section' | 'weight' | 'speeds' | 'draw' | 'quantity' | 'production_hours'>>
   ): { ok: boolean; error?: string; row?: ProductionJobRow } {
     const rows = this.getProductionJobs();
     const index = rows.findIndex(
@@ -307,7 +329,17 @@ export const planningRepository = {
       speeds: patch.speeds ?? current.speeds,
       draw: patch.draw ?? current.draw,
       quantity: patch.quantity ?? current.quantity,
+      production_hours: patch.production_hours ?? current.production_hours,
     };
+
+    if (updated.production_hours !== undefined) {
+      if (!Number.isFinite(updated.production_hours) || updated.production_hours <= 0) {
+        return { ok: false, error: 'production_hours must be a positive number' };
+      }
+      if (updated.production_hours > 24) {
+        return { ok: false, error: 'A production row cannot exceed 24 hours' };
+      }
+    }
 
     // Guard against duplicate key collision if section changes.
     const duplicate = rows.some((row, i) => {

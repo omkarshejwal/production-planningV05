@@ -29,11 +29,14 @@ import {
   _month,
   _year,
   addMinutesToTime,
+  calcGoodBottles,
+  calcProductionMetrics,
   calcDraw,
   calcQty,
   lookupSpeed,
   makeNoneEntry,
 } from '../../utils/planningCalculations';
+import { addCalendarDays } from '../../utils/calculations';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
@@ -173,8 +176,10 @@ export const ProductionPlanningPage: React.FC = () => {
       const entry = list[rowIdx];
       const newSpeed = lookupSpeed(mIdx + 1, entry.product, val);
       const speeds = newSpeed > 0 ? newSpeed : entry.speeds;
-      const draw = calcDraw(entry.wt, entry.qty);
-      list[rowIdx] = { ...entry, section: val, speeds, draw };
+      const qty = calcQty(speeds, mIdx + 1);
+      const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : qty;
+      const draw = calcDraw(entry.wt, requiredQty);
+      list[rowIdx] = { ...entry, section: val, speeds, cut: speeds, qty, draw };
       next[mIdx] = list;
       return next;
     });
@@ -238,9 +243,10 @@ export const ProductionPlanningPage: React.FC = () => {
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
       const list = [...next[editModal.mIdx]];
-      const cut = bottle.wt > 0 ? Math.floor(bottle.wt * 0.94) : 0;
+      const cut = bottle.speeds > 0 ? bottle.speeds : 0;
       const qty = calcQty(cut, editModal.mIdx + 1);
-      const draw = calcDraw(bottle.wt, qty);
+      const requiredQtyValue = requiredBottles && requiredBottles > 0 ? requiredBottles : qty;
+      const draw = calcDraw(bottle.wt, requiredQtyValue);
       list[editModal.rowIdx] = {
         ...list[editModal.rowIdx],
         isBlank: false,
@@ -273,12 +279,16 @@ export const ProductionPlanningPage: React.FC = () => {
     machineLists.reduce((sum, list, mIdx) => {
       const e = list[rowIdx];
       const hasProduct = e && !e.isBlank && !!e.product && e.product !== 'None';
-      if (hasProduct) return sum + calcDraw(e.wt, e.qty);
+      if (hasProduct) {
+        const qty = e.requiredBottles && e.requiredBottles > 0 ? e.requiredBottles : e.qty;
+        return sum + calcDraw(e.wt, qty);
+      }
       // Changeover period: fall back to last completed job's draw rate
       const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
       if (completed.length > 0) {
         const last = completed[completed.length - 1];
-        return sum + calcDraw(last.wt, last.qty);
+        const qty = last.requiredBottles && last.requiredBottles > 0 ? last.requiredBottles : last.qty;
+        return sum + calcDraw(last.wt, qty);
       }
       return sum;
     }, 0);
@@ -365,11 +375,11 @@ export const ProductionPlanningPage: React.FC = () => {
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
-            <table className="w-full min-w-[1500px] border-collapse text-sm">
+            <table className="w-full min-w-375 border-collapse text-sm">
               <thead className="sticky top-0 z-10">
                 {/* Machine group header */}
                 <tr className="bg-[#DBEAFE] border-b border-[#BFDBFE]">
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-[110px] sticky left-0 bg-[#DBEAFE]">
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-27.5 sticky left-0 bg-[#DBEAFE]">
                     Date
                   </th>
                   {[1, 2, 3, 4].map(n => (
@@ -377,7 +387,7 @@ export const ProductionPlanningPage: React.FC = () => {
                       Machine No {n}
                     </th>
                   ))}
-                  <th className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] w-[80px]">
+                  <th className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] w-20">
                     Total Draw
                   </th>
                 </tr>
@@ -386,16 +396,16 @@ export const ProductionPlanningPage: React.FC = () => {
                   <th className="px-3 py-2 text-left text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] sticky left-0 bg-[#EFF6FF]"></th>
                   {[0, 1, 2, 3].map(mIdx => (
                     <React.Fragment key={mIdx}>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#2563EB] border-r border-[#E5E7EB] w-[160px] bg-[#EFF6FF]">
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#2563EB] border-r border-[#E5E7EB] w-40 bg-[#EFF6FF]">
                         Bottle Name
                       </th>
                       {showSection && (
-                        <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-[40px] bg-[#F5F3FF]">Sec</th>
+                        <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Sec</th>
                       )}
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[55px]">Wt</th>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[60px]">Cut</th>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[60px]">Qty</th>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-[55px]">Draw</th>
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Wt</th>
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Cut</th>
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Qty</th>
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Draw</th>
                     </React.Fragment>
                   ))}
                   <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151]"></th>
@@ -475,7 +485,11 @@ export const ProductionPlanningPage: React.FC = () => {
 
                           // ── Completed job row ────────────────────────────────────
                           if (completedJob) {
-                            const cQty = completedJob.cut > 0 ? calcQty(completedJob.cut, mIdx + 1) : 0;
+                            const completedMetrics = calcProductionMetrics(completedJob.cut, completedJob.wt, mIdx + 1);
+                            const completedQty = completedJob.requiredBottles && completedJob.requiredBottles > 0
+                              ? completedJob.requiredBottles
+                              : completedJob.qty;
+                            const completedDraw = calcDraw(completedJob.wt, completedQty);
                             const cellBg = 'bg-[#F3F4F6]';
                             const txt    = 'text-[10px] text-[#6B7280]';
                             return (
@@ -484,14 +498,14 @@ export const ProductionPlanningPage: React.FC = () => {
                                 <td className={`px-2 py-1.5 border-l-2 border-r border-[#E5E7EB] ${cellBg}`}
                                   style={{ borderLeftColor: '#9CA3AF' }}>
                                   <div className="flex items-center gap-1 mb-0.5">
-                                    <Lock size={7} className="text-[#9CA3AF] flex-shrink-0" />
+                                    <Lock size={7} className="text-[#9CA3AF] shrink-0" />
                                     <span className="text-[9px] font-bold text-[#9CA3AF]">JOB {completedIdx + 1}</span>
                                   </div>
                                   <p className="text-[10px] font-semibold text-[#4B5563] truncate leading-tight">
                                     {completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—'}
                                   </p>
                                   <div className="flex items-center gap-0.5 mt-0.5">
-                                    <Clock size={7} className="text-[#9CA3AF] flex-shrink-0" />
+                                    <Clock size={7} className="text-[#9CA3AF] shrink-0" />
                                     <span className="text-[8px] text-[#9CA3AF]">
                                       {fmtTime(completedJob.startTime)} → {fmtTime(completedJob.endTime)}
                                     </span>
@@ -500,7 +514,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                   {(completedJob.cumulativeQty ?? 0) > 0 && (
                                     <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
                                       <span className="text-[8px] text-[#1D4ED8] font-semibold">
-                                        Good: {Math.round((completedJob.cumulativeQty ?? 0) * 0.9).toLocaleString()} bottles
+                                        Good: {calcGoodBottles(completedJob.cumulativeQty ?? 0).toLocaleString()} bottles
                                       </span>
                                     </div>
                                   )}
@@ -521,13 +535,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                 </td>
                                 {/* Qty */}
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                  <span className={txt}>{cQty > 0 ? `${(cQty * 0.9 / 100000).toFixed(2)}L` : '—'}</span>
+                                  <span className={txt}>{completedMetrics.goodBottles > 0 ? `${completedMetrics.goodLiters.toFixed(2)}L` : '—'}</span>
                                 </td>
                                 {/* Draw */}
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                   <span className={txt}>
-                                    {calcDraw(completedJob.wt, completedJob.qty) > 0
-                                      ? calcDraw(completedJob.wt, completedJob.qty).toFixed(1)
+                                    {completedDraw > 0
+                                      ? completedDraw.toFixed(1)
                                       : '—'}
                                   </span>
                                 </td>
@@ -550,7 +564,9 @@ export const ProductionPlanningPage: React.FC = () => {
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay  = !isContinuing;
                           const canExtend  = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
-                          const runningQty = entry.cut > 0 ? calcQty(entry.cut, mIdx + 1) : 0;
+                          const runningMetrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
+                          const runningQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
+                          const runningDraw = calcDraw(entry.wt, runningQty);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                           const cellBg      = 'bg-white';
 
@@ -572,7 +588,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                       {/* Quick-edit shortcut beside "No bottle set" */}
                                       {!hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"
-                                          className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={7} />
                                         </button>
                                       )}
@@ -592,13 +608,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                           });
                                         }}
                                         title="Remove this job"
-                                        className="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                        className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
                                         <Minus size={7} />
                                       </button>
                                     </div>
                                     {entry.startTime && (
                                       <div className="flex items-center gap-0.5 mb-1">
-                                        <Clock size={7} className="text-[#6B7280] flex-shrink-0" />
+                                        <Clock size={7} className="text-[#6B7280] shrink-0" />
                                         <span className="text-[8px] text-[#6B7280]">{fmtTime(entry.startTime)}</span>
                                       </div>
                                     )}
@@ -671,21 +687,21 @@ export const ProductionPlanningPage: React.FC = () => {
                               {/* Qty */}
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 <span className="text-sm font-medium text-[#111827]">
-                                  {hasProduct ? (runningQty > 0 ? `${(runningQty * 0.9 / 100000).toFixed(2)}L` : '—') : ''}
+                                  {hasProduct ? (runningMetrics.goodBottles > 0 ? `${runningMetrics.goodLiters.toFixed(2)}L` : '—') : ''}
                                 </span>
                               </td>
                               {/* Draw — during changeover use previous job's draw rate */}
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 {(() => {
                                   if (hasProduct) {
-                                    const d = calcDraw(entry.wt, entry.qty);
-                                    return <span className="text-sm text-[#6B7280]">{d > 0 ? d.toFixed(1) : '—'}</span>;
+                                    return <span className="text-sm text-[#6B7280]">{runningDraw > 0 ? runningDraw.toFixed(1) : '—'}</span>;
                                   }
                                   // Changeover: show previous completed job's draw
                                   if (completed.length > 0) {
                                     const last = completed[completed.length - 1];
-                                    const d = calcDraw(last.wt, last.qty);
-                                    return <span className="text-sm text-[#9CA3AF] italic">{d > 0 ? d.toFixed(1) : '—'}</span>;
+                                    const lastQty = last.requiredBottles && last.requiredBottles > 0 ? last.requiredBottles : last.qty;
+                                    const lastDraw = calcDraw(last.wt, lastQty);
+                                    return <span className="text-sm text-[#9CA3AF] italic">{lastDraw > 0 ? lastDraw.toFixed(1) : '—'}</span>;
                                   }
                                   return <span className="text-sm text-[#6B7280]"></span>;
                                 })()}
@@ -742,7 +758,7 @@ export const ProductionPlanningPage: React.FC = () => {
       {/* ── Save Bar ── */}
       <div className={`flex items-center justify-between gap-4 bg-white border rounded-lg px-5 py-3 transition-colors ${isDirty ? 'border-[#BFDBFE] bg-[#EFF6FF]' : 'border-[#E5E7EB]'}`}>
         <div className="flex items-center gap-2.5">
-          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isDirty ? 'bg-[#F59E0B]' : 'bg-[#16A34A]'}`} />
+          <div className={`w-2 h-2 rounded-full shrink-0 ${isDirty ? 'bg-[#F59E0B]' : 'bg-[#16A34A]'}`} />
           <span className="text-sm text-[#374151]">
             {isDirty
               ? 'You have unsaved changes. Click Save to store them in the database.'
@@ -792,7 +808,8 @@ export const ProductionPlanningPage: React.FC = () => {
       {/* Fixed-position tooltip — renders above ALL table overflow */}
       {tooltip && (() => {
         const { entry, mIdx, rowIdx } = tooltip;
-        const dailyQty = entry.cut > 0 ? calcQty(entry.cut, mIdx + 1) : 0;
+        const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
+        const dailyQty = metrics.totalQuantity;
         const reqBottles = entry.requiredBottles ?? null;
         const estDays = dailyQty > 0 && reqBottles ? reqBottles / dailyQty : null;
 
@@ -805,8 +822,7 @@ export const ProductionPlanningPage: React.FC = () => {
             const parts = startRow.date.split(' ');
             const startDate = new Date(`${parts[1]} ${parts[0]} ${parts[2]}`);
             if (!isNaN(startDate.getTime())) {
-              const completionMs = startDate.getTime() + estDays * 24 * 60 * 60 * 1000;
-              const completionDate = new Date(completionMs);
+              const completionDate = addCalendarDays(startDate, estDays);
               estCompletionStr = completionDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
               // Append start time offset if present
               if (entry.startTime) {
@@ -827,10 +843,10 @@ export const ProductionPlanningPage: React.FC = () => {
 
         return (
           <div
-            className="pointer-events-none fixed z-[9999]"
+            className="pointer-events-none fixed z-9999"
             style={{ left: tooltip.x + 14, top: tooltip.y - 8, transform: 'translateY(-100%)' }}
           >
-            <div className="bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 min-w-[220px] text-xs space-y-2.5">
+            <div className="bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 min-w-55 text-xs space-y-2.5">
               {/* Bottle name header */}
               {entry.product && entry.product !== 'None' && (
                 <div className="pb-2 border-b border-[#334155]">
@@ -849,7 +865,7 @@ export const ProductionPlanningPage: React.FC = () => {
               <div>
                 <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Daily Good Bottles (90%)</p>
                 <p className="font-bold text-[#38BDF8] text-sm">
-                  {dailyQty > 0 ? `${(dailyQty * 0.9 / 100000).toFixed(2)} L (${Math.round(dailyQty * 0.9).toLocaleString()} bottles)` : '—'}
+                  {metrics.goodBottles > 0 ? `${metrics.goodLiters.toFixed(2)} L (${metrics.goodBottles.toLocaleString()} bottles)` : '—'}
                 </p>
               </div>
 
