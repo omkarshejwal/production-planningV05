@@ -1,9 +1,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import ExcelJS from 'exceljs';
 import {
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ClipboardPlus,
   Clock,
   Download,
@@ -40,6 +39,57 @@ import { addCalendarDays } from '../../utils/calculations';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const dateRowToIso = (dateText: string): string | null => {
+  const [dayRaw, monthRaw, yearRaw] = dateText.split(' ');
+  const day = Number(dayRaw);
+  const year = Number(yearRaw);
+  const monthIndex = MONTH_NAMES.indexOf(monthRaw);
+
+  if (!Number.isInteger(day) || !Number.isInteger(year) || monthIndex < 0) return null;
+  return `${String(year).padStart(4, '0')}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+const asNumber = (value: string): number | null => {
+  const normalized = value.replace(/,/g, '').trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseDisplayDate = (value: string): Date | null => {
+  const [dayRaw, monthRaw, yearRaw] = value.trim().split(' ');
+  const day = Number(dayRaw);
+  const year = Number(yearRaw);
+  const monthIndex = MONTH_NAMES.indexOf(monthRaw);
+  if (!Number.isInteger(day) || !Number.isInteger(year) || monthIndex < 0) return null;
+  const date = new Date(year, monthIndex, day);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+};
+
+const buildExportFilename = (
+  month: number,
+  year: number,
+  fromDate: string,
+  toDate: string,
+  isFiltered: boolean
+): string => {
+  if (fromDate || toDate) {
+    const start = fromDate || 'start';
+    const end = toDate || 'end';
+    return `Production_Planning_${start}_to_${end}.xlsx`;
+  }
+
+  if (isFiltered) {
+    return 'Production_Planning_Filtered.xlsx';
+  }
+
+  const monthName = new Date(year, month, 1).toLocaleDateString('en-GB', { month: 'long' });
+  return `Production_Planning_${monthName}_${year}.xlsx`;
+};
 
 // ─── Production Planning Page ─────────────────────────────────────────────────
 
@@ -81,6 +131,7 @@ export const ProductionPlanningPage: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
   const [showSection, setShowSection] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Wrap setMachineLists to mark dirty on every change
   const updateMachineLists = useCallback((updater: (prev: MachineLists) => MachineLists) => {
@@ -109,20 +160,212 @@ export const ProductionPlanningPage: React.FC = () => {
   // Filters
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
-  const [page, setPage] = useState(1);
-  const PAGE_SIZE = 20;
-
-  const totalVisualRows = Math.max(dateRows.length, ...machineLists.map(l => l.length));
+  const [appliedFromDate, setAppliedFromDate] = useState('');
+  const [appliedToDate, setAppliedToDate] = useState('');
 
   const allRowIndices = useMemo(() =>
-    Array.from({ length: totalVisualRows }, (_, i) => i),
-  [totalVisualRows]);
+    Array.from({ length: dateRows.length }, (_, i) => i),
+  [dateRows.length]);
 
-  const totalPages = Math.max(1, Math.ceil(allRowIndices.length / PAGE_SIZE));
-  const pageIndices = allRowIndices.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const filteredRowIndices = useMemo(() => {
+    if (!appliedFromDate && !appliedToDate) return allRowIndices;
 
-  const handleApply = () => { setPage(1); };
-  const handleReset = () => { setFromDate(''); setToDate(''); setPage(1); };
+    return allRowIndices.filter((rowIdx) => {
+      const rowIso = dateRowToIso(dateRows[rowIdx]?.date || '');
+      if (!rowIso) return false;
+      if (appliedFromDate && rowIso < appliedFromDate) return false;
+      if (appliedToDate && rowIso > appliedToDate) return false;
+      return true;
+    });
+  }, [allRowIndices, appliedFromDate, appliedToDate, dateRows]);
+
+  const handleApply = () => {
+    if (fromDate && toDate && fromDate > toDate) {
+      toast.error('From Date cannot be greater than To Date.');
+      return;
+    }
+    setAppliedFromDate(fromDate);
+    setAppliedToDate(toDate);
+  };
+
+  const handleReset = () => {
+    setFromDate('');
+    setToDate('');
+    setAppliedFromDate('');
+    setAppliedToDate('');
+  };
+
+  const isDateFilterActive = Boolean(appliedFromDate || appliedToDate);
+
+  const handleExport = async () => {
+    if (isExporting) return;
+
+    const table = document.getElementById('production-planning-table') as HTMLTableElement | null;
+    if (!table) {
+      toast.error('Unable to locate the planning table for export.');
+      return;
+    }
+
+    const bodyRows = Array.from(table.querySelectorAll('tbody tr'));
+    if (bodyRows.length === 0) {
+      toast.info('No data available to export.');
+      return;
+    }
+
+    setIsExporting(true);
+
+    try {
+      const headerRows = Array.from(table.querySelectorAll('thead tr'));
+      const leafHeaderCells = Array.from(headerRows[headerRows.length - 1]?.querySelectorAll('th') || []);
+      const headers = leafHeaderCells.map((th, idx) => {
+        const text = th.textContent?.trim() || '';
+        if (text) return text;
+        return idx === 0 ? 'Date' : idx === leafHeaderCells.length - 1 ? 'Total Draw' : `Column ${idx + 1}`;
+      });
+
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Production Planning');
+      worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+      worksheet.addRow(headers);
+
+      const dateColIndex = headers.findIndex((h) => h.toLowerCase() === 'date') + 1;
+      const totalDrawColIndex = headers.findIndex((h) => h.toLowerCase() === 'total draw') + 1;
+
+      let lastDateText = '';
+      const numericLikeHeaders = new Set(['sec', 'wt', 'cut', 'qty', 'draw', 'total draw']);
+
+      for (const tr of bodyRows) {
+        const cells = Array.from(tr.querySelectorAll('td'));
+        if (cells.length === 0) continue;
+
+        const rowValues: Array<string | number | Date | null> = new Array(headers.length).fill('');
+
+        let offset = 0;
+        if (dateColIndex > 0) {
+          const maybeDateCell = cells[0];
+          const dateCandidate = maybeDateCell?.textContent?.trim() || '';
+          if (dateCandidate) {
+            lastDateText = dateCandidate;
+            const parsedDate = parseDisplayDate(dateCandidate);
+            rowValues[dateColIndex - 1] = parsedDate || dateCandidate;
+          } else if (lastDateText) {
+            const parsedDate = parseDisplayDate(lastDateText);
+            rowValues[dateColIndex - 1] = parsedDate || lastDateText;
+          }
+
+          if (maybeDateCell?.hasAttribute('rowspan')) {
+            offset = 1;
+          } else if (lastDateText) {
+            const parsedDate = parseDisplayDate(lastDateText);
+            rowValues[dateColIndex - 1] = parsedDate || lastDateText;
+          }
+        }
+
+        for (let i = 0; i < headers.length; i++) {
+          if (i === dateColIndex - 1) continue;
+
+          const sourceIdx = i - (dateColIndex > 0 ? 1 : 0) + offset;
+          const td = cells[sourceIdx];
+          const raw = td?.textContent?.replace(/\s+/g, ' ').trim() || '';
+          if (!raw || raw === '—' || raw === '-') {
+            rowValues[i] = '';
+            continue;
+          }
+
+          const headerName = headers[i].trim().toLowerCase();
+          const numberCandidate = raw.endsWith(' T') ? asNumber(raw.replace(/\s*T$/i, '')) : asNumber(raw);
+          if (numberCandidate !== null && (numericLikeHeaders.has(headerName) || /^-?\d+(\.\d+)?$/.test(raw.replace(/,/g, '').trim()))) {
+            rowValues[i] = numberCandidate;
+          } else {
+            rowValues[i] = raw;
+          }
+        }
+
+        worksheet.addRow(rowValues);
+      }
+
+      if (worksheet.rowCount <= 1) {
+        toast.info('No data available to export.');
+        return;
+      }
+
+      const headerRow = worksheet.getRow(1);
+      headerRow.font = { bold: true };
+
+      worksheet.eachRow((row, rowNumber) => {
+        row.eachCell((cell, colNumber) => {
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' },
+          };
+
+          if (rowNumber === 1) {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            return;
+          }
+
+          if (dateColIndex > 0 && colNumber === dateColIndex && cell.value instanceof Date) {
+            cell.numFmt = 'dd-mmm-yyyy';
+            cell.alignment = { horizontal: 'left', vertical: 'middle' };
+            return;
+          }
+
+          if (typeof cell.value === 'number') {
+            const isInteger = Number.isInteger(cell.value);
+            cell.numFmt = isInteger ? '#,##0' : '#,##0.00';
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          } else {
+            cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+          }
+        });
+      });
+
+      worksheet.columns = worksheet.columns.map((column) => {
+        let max = 10;
+        column.eachCell?.({ includeEmpty: true }, (cell) => {
+          const value = cell.value;
+          const text = value instanceof Date
+            ? value.toLocaleDateString('en-GB')
+            : value === null || value === undefined
+              ? ''
+              : String(value);
+          max = Math.max(max, text.length + 2);
+        });
+        return { ...column, width: Math.min(48, max) };
+      });
+
+      const filename = buildExportFilename(
+        _month,
+        _year,
+        appliedFromDate,
+        appliedToDate,
+        filteredRowIndices.length !== allRowIndices.length
+      );
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      toast.success('Exported production planning to Excel.');
+    } catch {
+      toast.error('Failed to export Excel. Please try again.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // Continue the same bottle into the next date row for this machine only
   const handleContinueToNextDay = (mIdx: number, rowIdx: number) => {
@@ -317,8 +560,11 @@ export const ProductionPlanningPage: React.FC = () => {
           <button className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
             <Printer size={14} /> Print
           </button>
-          <button className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-            <Download size={14} /> Export
+          <button
+            onClick={handleExport}
+            disabled={isExporting}
+            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+            <Download size={14} /> {isExporting ? 'Exporting...' : 'Export'}
           </button>
           <button className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
             <RefreshCw size={14} /> Refresh
@@ -350,7 +596,7 @@ export const ProductionPlanningPage: React.FC = () => {
             </button>
             <button onClick={handleReset}
               className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-              Reset
+              Clear Filter
             </button>
           </div>
         </div>
@@ -375,7 +621,7 @@ export const ProductionPlanningPage: React.FC = () => {
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
-            <table className="w-full min-w-375 border-collapse text-sm">
+            <table id="production-planning-table" className="w-full min-w-375 border-collapse text-sm">
               <thead className="sticky top-0 z-10">
                 {/* Machine group header */}
                 <tr className="bg-[#DBEAFE] border-b border-[#BFDBFE]">
@@ -412,7 +658,7 @@ export const ProductionPlanningPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {pageIndices.flatMap((rowIdx, displayIdx) => {
+                {filteredRowIndices.flatMap((rowIdx, displayIdx) => {
                   const dateRow = dateRows[rowIdx];
                   const baseBg = displayIdx % 2 === 0 ? 'bg-white' : 'bg-[#F8FAFC]';
 
@@ -724,33 +970,6 @@ export const ProductionPlanningPage: React.FC = () => {
                 })}
               </tbody>
             </table>
-          </div>
-        </div>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-[#E5E7EB]">
-          <span className="text-sm text-[#6B7280]">
-            Showing {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, allRowIndices.length)} of {allRowIndices.length} entries
-          </span>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-              className="h-8 w-8 flex items-center justify-center rounded border border-[#E5E7EB] text-[#374151] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#F8FAFC] transition-colors">
-              <ChevronLeft size={14} />
-            </button>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-              <button key={p} onClick={() => setPage(p)}
-                className={`h-8 w-8 text-sm rounded border transition-colors
-                  ${p === page
-                    ? 'bg-[#2563EB] border-[#2563EB] text-white font-semibold'
-                    : 'border-[#E5E7EB] text-[#374151] hover:bg-[#F8FAFC]'
-                  }`}>
-                {p}
-              </button>
-            ))}
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-              className="h-8 w-8 flex items-center justify-center rounded border border-[#E5E7EB] text-[#374151] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#F8FAFC] transition-colors">
-              <ChevronRight size={14} />
-            </button>
           </div>
         </div>
       </div>

@@ -19,11 +19,11 @@ const PACKAGING_OPTIONS: Array<{
   title: string;
   subtitle: string;
 }> = [
-  { code: 'ST', title: 'Shrink', subtitle: 'Tray' },
-  { code: 'SN', title: 'Shrink', subtitle: 'Naked' },
-  { code: 'SB', title: 'Shrink', subtitle: 'Box' },
-  { code: 'BT', title: 'Bottom', subtitle: 'Tray' },
-];
+    { code: 'ST', title: 'Shrink', subtitle: 'Tray' },
+    { code: 'SN', title: 'Shrink', subtitle: 'Naked' },
+    { code: 'SB', title: 'Shrink', subtitle: 'Box' },
+    { code: 'BT', title: 'Bottom', subtitle: 'Tray' },
+  ];
 
 const toJobKey = (
   plan_date: string,
@@ -85,11 +85,11 @@ export const PlanningDrawer: React.FC = () => {
 
   const metrics = selectedConfiguration
     ? calculateProductionMetrics(
-        selectedConfiguration.speeds,
-        selectedConfiguration.weight,
-        machine || machineId,
-        quantity
-      )
+      selectedConfiguration.speeds,
+      selectedConfiguration.weight,
+      machine || machineId,
+      quantity
+    )
     : null;
   const dailyProduction = metrics?.totalQuantity ?? 0;
   const hourlyProduction = metrics?.hourlyQuantity ?? 0;
@@ -176,8 +176,8 @@ export const PlanningDrawer: React.FC = () => {
     setBottleQuery(defaultBottle?.name || '');
     setSectionCount(
       planningRepository.getBottleConfigurations(defaultMachineId, defaultBottle?.id || '')[0]?.section ||
-        machines.find((m) => m.id === defaultMachineId)?.defaultSectionsCount ||
-        8
+      machines.find((m) => m.id === defaultMachineId)?.defaultSectionsCount ||
+      8
     );
     setQuantity(0);
     setStartTime(drawerSuggestedStartTime || '07:00');
@@ -211,9 +211,9 @@ export const PlanningDrawer: React.FC = () => {
   const selectedBottle = bottles.find((b) => b.id === bottleId);
   const completionLabel = completionDateTime
     ? formatDateTime(
-        completionDateTime.toISOString().split('T')[0],
-        completionDateTime.toTimeString().slice(0, 5)
-      )
+      completionDateTime.toISOString().split('T')[0],
+      completionDateTime.toTimeString().slice(0, 5)
+    )
     : '--';
 
   const togglePackaging = (code: PackagingCode) => {
@@ -397,7 +397,10 @@ export const PlanningDrawer: React.FC = () => {
                 type="number"
                 min={0}
                 value={quantity}
-                onChange={(event) => setQuantity(Number(event.target.value))}
+                onChange={(event) => setQuantity(Number(event.target.blur))}
+                onWheel={(e) => {
+                  e.currentTarget.blur();
+                }}
                 placeholder="Enter required bottle quantity"
                 className="w-full border border-slate-300 rounded-lg px-3 py-2"
                 required
@@ -488,11 +491,10 @@ export const PlanningDrawer: React.FC = () => {
                     key={option.code}
                     type="button"
                     onClick={() => togglePackaging(option.code)}
-                    className={`rounded-lg border px-2 py-2 text-center transition-colors ${
-                      selected
+                    className={`rounded-lg border px-2 py-2 text-center transition-colors ${selected
                         ? 'border-blue-500 bg-blue-50 text-blue-700'
                         : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
+                      }`}
                   >
                     <div className="font-bold text-[11px]">{option.code}</div>
                     <div className="text-[10px] leading-tight">{option.title}</div>
@@ -548,11 +550,10 @@ export const PlanningDrawer: React.FC = () => {
                     key={value}
                     type="button"
                     onClick={() => setPalletPacking(value)}
-                    className={`px-4 py-1.5 text-[11px] font-semibold ${
-                      palletPacking === value
+                    className={`px-4 py-1.5 text-[11px] font-semibold ${palletPacking === value
                         ? 'bg-blue-600 text-white'
                         : 'bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
+                      }`}
                   >
                     {value}
                   </button>

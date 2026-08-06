@@ -36,7 +36,7 @@ const MainLayout: React.FC = () => {
           </ErrorBoundary>
 
           {/* Footer Status Bar matching Professional Polish theme */}
-          <div className="mx-4 md:mx-6 mt-6 flex items-center gap-6 py-2 px-4 bg-slate-800 text-white text-[10px] uppercase font-bold tracking-widest rounded-lg shadow-sm">
+          {/* <div className="mx-4 md:mx-6 mt-6 flex items-center gap-6 py-2 px-4 bg-slate-800 text-white text-[10px] uppercase font-bold tracking-widest rounded-lg shadow-sm">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
               Factory System Live
@@ -46,7 +46,7 @@ const MainLayout: React.FC = () => {
             <div className="opacity-50 text-white">•</div>
             <div>Shift: Morning (06:00 - 14:00)</div>
             <div className="ml-auto opacity-70">v3.4.1 Production Core</div>
-          </div>
+          </div> */}
         </main>
       </div>
     </div>

@@ -53,13 +53,13 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
       <button type="button" onClick={() => setOpen(o => !o)}
         className="w-full h-9 px-3 text-sm border border-[#E5E7EB] rounded-lg bg-white text-left focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] flex items-center justify-between gap-2 transition-colors hover:border-[#2563EB]">
         <span className={display ? 'text-[#111827]' : 'text-[#9CA3AF]'}>{display || placeholder}</span>
-        <Clock size={13} className="text-[#6B7280] flex-shrink-0" />
+        <Clock size={13} className="text-[#6B7280] shrink-0" />
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-[200] bg-white border border-[#E5E7EB] rounded-lg shadow-xl flex overflow-hidden">
+        <div className="absolute top-full left-0 mt-1 z-200 bg-white border border-[#E5E7EB] rounded-lg shadow-xl flex overflow-hidden">
           {/* Hours 01–12 */}
-          <div className="flex flex-col overflow-y-auto max-h-[196px] py-1 w-[44px]">
+          <div className="flex flex-col overflow-y-auto max-h-49 py-1 w-11">
             {Array.from({ length: 12 }, (_, i) => i + 1).map(hr => (
               <button key={hr} type="button"
                 onClick={() => pick(hr, m, mer)}
@@ -70,7 +70,7 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
           </div>
           <div className="w-px bg-[#E5E7EB]" />
           {/* Minutes 00–59 */}
-          <div ref={minColRef} className="flex flex-col overflow-y-auto max-h-[196px] py-1 w-[44px]">
+          <div ref={minColRef} className="flex flex-col overflow-y-auto max-h-49 py-1 w-11">
             {Array.from({ length: 60 }, (_, i) => i).map(min => (
               <button key={min} type="button"
                 onClick={() => pick(h, min, mer)}

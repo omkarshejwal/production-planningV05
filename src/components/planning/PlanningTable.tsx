@@ -655,13 +655,19 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                       const nextSection = Number(event.target.value);
                                       updateJobInline(running.id, { sectionCount: nextSection });
                                     }}
-                                    className={`text-xs font-semibold appearance-none bg-transparent focus:outline-none cursor-pointer pr-3 ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`}>
+                                    className={`text-xs font-semibold appearance-none focus:outline-none cursor-pointer pr-5 pl-2 py-1 rounded-md border transition-colors ${isLowSec
+                                      ? 'bg-red-500 text-white border border-red-700'
+                                      : 'bg-transparent text-[#7C3AED]'
+                                      }`}>
                                     {(machine.availableSections || []).map((section) => (
                                       <option key={section} value={section}>{section}</option>
                                     ))}
                                   </select>
-                                  <ChevronDown size={8}
-                                    className={`absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`} />
+                                  <ChevronDown size={10}
+                                    className={`absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none ${isLowSec
+                                      ? 'text-red-800'
+                                      : 'text-[#7C3AED]'
+                                      }`} />
                                 </div>
                               ) : null}
                             </td>
