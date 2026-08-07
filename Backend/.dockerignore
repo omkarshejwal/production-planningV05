@@ -1,13 +1,5 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
+__pycache__/
+*.py[cod]
+*.class
 venv/
-.venv/
 .env
-vitrumglass.db
-.pytest_cache/
-.git/
-.vscode/

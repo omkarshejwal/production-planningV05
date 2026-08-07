@@ -54,7 +54,7 @@ export const resolveMachineGob = (
     return 1;
   }
 
-  const machineNumber = resolveMachineNumber(machine);
+  const machineNumber = resolveMachineNumber(machine as string | number);
   if (machineNumber === null) return 1;
   return MACHINE_GOB_COUNTS[machineNumber] ?? 1;
 };

@@ -54,6 +54,7 @@ export const PlanningDrawer: React.FC = () => {
   const [sectionCount, setSectionCount] = useState(8);
   const [quantity, setQuantity] = useState(0);
   const [startTime, setStartTime] = useState('07:00');
+  const [changeoverHours, setChangeoverHours] = useState(0);
   const [customerName, setCustomerName] = useState('');
 
   const [selectedPackaging, setSelectedPackaging] = useState<PackagingCode[]>([]);
@@ -123,6 +124,8 @@ export const PlanningDrawer: React.FC = () => {
       setPalletQuantity(0);
     };
 
+    console.log('saveJob: is editingJob?', !!editingJob);
+
     if (editingJob) {
       setMachineId(editingJob.machineId);
       setDate(editingJob.date || editingJob.startDate);
@@ -131,6 +134,7 @@ export const PlanningDrawer: React.FC = () => {
       setSectionCount(editingJob.sectionCount);
       setQuantity(editingJob.productionQuantity || editingJob.grossQuantity);
       setStartTime(editingJob.startTime || '07:00');
+      setChangeoverHours(editingJob.changeoverHours || 0);
       setCustomerName(editingJob.customerName || '');
 
       const records = planningRepository
@@ -181,6 +185,7 @@ export const PlanningDrawer: React.FC = () => {
     );
     setQuantity(0);
     setStartTime(drawerSuggestedStartTime || '07:00');
+    setChangeoverHours(0);
     setCustomerName('');
     resetPackaging();
   }, [
@@ -222,8 +227,10 @@ export const PlanningDrawer: React.FC = () => {
     );
   };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+
+    console.log('handleSubmit: Initiating save process');
 
     if (!selectedConfiguration) {
       alert('No bottle_configuration row exists for the selected bottle and section.');
@@ -240,27 +247,6 @@ export const PlanningDrawer: React.FC = () => {
       return;
     }
 
-    const saved = saveJob({
-      id: editingJob?.id,
-      jobNumber: editingJob?.jobNumber,
-      machineId,
-      date,
-      startDate: date,
-      endDate: date,
-      bottleId,
-      customerName,
-      sectionCount,
-      grossQuantity: quantity,
-      productionQuantity: quantity,
-      producedQuantity: 0,
-      startTime,
-      linkedJobGroupId: editingJob?.linkedJobGroupId,
-      sequenceNumber: editingJob?.sequenceNumber,
-      lifecycleStatus: editingJob?.lifecycleStatus || 'ACTIVE',
-    });
-
-    if (!saved) return;
-
     const rows: JobPackagingRow[] = selectedPackaging.map((code) => ({
       plan_date: date,
       machine_no: machineId,
@@ -273,13 +259,36 @@ export const PlanningDrawer: React.FC = () => {
       pallet_quantity: palletPacking === 'YES' && code === 'SN' ? palletQuantity : 0,
     }));
 
-    const syncResult = planningRepository.replaceJobPackagingForJob(
-      toJobKey(date, machineId, bottleId, sectionCount, startTime),
-      rows
-    );
+    try {
+      console.log('handleSubmit: Calling saveJob with', { machineId, date, bottleId, quantity, rows });
+      const saved = await saveJob({
+        id: editingJob?.id,
+      jobNumber: editingJob?.jobNumber,
+      machineId,
+      date,
+      startDate: date,
+      endDate: date,
+      bottleId,
+      customerName,
+      sectionCount,
+      grossQuantity: quantity,
+      productionQuantity: quantity,
+      producedQuantity: 0,
+      startTime,
+      changeoverHours,
+      linkedJobGroupId: editingJob?.linkedJobGroupId,
+      sequenceNumber: editingJob?.sequenceNumber,
+      lifecycleStatus: editingJob?.lifecycleStatus || 'ACTIVE',
+    }, rows);
 
-    if (!syncResult.ok) {
-      alert(syncResult.error || 'Job saved, but packaging could not be updated.');
+      if (saved) {
+        console.log('handleSubmit: saveJob returned true, closing drawer');
+        closeDrawer();
+      } else {
+        console.warn('handleSubmit: saveJob returned false!');
+      }
+    } catch (err) {
+      console.error('handleSubmit CAUGHT EXCEPTION:', err);
     }
   };
 
@@ -300,7 +309,7 @@ export const PlanningDrawer: React.FC = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <label className="text-slate-600 font-semibold">Start Time</label>
               <input
@@ -309,6 +318,18 @@ export const PlanningDrawer: React.FC = () => {
                 onChange={(event) => setStartTime(event.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2"
                 required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">Changeover (Hours)</label>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                value={changeoverHours}
+                onChange={(event) => setChangeoverHours(Number(event.target.value))}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
               />
             </div>
 
@@ -397,7 +418,7 @@ export const PlanningDrawer: React.FC = () => {
                 type="number"
                 min={0}
                 value={quantity}
-                onChange={(event) => setQuantity(Number(event.target.blur))}
+                onChange={(event) => setQuantity(Number(event.target.value))}
                 onWheel={(e) => {
                   e.currentTarget.blur();
                 }}

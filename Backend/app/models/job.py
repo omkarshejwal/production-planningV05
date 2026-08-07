@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Boolean, ForeignKey, ForeignKeyConstraint
+from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Boolean, ForeignKeyConstraint
+from sqlalchemy.orm import relationship
 from app.db.base import Base
 
 class ProductionJob(Base):
@@ -20,15 +21,13 @@ class ProductionJob(Base):
     changeover_minutes = Column(Integer, default=0)
     status = Column(String(20), default="Planned")
     
+    packaging = relationship("JobPackaging", backref="job", cascade="all, delete-orphan",
+                             primaryjoin="and_(ProductionJob.plan_date==foreign(JobPackaging.plan_date), "
+                                         "ProductionJob.machine_no==foreign(JobPackaging.machine_no), "
+                                         "ProductionJob.start_time==foreign(JobPackaging.start_time))")
+    
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["machine_no"],
-            ["machine_master.machine_no"]
-        ),
-        ForeignKeyConstraint(
-            ["machine_no", "bottle_id", "section"],
-            ["bottle_configuration.machine_no", "bottle_configuration.bottle_id", "bottle_configuration.section"]
-        ),
+        {"schema": "production"}
     )
 
 class JobPackaging(Base):
@@ -46,8 +45,5 @@ class JobPackaging(Base):
     pallet_quantity = Column(Numeric(12, 2))
 
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["plan_date", "machine_no", "start_time"],
-            ["production_job.plan_date", "production_job.machine_no", "production_job.start_time"]
-        ),
+        {"schema": "production"}
     )

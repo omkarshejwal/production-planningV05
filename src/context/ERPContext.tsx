@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   ActiveModule,
   BottleMaster,
@@ -23,6 +23,7 @@ import {
   BottleConfigurationRow,
   JobStatusSchema,
   ProductionJobRow,
+  JobPackagingRow,
 } from '../data/planningSchema';
 import {
   addCalendarDays,
@@ -70,14 +71,15 @@ interface ERPContextType {
   ) => void;
   closeDrawer: () => void;
 
-  saveJob: (jobData: Partial<ProductionJob>) => boolean;
+  saveJob: (jobData: Partial<ProductionJob>, packagingRows?: JobPackagingRow[]) => Promise<boolean>;
   deleteJob: (jobId: string) => boolean;
   updateJobInline: (
     jobId: string,
     patch: Partial<Pick<ProductionJob, 'sectionCount' | 'productionQuantity' | 'grossQuantity'>>
   ) => boolean;
-  extendJob: (jobId: string, numberOfDays: number) => boolean;
-  finishJob: (jobId: string) => boolean;
+  extendJob: (jobId: string, numberOfDays: number) => Promise<boolean>;
+  finishJob: (jobId: string) => Promise<boolean>;
+  refreshPlanner: () => void;
   getBottleConfiguration: (machineId: string, bottleId: string, section: number) => BottleConfigurationRow | undefined;
   addBottle: (bottle: BottleMaster) => void;
   updateMachineStatus: (machineId: string, status: ISMachine['status']) => void;
@@ -189,6 +191,15 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const refreshPlanner = () => setPlannerVersion((v) => v + 1);
+
+  // Fetch all master data + jobs from the API on boot and after every write
+  useEffect(() => {
+    planningRepository.init().then(() => {
+      // Force a re-render once cache is populated so useMemo picks up real data
+      setPlannerVersion((v) => v + 1);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const machines = useMemo<ISMachine[]>(() => {
     void plannerVersion;
@@ -380,12 +391,13 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDrawerSuggestedStartTime(undefined);
   };
 
-  const saveJob = (jobData: Partial<ProductionJob>): boolean => {
+  const saveJob = async (jobData: Partial<ProductionJob>, packagingRows?: JobPackagingRow[]): Promise<boolean> => {
     const machine_no = jobData.machineId || drawerDefaultMachineId;
     const plan_date = jobData.date || jobData.startDate || drawerDefaultDate;
     const bottle_id = jobData.bottleId;
     const start_time = jobData.startTime || drawerSuggestedStartTime || '07:00';
 
+    console.log('saveJob: start', { machine_no, plan_date, bottle_id, start_time });
     if (!machine_no || !plan_date || !bottle_id) {
       alert('Machine, date and bottle are required.');
       return false;
@@ -411,6 +423,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const dailyMetrics = calculateProductionMetrics(speeds, weight, machine_no);
     const hourlyQty = dailyMetrics.hourlyQuantity;
 
+    console.log('saveJob: dailyMetrics', dailyMetrics);
+    
     if (!Number.isFinite(quantity) || quantity <= 0) {
       alert('Quantity must be greater than zero.');
       return false;
@@ -443,12 +457,15 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         completion_time: jobData.lifecycleStatus === 'COMPLETED' ? segmentCompletion : undefined,
         changeover_minutes: Math.round((jobData.changeoverHours || 0) * 60),
         status: uiStatusToSchemaStatus(jobData.status),
+        packaging: packagingRows,
       };
     };
 
+    console.log('saveJob: is editingJob?', !!editingJob);
+    
     if (editingJob) {
       const row = createSegmentRow(plan_date, quantity);
-      const updated = planningRepository.updateProductionJob(
+      const updated = await planningRepository.updateProductionJob(
         {
           plan_date: editingJob.date || editingJob.startDate,
           machine_no: editingJob.machineId,
@@ -480,7 +497,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         dayOffset += 1;
       }
 
-      const created = planningRepository.createProductionJobsBatch(rows);
+      console.log('saveJob: calculated rows', rows);
+      const created = await planningRepository.createProductionJobsBatch(rows);
+      console.log('saveJob: batch result', created);
       if (!created.ok) {
         alert(created.error || 'Unable to create production job.');
         return false;
@@ -488,9 +507,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     closeDrawer();
-    refreshPlanner();
+    // Re-fetch from API to sync with AWS after save
+    planningRepository.init().then(() => refreshPlanner());
     return true;
   };
+
 
   const deleteJob = (jobId: string): boolean => {
     const job = jobs.find((j) => j.id === jobId);
@@ -578,7 +599,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
-  const extendJob = (jobId: string, numberOfDays: number): boolean => {
+  const extendJob = async (jobId: string, numberOfDays: number): Promise<boolean> => {
     const source = jobs.find((j) => j.id === jobId);
     if (!source || numberOfDays < 1) return false;
 
@@ -616,7 +637,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       nextStart = addCalendarDays(parseDateTime(nextPlanDate, nextStartTime), estimatedDays);
     }
 
-    const created = planningRepository.createProductionJobsBatch(continuationRows);
+    const created = await planningRepository.createProductionJobsBatch(continuationRows);
     if (!created.ok) {
       alert(created.error || 'Failed to extend production job.');
       refreshPlanner();
@@ -627,11 +648,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
-  const finishJob = (jobId: string): boolean => {
+  const finishJob = async (jobId: string): Promise<boolean> => {
     const job = jobs.find((j) => j.id === jobId);
     if (!job) return false;
 
-    const updated = planningRepository.updateProductionJob(
+    const updated = await planningRepository.updateProductionJob(
       {
         plan_date: job.date || job.startDate,
         machine_no: job.machineId,
@@ -742,6 +763,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateJobInline,
         extendJob,
         finishJob,
+        refreshPlanner,
         getBottleConfiguration,
         addBottle,
         updateMachineStatus,

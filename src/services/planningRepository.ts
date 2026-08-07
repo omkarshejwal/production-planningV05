@@ -1,74 +1,180 @@
+/**
+ * planningRepository.ts — API-backed data layer
+ *
+ * This module replaces the old localStorage-based repository.
+ * It fetches real data from the FastAPI backend (which connects to AWS PostgreSQL)
+ * and caches it in-memory so the synchronous useMemo calls in ERPContext still work.
+ *
+ * Flow:
+ *   1. On app boot, ERPProvider calls planningRepository.init() which fetches all data from API.
+ *   2. All sync getters (getMachines, getBottles, etc.) read from the in-memory cache.
+ *   3. All writes (createProductionJob, updateProductionJob, etc.) POST to the API.
+ *   4. After any write, ERPProvider calls planningRepository.init() again to refresh the cache.
+ */
+
+import { apiFetch } from '../utils/api';
 import {
-  BOTTLE_CONFIGURATION,
-  BOTTLE_MASTER,
-  JOB_PACKAGING_SEED,
-  MACHINE_MASTER,
-  PRODUCTION_JOB_SEED,
   BottleConfigurationRow,
-  JobPackagingRow,
+  BottleMasterRow,
+  MachineMasterRow,
   ProductionJobRow,
+  JobPackagingRow,
 } from '../data/planningSchema';
-import { calculateProductionMetrics } from '../utils/calculations';
 
-const JOBS_STORAGE_KEY = 'vitrum-production_job-v1';
-const PACKAGING_STORAGE_KEY = 'vitrum-job_packaging-v1';
+// ─── In-Memory Cache ───────────────────────────────────────────────────────────
+let _machines: MachineMasterRow[] = [];
+let _bottles: BottleMasterRow[] = [];
+let _configs: BottleConfigurationRow[] = [];
+let _jobs: ProductionJobRow[] = [];
+let _initialized = false;
 
-const readRows = <T>(key: string, fallback: T[]): T[] => {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as T[];
-    return Array.isArray(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
+// ─── Type Guards ───────────────────────────────────────────────────────────────
+const toStr = (v: unknown): string => String(v ?? '');
+const toNum = (v: unknown): number => Number(v) || 0;
+
+/**
+ * Maps a raw API job response (with numeric IDs) to a ProductionJobRow
+ * (with string IDs, matching the format the rest of the UI expects).
+ */
+const mapJobRow = (raw: Record<string, unknown>): ProductionJobRow => {
+  // start_time from backend is a full ISO datetime — extract just HH:MM
+  const startRaw = toStr(raw.start_time);
+  const startTime = startRaw.includes('T')
+    ? startRaw.split('T')[1].substring(0, 5)
+    : startRaw.length >= 5
+    ? startRaw.substring(0, 5)
+    : startRaw;
+
+  const estRaw = toStr(raw.estimated_completion ?? '');
+  const estimatedCompletion = estRaw.includes('T') ? estRaw.substring(0, 16) : estRaw;
+
+  const completionRaw = toStr(raw.completion_time ?? '');
+  const completionTime = completionRaw.includes('T') ? completionRaw.substring(0, 16) : (completionRaw || undefined);
+
+  // machine_no from API is an integer like 1, 2, 3, 4 — map to MAC-0X format
+  const machineNo = toStr(raw.machine_no);
+  const machineId = machineNo.startsWith('MAC-')
+    ? machineNo
+    : `MAC-${machineNo.padStart(2, '0')}`;
+
+  // bottle_id from API is an integer — keep as string
+  const bottleId = toStr(raw.bottle_id);
+
+  return {
+    plan_date: toStr(raw.plan_date),
+    machine_no: machineId,
+    bottle_id: bottleId,
+    section: toNum(raw.section),
+    weight: toNum(raw.weight),
+    speeds: toNum(raw.speeds),
+    draw: toNum(raw.draw),
+    quantity: toNum(raw.quantity),
+    production_hours: toNum(raw.production_hours) || undefined,
+    start_time: startTime,
+    estimated_completion: estimatedCompletion,
+    completion_time: completionTime,
+    changeover_minutes: toNum(raw.changeover_minutes),
+    status: (raw.status as ProductionJobRow['status']) || 'Planned',
+    packaging: Array.isArray(raw.packaging) ? raw.packaging.map((p: any) => ({
+      plan_date: toStr(raw.plan_date),
+      machine_no: machineId,
+      bottle_id: bottleId,
+      section: toNum(raw.section),
+      start_time: startTime,
+      packaging_type: p.packaging_type,
+      quantity: toNum(p.quantity),
+      pallet_packing: p.pallet_packing ? 'YES' : 'NO',
+      pallet_quantity: toNum(p.pallet_quantity)
+    })) : []
+  };
 };
 
-const writeRows = <T>(key: string, rows: T[]): void => {
-  localStorage.setItem(key, JSON.stringify(rows));
+/**
+ * Maps a raw API machine response to a MachineMasterRow.
+ * Backend returns machine_no as integer (1, 2, 3, 4) — convert to MAC-01 format.
+ */
+const mapMachineRow = (raw: Record<string, unknown>): MachineMasterRow => {
+  const no = toStr(raw.machine_no);
+  const machineId = no.startsWith('MAC-') ? no : `MAC-${no.padStart(2, '0')}`;
+  const gobType = toNum(raw.gob_type);
+  return {
+    machine_no: machineId,
+    gob_type: gobType === 3 ? 'Triple Gob' : 'Double Gob',
+    gob_count: gobType,
+    max_section: toNum(raw.max_section),
+  };
 };
 
-const jobKey = (row: ProductionJobRow): string =>
-  [row.plan_date, row.machine_no, row.bottle_id, row.section, row.start_time].join('|');
-
-const parseTimeToMinutes = (time: string): number => {
-  const [hours, minutes] = time.split(':').map(Number);
-  return hours * 60 + minutes;
+/**
+ * Maps a raw API bottle config response to a BottleConfigurationRow.
+ * machine_no comes as integer from API — convert to MAC-0X format.
+ */
+const mapConfigRow = (raw: Record<string, unknown>): BottleConfigurationRow => {
+  const no = toStr(raw.machine_no);
+  const machineId = no.startsWith('MAC-') ? no : `MAC-${no.padStart(2, '0')}`;
+  return {
+    machine_no: machineId,
+    bottle_id: toStr(raw.bottle_id),
+    section: toNum(raw.section),
+    weight: toNum(raw.weight),
+    speeds: toNum(raw.speeds),
+  };
 };
 
-const buildDateTime = (date: string, time: string): Date => {
-  const [year, month, day] = date.split('-').map(Number);
-  const [hours, minutes] = time.split(':').map(Number);
-  return new Date(year, month - 1, day, hours, minutes, 0, 0);
-};
-
-const formatTime = (date: Date): string =>
-  `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-
-const estimateJobWindow = (row: ProductionJobRow): { start: Date; end: Date } => {
-  const start = buildDateTime(row.plan_date, row.start_time);
-  const dailyQty = calculateProductionMetrics(row.speeds, row.weight, row.machine_no).totalQuantity;
-  const hourlyQty = dailyQty > 0 ? dailyQty / 24 : 0;
-  const productionHours = row.production_hours && row.production_hours > 0
-    ? row.production_hours
-    : (hourlyQty > 0 ? row.quantity / hourlyQty : 0);
-  const durationMinutes = productionHours > 0 ? productionHours * 60 : 0;
-  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
-  return { start, end };
-};
+// ─── Public API ────────────────────────────────────────────────────────────────
 
 export const planningRepository = {
-  getMachines() {
-    return MACHINE_MASTER;
+  /**
+   * Fetches all master data and jobs from the FastAPI backend and populates the cache.
+   * Must be called once on app boot, and again after any write operation.
+   */
+  async init(): Promise<void> {
+    try {
+      const [rawMachines, rawBottles, rawConfigs, rawJobs] = await Promise.all([
+        apiFetch('/api/production/machines/'),
+        apiFetch('/api/production/products/bottles/'),
+        apiFetch('/api/production/products/configurations/'),
+        apiFetch('/api/production/jobs/'),
+      ]);
+
+      _machines = (rawMachines as Record<string, unknown>[]).map(mapMachineRow);
+      _bottles = (rawBottles as Record<string, unknown>[]).map((b) => ({
+        bottle_id: toStr(b.bottle_id),
+        bottle_name: toStr(b.bottle_name),
+      }));
+      _configs = (rawConfigs as Record<string, unknown>[]).map(mapConfigRow);
+      _jobs = (rawJobs as Record<string, unknown>[]).map(mapJobRow);
+      _initialized = true;
+    } catch (err) {
+      console.error('planningRepository.init() failed:', err);
+      // Keep existing cache on error — don't wipe good data
+    }
   },
 
-  getBottles() {
-    return BOTTLE_MASTER;
+  isInitialized(): boolean {
+    return _initialized;
+  },
+
+  // ── Sync Getters (read from cache) ──────────────────────────────────────────
+
+  getMachines(): MachineMasterRow[] {
+    return _machines;
+  },
+
+  getBottles(): BottleMasterRow[] {
+    return _bottles;
   },
 
   getBottleConfigurations(machine_no: string, bottle_id: string): BottleConfigurationRow[] {
-    return BOTTLE_CONFIGURATION
+    const specific = _configs
       .filter((row) => row.machine_no === machine_no && row.bottle_id === bottle_id)
+      .sort((a, b) => a.section - b.section);
+      
+    if (specific.length > 0) return specific;
+
+    // Fallback: if no config exists for this specific machine, use any available config for this bottle
+    return _configs
+      .filter((row) => row.bottle_id === bottle_id)
       .sort((a, b) => a.section - b.section);
   },
 
@@ -77,7 +183,7 @@ export const planningRepository = {
   },
 
   getProductionJobs(): ProductionJobRow[] {
-    return readRows(JOBS_STORAGE_KEY, PRODUCTION_JOB_SEED).sort((a, b) => {
+    return [..._jobs].sort((a, b) => {
       if (a.plan_date !== b.plan_date) return a.plan_date.localeCompare(b.plan_date);
       if (a.machine_no !== b.machine_no) return a.machine_no.localeCompare(b.machine_no);
       return a.start_time.localeCompare(b.start_time);
@@ -85,154 +191,34 @@ export const planningRepository = {
   },
 
   getJobPackaging(): JobPackagingRow[] {
-    return readRows(PACKAGING_STORAGE_KEY, JOB_PACKAGING_SEED);
+    // Packaging is embedded in jobs — return empty for now (packaging is handled in backend)
+    return [];
   },
 
-  replaceJobPackagingForJob(
-    key: {
-      plan_date: string;
-      machine_no: string;
-      bottle_id: string;
-      section: number;
-      start_time: string;
-    },
-    rows: JobPackagingRow[]
-  ): { ok: boolean; error?: string } {
-    const jobExists = this.getProductionJobs().some(
-      (job) =>
-        job.plan_date === key.plan_date &&
-        job.machine_no === key.machine_no &&
-        job.bottle_id === key.bottle_id &&
-        job.section === key.section &&
-        job.start_time === key.start_time
-    );
+  // ── Write Operations (POST to API, then caller must call init() to refresh) ─
 
-    if (!jobExists) {
-      return { ok: false, error: 'Packaging must reference an existing production_job' };
+  async createProductionJob(payload: ProductionJobRow): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this._postJob(payload);
+      return { ok: true };
+    } catch (err: any) {
+      console.error('createProductionJob failed:', err);
+      return { ok: false, error: err.message || 'Failed to create job' };
     }
-
-    const current = this.getJobPackaging();
-    const filtered = current.filter(
-      (row) =>
-        !(
-          row.plan_date === key.plan_date &&
-          row.machine_no === key.machine_no &&
-          row.bottle_id === key.bottle_id &&
-          row.section === key.section &&
-          row.start_time === key.start_time
-        )
-    );
-
-    writeRows(PACKAGING_STORAGE_KEY, [...filtered, ...rows]);
-    return { ok: true };
   },
 
-  createProductionJob(payload: ProductionJobRow): { ok: boolean; error?: string } {
-    const machine = MACHINE_MASTER.find((m) => m.machine_no === payload.machine_no);
-    if (!machine) return { ok: false, error: 'Invalid machine_no' };
-
-    const bottle = BOTTLE_MASTER.find((b) => b.bottle_id === payload.bottle_id);
-    if (!bottle) return { ok: false, error: 'Invalid bottle_id' };
-
-    if (payload.section > machine.max_section || payload.section <= 0) {
-      return { ok: false, error: 'Section out of machine range' };
+  async createProductionJobsBatch(payloads: ProductionJobRow[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await Promise.all(payloads.map((p) => this._postJob(p)));
+      return { ok: true };
+    } catch (err: any) {
+      console.error('createProductionJobsBatch failed:', err);
+      return { ok: false, error: err.message || 'Failed to create batch' };
     }
-
-    if (payload.production_hours !== undefined) {
-      if (!Number.isFinite(payload.production_hours) || payload.production_hours <= 0) {
-        return { ok: false, error: 'production_hours must be a positive number' };
-      }
-      if (payload.production_hours > 24) {
-        return { ok: false, error: 'A production row cannot exceed 24 hours' };
-      }
-    }
-
-    const config = this.getBottleConfiguration(payload.machine_no, payload.bottle_id, payload.section);
-
-    if (!config) {
-      return { ok: false, error: 'No bottle_configuration for selected machine, bottle, and section' };
-    }
-
-    const jobs = this.getProductionJobs();
-
-    const nextWindow = estimateJobWindow(payload);
-
-    const overlaps = jobs.some((job) => {
-      if (job.machine_no !== payload.machine_no) return false;
-      const existingWindow = estimateJobWindow(job);
-      return nextWindow.start < existingWindow.end && nextWindow.end > existingWindow.start;
-    });
-
-    if (overlaps) {
-      return { ok: false, error: 'Overlapping job schedule on same machine/day' };
-    }
-
-    const duplicateKey = jobs.some((job) => jobKey(job) === jobKey(payload));
-    if (duplicateKey) {
-      return { ok: false, error: 'Duplicate production_job key fields' };
-    }
-
-    const persisted = [...jobs, payload];
-    writeRows(JOBS_STORAGE_KEY, persisted);
-    return { ok: true };
   },
 
-  createProductionJobsBatch(payloads: ProductionJobRow[]): { ok: boolean; error?: string } {
-    if (payloads.length === 0) return { ok: true };
-
-    const existingJobs = this.getProductionJobs();
-    const staged: ProductionJobRow[] = [];
-
-    for (const payload of payloads) {
-      const machine = MACHINE_MASTER.find((m) => m.machine_no === payload.machine_no);
-      if (!machine) return { ok: false, error: 'Invalid machine_no' };
-
-      const bottle = BOTTLE_MASTER.find((b) => b.bottle_id === payload.bottle_id);
-      if (!bottle) return { ok: false, error: 'Invalid bottle_id' };
-
-      if (payload.section > machine.max_section || payload.section <= 0) {
-        return { ok: false, error: 'Section out of machine range' };
-      }
-
-      if (payload.production_hours !== undefined) {
-        if (!Number.isFinite(payload.production_hours) || payload.production_hours <= 0) {
-          return { ok: false, error: 'production_hours must be a positive number' };
-        }
-        if (payload.production_hours > 24) {
-          return { ok: false, error: 'A production row cannot exceed 24 hours' };
-        }
-      }
-
-      const config = this.getBottleConfiguration(payload.machine_no, payload.bottle_id, payload.section);
-      if (!config) {
-        return { ok: false, error: 'No bottle_configuration for selected machine, bottle, and section' };
-      }
-
-      const duplicateKey = [...existingJobs, ...staged].some((job) => jobKey(job) === jobKey(payload));
-      if (duplicateKey) {
-        return { ok: false, error: 'Duplicate production_job key fields' };
-      }
-
-      const nextWindow = estimateJobWindow(payload);
-      const overlaps = [...existingJobs, ...staged].some((job) => {
-        if (job.machine_no !== payload.machine_no) return false;
-        const existingWindow = estimateJobWindow(job);
-        return nextWindow.start < existingWindow.end && nextWindow.end > existingWindow.start;
-      });
-
-      if (overlaps) {
-        return { ok: false, error: 'Overlapping job schedule on same machine' };
-      }
-
-      staged.push(payload);
-    }
-
-    writeRows(JOBS_STORAGE_KEY, [...existingJobs, ...staged]);
-    return { ok: true };
-  },
-
-  updateProductionJob(
-    originalKey: {
+  async updateProductionJob(
+    _originalKey: {
       plan_date: string;
       machine_no: string;
       bottle_id: string;
@@ -240,54 +226,19 @@ export const planningRepository = {
       start_time: string;
     },
     payload: ProductionJobRow
-  ): { ok: boolean; error?: string } {
-    const rows = this.getProductionJobs();
-    const index = rows.findIndex(
-      (row) =>
-        row.plan_date === originalKey.plan_date &&
-        row.machine_no === originalKey.machine_no &&
-        row.bottle_id === originalKey.bottle_id &&
-        row.section === originalKey.section &&
-        row.start_time === originalKey.start_time
-    );
-
-    if (index < 0) return { ok: false, error: 'Production job not found' };
-
-    const withoutCurrent = rows.filter((_, i) => i !== index);
-    writeRows(JOBS_STORAGE_KEY, withoutCurrent);
-    const created = this.createProductionJob(payload);
-    if (!created.ok) {
-      // rollback
-      writeRows(JOBS_STORAGE_KEY, rows);
-      return created;
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this._postJob(payload);
+      return { ok: true };
+    } catch (err: any) {
+      console.error('updateProductionJob failed:', err);
+      return { ok: false, error: err.message || 'Failed to update job' };
     }
-
-    // Move packaging if key changed
-    const packagingRows = this.getJobPackaging();
-    const migrated = packagingRows.map((pkg) => {
-      const matchesOldKey =
-        pkg.plan_date === originalKey.plan_date &&
-        pkg.machine_no === originalKey.machine_no &&
-        pkg.bottle_id === originalKey.bottle_id &&
-        pkg.section === originalKey.section &&
-        pkg.start_time === originalKey.start_time;
-
-      if (!matchesOldKey) return pkg;
-
-      return {
-        ...pkg,
-        plan_date: payload.plan_date,
-        machine_no: payload.machine_no,
-        bottle_id: payload.bottle_id,
-        section: payload.section,
-        start_time: payload.start_time,
-      };
-    });
-
-    writeRows(PACKAGING_STORAGE_KEY, migrated);
-    return { ok: true };
   },
 
+  /**
+   * Patches a job (section/quantity/hours). Re-posts it to the backend (upsert).
+   */
   patchProductionJob(
     key: {
       plan_date: string;
@@ -298,86 +249,25 @@ export const planningRepository = {
     },
     patch: Partial<Pick<ProductionJobRow, 'section' | 'weight' | 'speeds' | 'draw' | 'quantity' | 'production_hours'>>
   ): { ok: boolean; error?: string; row?: ProductionJobRow } {
-    const rows = this.getProductionJobs();
-    const index = rows.findIndex(
-      (row) =>
-        row.plan_date === key.plan_date &&
-        row.machine_no === key.machine_no &&
-        row.bottle_id === key.bottle_id &&
-        row.section === key.section &&
-        row.start_time === key.start_time
+    const existing = _jobs.find(
+      (j) =>
+        j.plan_date === key.plan_date &&
+        j.machine_no === key.machine_no &&
+        j.bottle_id === key.bottle_id &&
+        j.section === key.section &&
+        j.start_time === key.start_time
     );
+    if (!existing) return { ok: false, error: 'Production job not found' };
 
-    if (index < 0) return { ok: false, error: 'Production job not found' };
-
-    const machine = MACHINE_MASTER.find((m) => m.machine_no === key.machine_no);
-    if (!machine) return { ok: false, error: 'Invalid machine_no' };
-
-    const bottle = BOTTLE_MASTER.find((b) => b.bottle_id === key.bottle_id);
-    if (!bottle) return { ok: false, error: 'Invalid bottle_id' };
-
-    const current = rows[index];
-    const nextSection = patch.section ?? current.section;
-    if (nextSection <= 0 || nextSection > machine.max_section) {
-      return { ok: false, error: 'Section out of machine range' };
-    }
-
-    const updated: ProductionJobRow = {
-      ...current,
-      section: nextSection,
-      weight: patch.weight ?? current.weight,
-      speeds: patch.speeds ?? current.speeds,
-      draw: patch.draw ?? current.draw,
-      quantity: patch.quantity ?? current.quantity,
-      production_hours: patch.production_hours ?? current.production_hours,
-    };
-
-    if (updated.production_hours !== undefined) {
-      if (!Number.isFinite(updated.production_hours) || updated.production_hours <= 0) {
-        return { ok: false, error: 'production_hours must be a positive number' };
-      }
-      if (updated.production_hours > 24) {
-        return { ok: false, error: 'A production row cannot exceed 24 hours' };
-      }
-    }
-
-    // Guard against duplicate key collision if section changes.
-    const duplicate = rows.some((row, i) => {
-      if (i === index) return false;
-      return (
-        row.plan_date === updated.plan_date &&
-        row.machine_no === updated.machine_no &&
-        row.bottle_id === updated.bottle_id &&
-        row.section === updated.section &&
-        row.start_time === updated.start_time
-      );
-    });
-    if (duplicate) {
-      return { ok: false, error: 'A job with same plan_date, machine_no, bottle_id, section, and start_time already exists' };
-    }
-
-    const next = [...rows];
-    next[index] = updated;
-    writeRows(JOBS_STORAGE_KEY, next);
-
-    // Keep packaging FK fields in sync when section changes.
-    if (patch.section !== undefined && patch.section !== current.section) {
-      const pkgRows = this.getJobPackaging();
-      const migrated = pkgRows.map((pkg) => {
-        const matches =
-          pkg.plan_date === key.plan_date &&
-          pkg.machine_no === key.machine_no &&
-          pkg.bottle_id === key.bottle_id &&
-          pkg.section === key.section &&
-          pkg.start_time === key.start_time;
-        return matches ? { ...pkg, section: updated.section } : pkg;
-      });
-      writeRows(PACKAGING_STORAGE_KEY, migrated);
-    }
-
+    const updated: ProductionJobRow = { ...existing, ...patch };
+    this._postJob(updated).catch((err) => console.error('patchProductionJob failed:', err));
     return { ok: true, row: updated };
   },
 
+  /**
+   * Deletes a production job. Note: backend DELETE endpoint may need to be added.
+   * For now this is a no-op on the backend but removes from local cache.
+   */
   deleteProductionJob(key: {
     plan_date: string;
     machine_no: string;
@@ -385,65 +275,111 @@ export const planningRepository = {
     section: number;
     start_time: string;
   }): { ok: boolean } {
-    const jobs = this.getProductionJobs();
-    const filteredJobs = jobs.filter(
-      (row) =>
+    _jobs = _jobs.filter(
+      (j) =>
         !(
-          row.plan_date === key.plan_date &&
-          row.machine_no === key.machine_no &&
-          row.bottle_id === key.bottle_id &&
-          row.section === key.section &&
-          row.start_time === key.start_time
+          j.plan_date === key.plan_date &&
+          j.machine_no === key.machine_no &&
+          j.bottle_id === key.bottle_id &&
+          j.section === key.section &&
+          j.start_time === key.start_time
         )
     );
-    writeRows(JOBS_STORAGE_KEY, filteredJobs);
-
-    const packaging = this.getJobPackaging();
-    const filteredPackaging = packaging.filter(
-      (row) =>
-        !(
-          row.plan_date === key.plan_date &&
-          row.machine_no === key.machine_no &&
-          row.bottle_id === key.bottle_id &&
-          row.section === key.section &&
-          row.start_time === key.start_time
-        )
-    );
-    writeRows(PACKAGING_STORAGE_KEY, filteredPackaging);
+    // TODO: call DELETE /api/production/jobs/... when backend endpoint is ready
     return { ok: true };
   },
 
-  upsertJobPackaging(payload: JobPackagingRow): { ok: boolean; error?: string } {
-    const exists = this.getProductionJobs().some(
-      (job) =>
-        job.plan_date === payload.plan_date &&
-        job.machine_no === payload.machine_no &&
-        job.bottle_id === payload.bottle_id &&
-        job.section === payload.section &&
-        job.start_time === payload.start_time
-    );
-
-    if (!exists) {
-      return { ok: false, error: 'Packaging must reference an existing production_job' };
-    }
-
-    const rows = this.getJobPackaging();
-    const idx = rows.findIndex(
-      (row) =>
-        row.plan_date === payload.plan_date &&
-        row.machine_no === payload.machine_no &&
-        row.bottle_id === payload.bottle_id &&
-        row.section === payload.section &&
-        row.start_time === payload.start_time
-    );
-
-    const next = [...rows];
-    if (idx >= 0) {
-      next[idx] = payload;
-    } else {
-      next.push(payload);
-    }
-    writeRows(PACKAGING_STORAGE_KEY, next);
+  replaceJobPackagingForJob(
+    _key: {
+      plan_date: string;
+      machine_no: string;
+      bottle_id: string;
+      section: number;
+      start_time: string;
+    },
+    _rows: JobPackagingRow[]
+  ): { ok: boolean; error?: string } {
+    // Packaging is now handled directly in the POST job payload
     return { ok: true };
+  },
+
+  upsertJobPackaging(_payload: JobPackagingRow): { ok: boolean; error?: string } {
+    // Packaging is now handled directly in the POST job payload
+    return { ok: true };
+  },
+
+  // ── Internal helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Converts a MAC-01 style machine_no to the integer the backend expects (1, 2, 3, 4).
+   */
+  _machineIdToInt(machineId: string): number {
+    const match = machineId.match(/(\d+)$/);
+    return match ? parseInt(match[1], 10) : parseInt(machineId, 10) || 1;
+  },
+
+  /**
+   * Converts a start_time string "HH:MM" to a full ISO datetime for the backend.
+   * Uses the plan_date to build the full datetime.
+   */
+  _buildStartTime(plan_date: string, start_time: string): string {
+    const time = start_time && start_time.includes(':') ? start_time : '07:00';
+    return `${plan_date}T${time}:00`;
+  },
+
+  /**
+   * Builds an ISO datetime for completion times, accounting for next-day rollover.
+   * Because segments are <= 24 hours, if completion_time < start_time, it rolled over to the next day.
+   */
+  _buildCompletionTime(plan_date: string, start_time: string, completion_time: string): string {
+    const sTime = start_time && start_time.includes(':') ? start_time : '07:00';
+    const cTime = completion_time && completion_time.includes(':') ? completion_time : '00:00';
+    
+    let dateObj = new Date(`${plan_date}T00:00:00`);
+    if (cTime < sTime) {
+      dateObj.setDate(dateObj.getDate() + 1);
+    }
+    
+    const y = dateObj.getFullYear();
+    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const d = String(dateObj.getDate()).padStart(2, '0');
+    
+    return `${y}-${m}-${d}T${cTime}:00`;
+  },
+
+  /**
+   * Posts a single ProductionJobRow to the backend API.
+   * Translates frontend format (MAC-01, BOT-001 strings) to backend format (integers).
+   */
+  async _postJob(payload: ProductionJobRow): Promise<void> {
+    const machineInt = this._machineIdToInt(payload.machine_no);
+    const bottleInt = parseInt(payload.bottle_id, 10);
+
+    const body = {
+      plan_date: payload.plan_date,
+      machine_no: machineInt,
+      bottle_id: bottleInt,
+      section: payload.section,
+      start_time: this._buildStartTime(payload.plan_date, payload.start_time),
+      estimated_completion: payload.estimated_completion
+        ? (payload.estimated_completion.includes('T') ? payload.estimated_completion : this._buildCompletionTime(payload.plan_date, payload.start_time, payload.estimated_completion))
+        : null,
+      completion_time: payload.completion_time
+        ? (payload.completion_time.includes('T') ? payload.completion_time : this._buildCompletionTime(payload.plan_date, payload.start_time, payload.completion_time))
+        : null,
+      changeover_minutes: payload.changeover_minutes || 0,
+      draw: payload.draw || 0,
+      packaging: payload.packaging ? payload.packaging.map(p => ({
+        packaging_type: p.packaging_type,
+        quantity: p.quantity,
+        pallet_packing: p.pallet_packing === 'YES',
+        pallet_quantity: p.pallet_quantity || null
+      })) : [],
+    };
+
+    await apiFetch('/api/production/jobs/', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   },
 };

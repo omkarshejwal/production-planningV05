@@ -20,8 +20,9 @@ from app.models.product import BottleMaster, BottleConfiguration
 from app.models.job import ProductionJob, JobPackaging
 from app.models.audit_log import AuditLog
 
-# Create all database tables (if they don't exist yet)
-Base.metadata.create_all(bind=engine)
+# NOTE: We do NOT call Base.metadata.create_all() here because the AWS database
+# already has the schema and tables. Calling create_all would try to recreate them.
+# Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="VitrumGlass Manufacturing API",
@@ -32,17 +33,17 @@ app = FastAPI(
 # 2. Add CORS Middleware to whitelist the Frontend!
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, change this to ["http://localhost:3000", "https://your-aws-site.com"]
-    allow_credentials=True,
+    allow_origins=["*"],  # In production, change this to your specific domain
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# This plugs the modules into the main application
-app.include_router(machines.router)
-app.include_router(products.router)
-app.include_router(jobs.router)
-app.include_router(audit_logs.router)
+# This plugs the modules into the main application with the correct /api/production prefix
+app.include_router(machines.router, prefix="/api/production")
+app.include_router(products.router, prefix="/api/production")
+app.include_router(jobs.router, prefix="/api/production")
+app.include_router(audit_logs.router, prefix="/api/production")
 
 @app.get("/health")
 def health_check():
@@ -52,5 +53,5 @@ def health_check():
     return {
         "status": "healthy", 
         "service": "vitrumglass-api",
-        "db_url": settings.DATABASE_URL # Removing this in production!
+        "db_url": settings.DATABASE_URL  # Removing this in production!
     }

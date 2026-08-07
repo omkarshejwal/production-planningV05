@@ -21,6 +21,7 @@ class ProductionJobCreate(BaseModel):
     draw: Decimal
     
     estimated_completion: Optional[datetime] = None
+    completion_time: Optional[datetime] = None
     changeover_minutes: int = 0
     
     packaging: List[JobPackagingCreate] = []
@@ -39,6 +40,7 @@ class ProductionJobResponse(BaseModel):
     completion_time: Optional[datetime]
     changeover_minutes: int
     status: str
+    packaging: List[JobPackagingCreate] = []
 
     class Config:
         from_attributes = True
