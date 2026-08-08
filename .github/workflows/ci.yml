@@ -44,3 +44,36 @@ jobs:
 
       - name: Run Tests
         run: pytest Backend/tests/
+
+  build-and-push:
+    # This line tells GitHub to wait for the tests to pass!
+    needs: [frontend-tests, backend-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./Backend
+          push: true
+          # Note: Docker tags must be entirely lowercase!
+          tags: ghcr.io/omkarshejwal/production-planningv05-backend:latest
+
+      - name: Build and push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/omkarshejwal/production-planningv05-frontend:latest
