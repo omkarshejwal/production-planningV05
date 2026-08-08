@@ -1,16 +1,16 @@
-# Stage 1: Build the React application
-FROM node:18-alpine as build
+# Stage 1: Build the React application using Bun
+FROM oven/bun:alpine as build
 
 WORKDIR /app
 
-# Copy package.json and install dependencies
-COPY package*.json ./
-RUN npm ci
+# Copy package files and install dependencies with Bun
+COPY package.json bun.lock ./
+RUN bun install
 
 # Copy application source code and build it
 COPY . .
 ENV VITE_API_URL=""
-RUN npm run build
+RUN bun run build
 
 # Stage 2: Serve the application with Nginx
 FROM nginx:alpine
