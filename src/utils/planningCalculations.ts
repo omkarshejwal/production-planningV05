@@ -80,8 +80,8 @@ const clampIntervalToWindow = (start: Date, end: Date, windowStart: Date, window
 export function calculateDrawForProductionHours(
   cutPerMin: number,
   weightGrams: number,
-  machineNo?: string | number,
-  productionHours: number
+  productionHours: number,
+  machineNo?: string | number
 ): number {
   const safeHours = Number.isFinite(productionHours) && productionHours > 0 ? productionHours : 0;
   if (safeHours <= 0) return 0;
@@ -113,7 +113,7 @@ export function calculateDrawForProductionDay(
   const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
   const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
   const effectiveHours = Math.min(productionHours, hoursNeededToMeetQty);
-  return calculateDrawForProductionHours(entry.cut, entry.wt, machineNo, effectiveHours);
+  return calculateDrawForProductionHours(entry.cut, entry.wt, effectiveHours, machineNo);
 }
 
 export function calculateDailyDrawForEntries(
@@ -147,7 +147,7 @@ export function calculateDailyDrawForEntries(
       const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
       const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
       const effectiveHours = Math.min(productionHours, hoursNeededToMeetQty);
-      totalDraw += calculateDrawForProductionHours(entry.cut, entry.wt, entry.machineNo, effectiveHours);
+      totalDraw += calculateDrawForProductionHours(entry.cut, entry.wt, effectiveHours, entry.machineNo);
     }
 
     const nextEntry = sortedEntries[index + 1];
