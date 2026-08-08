@@ -2,6 +2,173 @@ import { BottleEntry, DateRow, MachineEntry, MachineLists } from '../types/plann
 import { BOTTLE_SPEEDS, MACHINE_BOTTLES, NONE_ENTRY } from '../data/bottleReference';
 import { calculateDraw, calculateProductionMetrics } from './calculations';
 
+export const PRODUCTION_DAY_START_HOUR = 7;
+export const PRODUCTION_DAY_DURATION_HOURS = 24;
+
+const toDateParts = (value: Date | string): { year: number; month: number; day: number } => {
+  if (value instanceof Date) {
+    return {
+      year: value.getFullYear(),
+      month: value.getMonth(),
+      day: value.getDate(),
+    };
+  }
+
+  const trimmed = String(value).trim();
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return {
+      year: Number(isoMatch[1]),
+      month: Number(isoMatch[2]) - 1,
+      day: Number(isoMatch[3]),
+    };
+  }
+
+  const displayMatch = trimmed.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  if (!displayMatch) {
+    const parsed = new Date(trimmed);
+    return {
+      year: parsed.getFullYear(),
+      month: parsed.getMonth(),
+      day: parsed.getDate(),
+    };
+  }
+
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthIndex = monthNames.indexOf(displayMatch[2]);
+  return {
+    year: Number(displayMatch[3]),
+    month: monthIndex >= 0 ? monthIndex : 0,
+    day: Number(displayMatch[1]),
+  };
+};
+
+const parseClockTime = (timeValue?: string): { hours: number; minutes: number } => {
+  const raw = (timeValue || '07:00').trim();
+  const [hoursRaw, minutesRaw] = raw.split(':');
+  const hours = Number(hoursRaw) || 0;
+  const minutes = Number(minutesRaw) || 0;
+  return { hours, minutes };
+};
+
+const buildDateTime = (dayValue: Date | string, timeValue?: string): Date => {
+  const day = typeof dayValue === 'string' ? new Date(dayValue) : new Date(dayValue);
+  const { hours, minutes } = parseClockTime(timeValue);
+  day.setHours(hours, minutes, 0, 0);
+  if (hours < PRODUCTION_DAY_START_HOUR) {
+    day.setDate(day.getDate() - 1);
+  }
+  return day;
+};
+
+const getProductionDayWindow = (dayValue: Date | string) => {
+  const day = typeof dayValue === 'string' ? new Date(dayValue) : new Date(dayValue);
+  const windowStart = new Date(day);
+  windowStart.setHours(PRODUCTION_DAY_START_HOUR, 0, 0, 0);
+  const windowEnd = new Date(windowStart);
+  windowEnd.setDate(windowEnd.getDate() + 1);
+  return { windowStart, windowEnd };
+};
+
+const clampIntervalToWindow = (start: Date, end: Date, windowStart: Date, windowEnd: Date): number => {
+  const overlapStart = start > windowStart ? start : windowStart;
+  const overlapEnd = end < windowEnd ? end : windowEnd;
+  if (overlapEnd <= overlapStart) return 0;
+  return (overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60);
+};
+
+export function calculateDrawForProductionHours(
+  cutPerMin: number,
+  weightGrams: number,
+  machineNo?: string | number,
+  productionHours: number
+): number {
+  const safeHours = Number.isFinite(productionHours) && productionHours > 0 ? productionHours : 0;
+  if (safeHours <= 0) return 0;
+  const metrics = calculateProductionMetrics(cutPerMin, weightGrams, machineNo);
+  const drawRatePer24Hours = metrics.totalQuantity > 0 ? calculateDraw(metrics.totalQuantity, weightGrams) : 0;
+  return drawRatePer24Hours > 0 ? drawRatePer24Hours * (safeHours / PRODUCTION_DAY_DURATION_HOURS) : 0;
+}
+
+export function calculateDrawForProductionDay(
+  dayValue: Date | string,
+  entry: Pick<MachineEntry, 'cut' | 'wt' | 'qty' | 'requiredBottles' | 'startTime' | 'endTime'>,
+  machineNo?: string | number
+): number {
+  const { windowStart, windowEnd } = getProductionDayWindow(dayValue);
+  const productionStart = buildDateTime(dayValue, entry.startTime || '07:00');
+  const productionEnd = entry.endTime
+    ? buildDateTime(dayValue, entry.endTime)
+    : new Date(windowEnd);
+
+  if (productionEnd <= productionStart) {
+    return 0;
+  }
+
+  const productionHours = clampIntervalToWindow(productionStart, productionEnd, windowStart, windowEnd);
+  if (productionHours <= 0) return 0;
+
+  const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
+  const metrics = calculateProductionMetrics(entry.cut, entry.wt, machineNo);
+  const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
+  const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
+  const effectiveHours = Math.min(productionHours, hoursNeededToMeetQty);
+  return calculateDrawForProductionHours(entry.cut, entry.wt, machineNo, effectiveHours);
+}
+
+export function calculateDailyDrawForEntries(
+  dayValue: Date | string,
+  entries: Array<Pick<MachineEntry, 'cut' | 'wt' | 'qty' | 'requiredBottles' | 'startTime' | 'endTime'> & { machineNo?: string | number }>
+): number {
+  const { windowStart, windowEnd } = getProductionDayWindow(dayValue);
+  const sortedEntries = entries
+    .filter((entry) => entry && (entry.cut > 0 || entry.wt > 0 || entry.qty > 0))
+    .map((entry) => ({
+      ...entry,
+      productionStart: buildDateTime(dayValue, entry.startTime || '07:00'),
+      productionEnd: entry.endTime
+        ? buildDateTime(dayValue, entry.endTime)
+        : new Date(windowEnd),
+    }))
+    .sort((a, b) => a.productionStart.getTime() - b.productionStart.getTime());
+
+  let totalDraw = 0;
+
+  sortedEntries.forEach((entry, index) => {
+    const productionStart = entry.productionStart;
+    const productionEnd = entry.productionEnd;
+    const segmentStart = productionStart > windowStart ? productionStart : windowStart;
+    const segmentEnd = productionEnd < windowEnd ? productionEnd : windowEnd;
+
+    if (segmentEnd > segmentStart) {
+      const productionHours = (segmentEnd.getTime() - segmentStart.getTime()) / (1000 * 60 * 60);
+      const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
+      const metrics = calculateProductionMetrics(entry.cut, entry.wt, entry.machineNo);
+      const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
+      const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
+      const effectiveHours = Math.min(productionHours, hoursNeededToMeetQty);
+      totalDraw += calculateDrawForProductionHours(entry.cut, entry.wt, entry.machineNo, effectiveHours);
+    }
+
+    const nextEntry = sortedEntries[index + 1];
+    if (!nextEntry) return;
+
+    const nextStart = nextEntry.productionStart;
+    const changeoverStart = productionEnd > windowStart ? productionEnd : windowStart;
+    const changeoverEnd = nextStart < windowEnd ? nextStart : windowEnd;
+    const effectiveChangeoverStart = changeoverStart > windowStart ? changeoverStart : windowStart;
+    const effectiveChangeoverEnd = changeoverEnd < windowEnd ? changeoverEnd : windowEnd;
+    if (effectiveChangeoverEnd > effectiveChangeoverStart) {
+      const changeoverHours = (effectiveChangeoverEnd.getTime() - effectiveChangeoverStart.getTime()) / (1000 * 60 * 60);
+      const previousMetrics = calculateProductionMetrics(entry.cut, entry.wt, entry.machineNo);
+      const previousDrawRatePer24Hours = previousMetrics.totalQuantity > 0 ? calculateDraw(previousMetrics.totalQuantity, entry.wt) : 0;
+      totalDraw += previousDrawRatePer24Hours > 0 ? previousDrawRatePer24Hours * (changeoverHours / PRODUCTION_DAY_DURATION_HOURS) : 0;
+    }
+  });
+
+  return Number(totalDraw.toFixed(2));
+}
+
 // Machine 1 & 4 → max 8 sections, Machine 2 & 3 → max 10 sections (mIdx is 0-based)
 export const MAX_SECTIONS = (mIdx: number) => (mIdx === 0 || mIdx === 3) ? 8 : 10;
 

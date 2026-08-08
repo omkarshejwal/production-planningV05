@@ -184,8 +184,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
 
   const [user] = useState({
-    name: 'Ahmed S.',
-    email: 'ahmed.s@vitrumglass.com',
+    name: 'Omkar S.',
+    email: 'omkar.s@vitrumglass.com',
     role: 'Chief Plant Production Manager',
     plantLocation: 'Furnace Line #2 - Vitrum Glass Ind.',
   });
