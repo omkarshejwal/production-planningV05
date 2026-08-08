@@ -48,7 +48,6 @@ export const ProfileModule: React.FC = () => {
             <Calendar className="w-4 h-4 text-purple-600" />
             <div>
               <p className="text-[10px] text-slate-400">Active Shift Duty</p>
-              <p className="font-semibold text-slate-800">Shift A (06:00 - 14:00)</p>
             </div>
           </div>
         </div>
