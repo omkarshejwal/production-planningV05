@@ -331,6 +331,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         date: row.plan_date,
         startTime: row.start_time,
         expectedEndTime: resolvedEndTime,
+        completionTime: row.completion_time,
         productionQuantity: row.quantity,
         productionHours: resolvedProductionHours,
         linkedJobGroupId: `${row.machine_no}|${row.bottle_id}|${row.section}|${row.start_time}`,

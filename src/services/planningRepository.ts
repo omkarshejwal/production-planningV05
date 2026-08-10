@@ -369,6 +369,7 @@ export const planningRepository = {
         : null,
       changeover_minutes: payload.changeover_minutes || 0,
       draw: payload.draw || 0,
+      status: payload.status || null,
       packaging: payload.packaging ? payload.packaging.map(p => ({
         packaging_type: p.packaging_type,
         quantity: p.quantity,
