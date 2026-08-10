@@ -522,13 +522,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    planningRepository.deleteProductionJob({
-      plan_date: job.date || job.startDate,
-      machine_no: job.machineId,
-      bottle_id: job.bottleId,
-      section: job.sectionCount,
-      start_time: job.startTime || '07:00',
-    });
+    planningRepository.deleteProductionJob(
+      job.date || job.startDate,
+      job.machineId,
+      job.startTime || '07:00'
+    );
     refreshPlanner();
     return true;
   };
