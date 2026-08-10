@@ -8,8 +8,10 @@ services:
     container_name: vitrum-backend
     ports:
       - "8000:8000"
-    env_file:
-      - ./Backend/.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/vitrumglass.db}
+    volumes:
+      - backend-data:/app/data
     restart: unless-stopped
 
   frontend:
@@ -22,3 +24,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  backend-data:

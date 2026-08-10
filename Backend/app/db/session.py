@@ -1,22 +1,15 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+from app.core.config import settings
 
-load_dotenv()
-
-# Use AWS Postgres if provided, else fallback to local SQLite
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./vitrumglass.db")
+SQLALCHEMY_DATABASE_URL = settings.normalized_database_url
 
 # SQLite requires specific arguments that Postgres does not
-if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+if settings.is_sqlite:
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
     )
 else:
-    # If the URL is postgres://, SQLAlchemy requires postgresql://
-    if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
-        SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
     engine = create_engine(SQLALCHEMY_DATABASE_URL)
 
 # 2. Create the Session Factory
