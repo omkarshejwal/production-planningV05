@@ -90,31 +90,6 @@ export const Header: React.FC = () => {
       <div className="flex items-center gap-3">
         {/* Search Bar */}
         <div className="relative">
-          <div className="relative flex items-center">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
-            <input
-              type="text"
-              placeholder="Search machine, product, date, job..."
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setShowSearchResults(true);
-              }}
-              onFocus={() => setShowSearchResults(true)}
-              className="w-48 sm:w-64 md:w-80 pl-9 pr-8 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => {
-                  setSearchQuery('');
-                  setShowSearchResults(false);
-                }}
-                className="absolute right-2 text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
 
           {/* Search Dropdown Popup */}
           {showSearchResults && searchQuery.trim() !== '' && (

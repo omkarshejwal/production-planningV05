@@ -81,6 +81,8 @@ def create_job(
         existing_job.estimated_completion = job_in.estimated_completion
         existing_job.completion_time = job_in.completion_time
         existing_job.changeover_minutes = job_in.changeover_minutes
+        if job_in.status:
+            existing_job.status = job_in.status
         
         # Clear old packaging for this job
         db.query(JobPackaging).filter_by(
@@ -103,7 +105,8 @@ def create_job(
             quantity=calculated_qty,
             estimated_completion=job_in.estimated_completion,
             completion_time=job_in.completion_time,
-            changeover_minutes=job_in.changeover_minutes
+            changeover_minutes=job_in.changeover_minutes,
+            status=job_in.status or "Planned"
         )
         db.add(new_job)
 

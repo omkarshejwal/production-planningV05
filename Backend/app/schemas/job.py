@@ -23,7 +23,8 @@ class ProductionJobCreate(BaseModel):
     estimated_completion: Optional[datetime] = None
     completion_time: Optional[datetime] = None
     changeover_minutes: int = 0
-    
+    status: Optional[str] = None
+
     packaging: List[JobPackagingCreate] = []
 
 class ProductionJobResponse(BaseModel):

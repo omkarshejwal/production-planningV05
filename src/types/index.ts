@@ -83,6 +83,7 @@ export interface ProductionJob {
   date?: string; // YYYY-MM-DD
   startTime?: string; // HH:mm
   expectedEndTime?: string; // HH:mm
+  completionTime?: string; // Actual completion from backend (YYYY-MM-DDTHH:mm)
   productionQuantity?: number; // Planned quantity for this specific day job
   productionHours?: number; // Planned production hours for this specific day job (max 24)
   linkedJobGroupId?: string;
