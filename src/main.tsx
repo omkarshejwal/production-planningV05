@@ -1,7 +1,14 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import officialLogo from './assets/logo.ts';
 import './index.css';
+
+const favicon = document.createElement('link');
+favicon.rel = 'icon';
+favicon.type = 'image/jpeg';
+favicon.href = officialLogo;
+document.head.appendChild(favicon);
 
 // Disable mouse wheel changing number inputs globally
 document.addEventListener(
