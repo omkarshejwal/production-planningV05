@@ -81,7 +81,7 @@ export function calculateDrawForProductionHours(
   cutPerMin: number,
   weightGrams: number,
   machineNo?: string | number,
-  productionHours: number
+  productionHours = PRODUCTION_DAY_DURATION_HOURS
 ): number {
   const safeHours = Number.isFinite(productionHours) && productionHours > 0 ? productionHours : 0;
   if (safeHours <= 0) return 0;
