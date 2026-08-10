@@ -217,7 +217,27 @@ Install dependencies
 npm install
 ```
 
-Start the development server
+Install backend dependencies
+
+```bash
+cd Backend
+pip install -r requirements.txt
+```
+
+Create the backend environment file
+
+```bash
+cp Backend/.env.example Backend/.env
+```
+
+Start the backend API
+
+```bash
+cd Backend
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Start the frontend development server
 
 ```bash
 npm run dev
@@ -226,8 +246,10 @@ npm run dev
 Open your browser
 
 ```
-http://localhost:5173
+http://localhost:3000
 ```
+
+The backend defaults to a local SQLite database, so the app can run without any external database setup. To use PostgreSQL instead, set `DATABASE_URL` in `Backend/.env`.
 
 ---
 
@@ -255,7 +277,7 @@ Previews the production build.
 npm run lint
 ```
 
-Runs ESLint.
+Runs the TypeScript check.
 
 ---
 

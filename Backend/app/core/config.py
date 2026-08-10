@@ -1,12 +1,25 @@
 # pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
-    # This must match the exact variable name in your .env file
-    DATABASE_URL: str
+    DATABASE_URL: str = "sqlite:///./vitrumglass.db"
 
-    # This tells Pydantic to look for the .env file in our root folder
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-# We create a single instance of the settings to use throughout our app
+    @property
+    def normalized_database_url(self) -> str:
+        if self.DATABASE_URL.startswith("postgres://"):
+            return self.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        return self.DATABASE_URL
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.normalized_database_url.startswith("sqlite")
+
+    @property
+    def production_schema(self) -> str | None:
+        return None if self.is_sqlite else "production"
+
+
 settings = Settings()

@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Boolean, ForeignKeyConstraint
 from sqlalchemy.orm import relationship
-from app.db.base import Base
+from app.db.base import Base, production_table_args
 
 class ProductionJob(Base):
     __tablename__ = "production_job"
@@ -26,9 +26,7 @@ class ProductionJob(Base):
                                          "ProductionJob.machine_no==foreign(JobPackaging.machine_no), "
                                          "ProductionJob.start_time==foreign(JobPackaging.start_time))")
     
-    __table_args__ = (
-        {"schema": "production"}
-    )
+    __table_args__ = production_table_args()
 
 class JobPackaging(Base):
     __tablename__ = "job_packaging"
@@ -44,6 +42,4 @@ class JobPackaging(Base):
     pallet_packing = Column(Boolean, default=False)
     pallet_quantity = Column(Numeric(12, 2))
 
-    __table_args__ = (
-        {"schema": "production"}
-    )
+    __table_args__ = production_table_args()

@@ -1,6 +1,7 @@
 # pyrefly: ignore [missing-import]
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from app.core.config import settings
 
 # Import the router we just built!
@@ -20,9 +21,11 @@ from app.models.product import BottleMaster, BottleConfiguration
 from app.models.job import ProductionJob, JobPackaging
 from app.models.audit_log import AuditLog
 
-# NOTE: We do NOT call Base.metadata.create_all() here because the AWS database
-# already has the schema and tables. Calling create_all would try to recreate them.
-# Base.metadata.create_all(bind=engine)
+def initialize_database() -> None:
+    if settings.production_schema:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.production_schema}"'))
+    Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="VitrumGlass Manufacturing API",
@@ -44,6 +47,11 @@ app.include_router(machines.router, prefix="/api/production")
 app.include_router(products.router, prefix="/api/production")
 app.include_router(jobs.router, prefix="/api/production")
 app.include_router(audit_logs.router, prefix="/api/production")
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    initialize_database()
 
 @app.get("/health")
 def health_check():
