@@ -204,6 +204,16 @@ export const ProductionPlanningPage: React.FC = () => {
          }
       }
 
+      const isCompleted = job.lifecycleStatus === 'COMPLETED' || (job as any).status === 'Completed';
+      // Completed jobs use their actual completion time (HH:MM) — same as the End Job flow.
+      // Running jobs have no end time yet (same as local mode), so the existing draw
+      // calculation covers the production-day window instead of a zero-length interval.
+      const completionClock = job.completionTime
+        ? (job.completionTime.includes('T')
+            ? job.completionTime.split('T')[1].substring(0, 5)
+            : job.completionTime.substring(0, 5))
+        : '';
+
       const entry: MachineEntry = {
         eid: Math.random(),
         product,
@@ -214,8 +224,8 @@ export const ProductionPlanningPage: React.FC = () => {
         qty: job.productionQuantity || job.grossQuantity || 0,
         section: job.sectionCount || 0,
         startTime: job.startTime || '07:00',
-        endTime: job.expectedEndTime || '',
-        status: (job.lifecycleStatus === 'COMPLETED' || (job as any).status === 'Completed') ? 'completed' : 'running',
+        endTime: isCompleted ? completionClock : '',
+        status: isCompleted ? 'completed' : 'running',
         packingAllocations: packAllocations,
         packingCategory: packCat as any,
         palletPacking,
