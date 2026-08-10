@@ -127,3 +127,35 @@ def create_job(
     db.commit()
     db.refresh(new_job)
     return new_job
+
+@router.delete("/{plan_date}/{machine_no}/{start_time}", status_code=204)
+def delete_job(
+    plan_date: str,
+    machine_no: int,
+    start_time: str,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role)
+):
+    """
+    Delete a production job and its associated packaging rows.
+    """
+    existing_job = db.query(ProductionJob).filter_by(
+        plan_date=plan_date,
+        machine_no=machine_no,
+        start_time=start_time
+    ).first()
+
+    if not existing_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Clear packaging for this job
+    db.query(JobPackaging).filter_by(
+        plan_date=plan_date,
+        machine_no=machine_no,
+        start_time=start_time
+    ).delete()
+    db.flush()  # Force DELETE to execute before job deletion
+
+    # Delete the job
+    db.delete(existing_job)
+    db.commit()

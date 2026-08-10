@@ -264,29 +264,22 @@ export const planningRepository = {
     return { ok: true, row: updated };
   },
 
-  /**
-   * Deletes a production job. Note: backend DELETE endpoint may need to be added.
-   * For now this is a no-op on the backend but removes from local cache.
-   */
-  deleteProductionJob(key: {
-    plan_date: string;
-    machine_no: string;
-    bottle_id: string;
-    section: number;
-    start_time: string;
-  }): { ok: boolean } {
-    _jobs = _jobs.filter(
-      (j) =>
-        !(
-          j.plan_date === key.plan_date &&
-          j.machine_no === key.machine_no &&
-          j.bottle_id === key.bottle_id &&
-          j.section === key.section &&
-          j.start_time === key.start_time
-        )
-    );
-    // TODO: call DELETE /api/production/jobs/... when backend endpoint is ready
-    return { ok: true };
+  async deleteProductionJob(
+    plan_date: string,
+    machine_no: string,
+    start_time: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const machineInt = this._machineIdToInt(machine_no);
+      const startTimeIso = this._buildStartTime(plan_date, start_time);
+      await apiFetch(`/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(startTimeIso)}`, {
+        method: 'DELETE',
+      });
+      return { ok: true };
+    } catch (err: any) {
+      console.error('deleteProductionJob failed:', err);
+      return { ok: false, error: err.message || 'Failed to delete job' };
+    }
   },
 
   replaceJobPackagingForJob(

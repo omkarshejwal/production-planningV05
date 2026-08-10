@@ -45,6 +45,7 @@ import { addCalendarDays } from '../../utils/calculations';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
+import { ConfirmationModal } from '../common/ConfirmationModal';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -248,6 +249,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string } | null>(null);
   const [endJobModal, setEndJobModal] = useState<{ mIdx: number; rowIdx: number } | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
@@ -1071,9 +1073,27 @@ export const ProductionPlanningPage: React.FC = () => {
                                 {/* BN */}
                                 <td className={`px-2 py-1.5 border-l-2 border-r border-[#E5E7EB] ${cellBg}`}
                                   style={{ borderLeftColor: '#9CA3AF' }}>
-                                  <div className="flex items-center gap-1 mb-0.5">
-                                    <Lock size={7} className="text-[#9CA3AF] shrink-0" />
-                                    <span className="text-[9px] font-bold text-[#9CA3AF]">JOB {completedIdx + 1}</span>
+                                  <div className="flex items-center justify-between gap-1 mb-0.5">
+                                    <div className="flex items-center gap-1">
+                                      <Lock size={7} className="text-[#9CA3AF] shrink-0" />
+                                      <span className="text-[9px] font-bold text-[#9CA3AF]">JOB {completedIdx + 1}</span>
+                                    </div>
+                                    <button
+                                      onClick={() => {
+                                        if (!completedJob.startTime) {
+                                          toast.error("Cannot delete: job start time is missing");
+                                          return;
+                                        }
+                                        const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
+                                        if (!planDate) return;
+                                        const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+                                        setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, isCompleted: true });
+                                      }}
+                                      title="Delete historical job"
+                                      className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
+                                    >
+                                      <Minus size={7} />
+                                    </button>
                                   </div>
                                   <p className="text-[10px] font-semibold text-[#4B5563] truncate leading-tight">
                                     {completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—'}
@@ -1167,18 +1187,18 @@ export const ProductionPlanningPage: React.FC = () => {
                                       )}
                                       <button
                                         onClick={() => {
-                                          updateMachineLists(prev => {
-                                            const nxt = [...prev] as MachineLists;
-                                            const l   = [...nxt[mIdx]];
-                                            l[rowIdx] = makeNoneEntry(mIdx);
-                                            nxt[mIdx] = l;
-                                            return nxt;
-                                          });
-                                          setCompletedJobMap(prev => {
-                                            const u = { ...prev };
-                                            delete u[`${mIdx}-${rowIdx}`];
-                                            return u;
-                                          });
+                                          if (!entry.startTime) {
+                                            toast.error("Cannot delete: job start time is missing");
+                                            return;
+                                          }
+                                          
+                                          const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
+                                          if (!planDate) return;
+                                          
+                                          // Consistent with how machine_no is built in handleSaveToDb (line 289)
+                                          const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+                                          
+                                          setDeleteModal({ planDate, machineNo, startTime: entry.startTime });
                                         }}
                                         title="Remove this job"
                                         className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
@@ -1334,6 +1354,35 @@ export const ProductionPlanningPage: React.FC = () => {
           newJobStartTime={editModal.newJobStartTime}
         />
       )}
+
+      {/* Delete Modal */}
+      <ConfirmationModal
+        isOpen={!!deleteModal}
+        title={deleteModal?.isCompleted ? "Delete Historical Job" : "Delete Job"}
+        message={
+          deleteModal?.isCompleted
+            ? "WARNING: This is a COMPLETED production record. Deleting it will permanently remove historical output data. Are you absolutely sure you want to proceed?"
+            : "Are you sure you want to delete this job? This cannot be undone."
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        isDanger={true}
+        requireWord={deleteModal?.isCompleted ? "DELETE" : undefined}
+        onConfirm={async () => {
+          if (!deleteModal) return;
+          const { planDate, machineNo, startTime } = deleteModal;
+          const res = await planningRepository.deleteProductionJob(planDate, machineNo, startTime);
+          if (res.ok) {
+            await planningRepository.init();
+            refreshPlanner();
+            toast.success("Job deleted successfully.");
+          } else {
+            toast.error(res.error || "Failed to delete job");
+          }
+          setDeleteModal(null);
+        }}
+        onCancel={() => setDeleteModal(null)}
+      />
 
       {/* End Job Modal */}
       {endJobModal && (() => {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { AlertCircle, X } from 'lucide-react';
 
 interface ConfirmationModalProps {
@@ -8,6 +8,7 @@ interface ConfirmationModalProps {
   confirmLabel?: string;
   cancelLabel?: string;
   isDanger?: boolean;
+  requireWord?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -19,10 +20,19 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   isDanger = false,
+  requireWord,
   onConfirm,
   onCancel,
 }) => {
+  const [inputValue, setInputValue] = useState('');
+
+  useEffect(() => {
+    if (isOpen) setInputValue('');
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  const isConfirmDisabled = requireWord ? inputValue !== requireWord : false;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
@@ -46,6 +56,22 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </button>
         </div>
         <p className="text-sm text-slate-600 mb-6">{message}</p>
+        
+        {requireWord && (
+          <div className="mb-6">
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Type <strong>{requireWord}</strong> to confirm:
+            </label>
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+              placeholder={requireWord}
+            />
+          </div>
+        )}
+
         <div className="flex items-center justify-end gap-3">
           <button
             onClick={onCancel}
@@ -55,10 +81,13 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </button>
           <button
             onClick={onConfirm}
-            className={`px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
-              isDanger
-                ? 'bg-red-600 hover:bg-red-700'
-                : 'bg-blue-600 hover:bg-blue-700'
+            disabled={isConfirmDisabled}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              isConfirmDisabled
+                ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                : isDanger
+                ? 'bg-red-600 hover:bg-red-700 text-white'
+                : 'bg-blue-600 hover:bg-blue-700 text-white'
             }`}
           >
             {confirmLabel}
