@@ -36,6 +36,7 @@ export type CompletedJobMap = Record<string, MachineEntry[]>;
 export interface DateRow {
   id: number;
   date: string;
+  isoDate: string;
 }
 
 export type MachineLists = [MachineEntry[], MachineEntry[], MachineEntry[], MachineEntry[]];

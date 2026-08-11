@@ -13,7 +13,11 @@ export function EndJobModal({
   onConfirm: (endTime: string, delayMinutes: number) => void;
   onClose: () => void;
 }) {
-  const [endTime, setEndTime] = useState('');
+  const nowStr = (() => {
+    const n = new Date();
+    return `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
+  })();
+  const [endTime, setEndTime] = useState(nowStr);
   const [delayMinutes, setDelayMinutes] = useState<string>('');
 
   const fmt = (t?: string) => {
@@ -25,8 +29,10 @@ export function EndJobModal({
 
   const delayMins = parseInt(delayMinutes, 10);
   const validDelay = !isNaN(delayMins) && delayMins >= 0;
+  // Block submit if end time equals start time — would produce 0-duration draw
+  const sameAsStart = !!startTime && !!endTime && endTime === startTime;
   // Preview: what time will the new job start after changeover
-  const newJobStart = endTime && validDelay ? addMinutesToTime(endTime, delayMins) : null;
+  const newJobStart = endTime && validDelay && !sameAsStart ? addMinutesToTime(endTime, delayMins) : null;
   const newJobStartOvernight = newJobStart ? isOvernightShift(newJobStart) : false;
 
   return (
@@ -52,6 +58,11 @@ export function EndJobModal({
           <div>
             <label className="block text-xs font-medium text-[#374151] mb-1.5">Completion Time for Job {jobNumber}</label>
             <TimePicker value={endTime} onChange={setEndTime} placeholder="Select completion time" />
+            {sameAsStart && (
+              <p className="mt-1.5 text-xs font-medium text-[#DC2626] flex items-center gap-1">
+                ⚠ Completion time cannot be the same as start time ({startTime}). Please select a different time.
+              </p>
+            )}
           </div>
 
           {/* Machine changeover — manual minutes input */}
@@ -87,7 +98,7 @@ export function EndJobModal({
             className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded-lg text-[#374151] bg-white hover:bg-[#F8FAFC] transition-colors">
             Cancel
           </button>
-          <button onClick={() => onConfirm(endTime, validDelay ? delayMins : 0)} disabled={!endTime}
+          <button onClick={() => onConfirm(endTime, validDelay ? delayMins : 0)} disabled={!endTime || sameAsStart}
             className="h-9 px-4 text-sm font-semibold rounded-lg text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2">
             <ClipboardPlus size={14} /> Start New Job
           </button>

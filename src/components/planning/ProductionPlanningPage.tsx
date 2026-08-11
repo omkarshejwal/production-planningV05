@@ -150,27 +150,42 @@ function loadFromStorage(): { machineLists: MachineLists; completedJobMap: Compl
 export const ProductionPlanningPage: React.FC = () => {
   const { jobs, bottles, refreshPlanner, selectedMonth, setSelectedMonth, fromDate, setFromDate, toDate, setToDate } = useERP();
 
-  const dateRows = useMemo<DateRow[]>(() => {
-    const { year, month } = getMonthRange(selectedMonth);
-    const daysInMonth = new Date(year, month, 0).getDate();
+  // Filters
+  const [draftFromDate, setDraftFromDate] = useState(fromDate);
+  const [draftToDate, setDraftToDate] = useState(toDate);
+  const [appliedFromDate, setAppliedFromDate] = useState(fromDate);
+  const [appliedToDate, setAppliedToDate] = useState(toDate);
 
-    return Array.from({ length: daysInMonth }, (_, i) => {
-      const d = new Date(year, month - 1, i + 1);
+  const dateRows = useMemo<DateRow[]>(() => {
+    const { monthStart, monthEnd } = getMonthRange(selectedMonth);
+    const startIso = appliedFromDate || monthStart;
+    const endIso = appliedToDate || monthEnd;
+
+    const [startYear, startMonth, startDay] = startIso.split('-').map(Number);
+    const [endYear, endMonth, endDay] = endIso.split('-').map(Number);
+    
+    const startDate = new Date(startYear, startMonth - 1, startDay);
+    const endDate = new Date(endYear, endMonth - 1, endDay);
+    
+    const diffTime = endDate.getTime() - startDate.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    const totalDays = diffDays > 0 ? diffDays : 1;
+
+    return Array.from({ length: totalDays }, (_, i) => {
+      const d = new Date(startYear, startMonth - 1, startDay + i);
       return {
         id: i + 1,
         date: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        isoDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
       };
     });
-  }, [selectedMonth]);
+  }, [selectedMonth, appliedFromDate, appliedToDate]);
 
   const [machineLists, setMachineLists] = useState<MachineLists>(INITIAL_MACHINE_LISTS);
   const [completedJobMap, setCompletedJobMap] = useState<CompletedJobMap>({});
 
   // Fetch initial data from DB instead of localStorage
   React.useEffect(() => {
-    const { year, month, normalized } = getMonthRange(selectedMonth);
-    const monthPrefix = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`;
-
     const newLists: typeof INITIAL_MACHINE_LISTS = [
       Array.from({ length: dateRows.length }, () => makeNoneEntry(0)),
       Array.from({ length: dateRows.length }, () => makeNoneEntry(1)),
@@ -182,14 +197,12 @@ export const ProductionPlanningPage: React.FC = () => {
     for (const job of jobs) {
       if (!job.machineId || !(job.date || job.startDate)) continue;
       const planDateStr = job.date || job.startDate;
-      if (!planDateStr.startsWith(monthPrefix)) continue;
 
       const mIdx = parseInt(job.machineId.replace('MAC-', '')) - 1;
       if (mIdx < 0 || mIdx > 3) continue;
 
-      const day = parseInt(planDateStr.split('-')[2]);
-      const rowIdx = day - 1;
-      if (rowIdx < 0 || rowIdx >= dateRows.length) continue;
+      const rowIdx = dateRows.findIndex(r => r.isoDate === planDateStr);
+      if (rowIdx === -1) continue;
 
       const bottle = bottles.find(b => b.id === job.bottleId || b.id === (job as any).bottle_id);
       const product = bottle ? bottle.name : (job.bottleId ? `Bottle ${job.bottleId}` : '');
@@ -272,8 +285,7 @@ export const ProductionPlanningPage: React.FC = () => {
     setIsSaving(true);
     try {
       const payloadRows: ProductionJobRow[] = [];
-      const _year = 2026;
-      const _month = 7; // August
+      console.log("handleSaveToDb started. dateRows:", dateRows.length, "isDirty:", isDirty);
 
       const calculateChangeover = (mIdx: number, rowIdx: number, startTime: string) => {
          const key = `${mIdx}-${rowIdx}`;
@@ -290,7 +302,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
       for (let mIdx = 0; mIdx < 4; mIdx++) {
          for (let rowIdx = 0; rowIdx < dateRows.length; rowIdx++) {
-            const plan_date = `${String(_year).padStart(4, '0')}-${String(_month + 1).padStart(2, '0')}-${String(rowIdx + 1).padStart(2, '0')}`;
+            const plan_date = dateRows[rowIdx].isoDate;
             const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
             
             const entriesToSave: MachineEntry[] = [];
@@ -301,6 +313,10 @@ export const ProductionPlanningPage: React.FC = () => {
             const currentEntry = machineLists[mIdx][rowIdx];
             if (currentEntry && currentEntry.product !== 'None') {
                entriesToSave.push(currentEntry);
+            }
+
+            if (entriesToSave.length > 0) {
+                console.log(`Found ${entriesToSave.length} entries for MAC-${mIdx + 1} at row ${rowIdx} (${plan_date})`, entriesToSave);
             }
 
             for (const entry of entriesToSave) {
@@ -372,24 +388,22 @@ export const ProductionPlanningPage: React.FC = () => {
          }
       }
 
-      await planningRepository.createProductionJobsBatch(payloadRows as any);
+      console.log("[SAVE] Full payloadRows being sent:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time })), null, 2));
+
+      const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
+      console.log("[SAVE] createProductionJobsBatch result:", batchResult);
       await planningRepository.init();
       refreshPlanner();
       setIsDirty(false);
       toast.success('Production data saved successfully to AWS Database.', { duration: 3000 });
     } catch (e) {
-      console.error(e);
+      console.error("[SAVE] ERROR:", e);
       toast.error('Save failed. Please try again.');
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Filters
-  const [draftFromDate, setDraftFromDate] = useState(fromDate);
-  const [draftToDate, setDraftToDate] = useState(toDate);
-  const [appliedFromDate, setAppliedFromDate] = useState(fromDate);
-  const [appliedToDate, setAppliedToDate] = useState(toDate);
 
   const allRowIndices = useMemo(() =>
     Array.from({ length: dateRows.length }, (_, i) => i),
@@ -410,6 +424,7 @@ export const ProductionPlanningPage: React.FC = () => {
   }, [allRowIndices, appliedFromDate, appliedToDate, dateRows, selectedMonth]);
 
   const handleApply = () => {
+    console.log('CLICKED APPLY');
     if (draftFromDate && draftToDate && draftFromDate > draftToDate) {
       toast.error('From Date cannot be greater than To Date.');
       return;
@@ -444,11 +459,13 @@ export const ProductionPlanningPage: React.FC = () => {
     }
     if (!draftFromDate) {
       setDraftFromDate(monthStart);
+      setAppliedFromDate(monthStart);
     }
     if (!draftToDate) {
       setDraftToDate(monthEnd);
+      setAppliedToDate(monthEnd);
     }
-  }, [selectedMonth, fromDate, toDate, draftFromDate, draftToDate, setFromDate, setToDate, setSelectedMonth]);
+  }, [selectedMonth, fromDate, toDate, draftFromDate, draftToDate, appliedFromDate, setFromDate, setToDate, setSelectedMonth]);
 
   const switchToMonth = (targetMonth: string) => {
     const normalized = normalizeMonthKey(targetMonth);
@@ -857,12 +874,30 @@ export const ProductionPlanningPage: React.FC = () => {
     const dayValue = rowDateValue || new Date();
     const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
 
-    return calculateDrawForProductionDay(dayValue, {
+    const rawDraw = calculateDrawForProductionDay(dayValue, {
       ...entry,
       qty: requiredQty,
       requiredBottles: entry.requiredBottles,
     }, `MAC-${String(mIdx + 1).padStart(2, '0')}`);
+
+    if (entry.status === 'completed') {
+      console.log('[DRAW-DEBUG] Completed job draw trace:', {
+        rowIdx,
+        rowDate,
+        parsedDate: rowDateValue ? rowDateValue.toISOString() : 'NULL (parseDisplayDate failed!)',
+        startTime: entry.startTime,
+        endTime: entry.endTime,
+        cut: entry.cut,
+        wt: entry.wt,
+        qty: entry.qty,
+        requiredBottles: entry.requiredBottles,
+        rawDraw,
+      });
+    }
+
+    return rawDraw;
   };
+
 
   // Total draw for a visual row: sum tons/day across all machines.
   // During changeover (running entry has no bottle set) we continue
@@ -921,6 +956,22 @@ export const ProductionPlanningPage: React.FC = () => {
   };
   const hideTooltip = () => setTooltip(null);
 
+  const dateRangeLabel = useMemo(() => {
+    if (dateRows.length === 0) return '';
+    const firstDate = new Date(dateRows[0].isoDate);
+    const lastDate = new Date(dateRows[dateRows.length - 1].isoDate);
+    
+    const isSameMonth = firstDate.getMonth() === lastDate.getMonth() && firstDate.getFullYear() === lastDate.getFullYear();
+    const daysInMonth = new Date(firstDate.getFullYear(), firstDate.getMonth() + 1, 0).getDate();
+    
+    if (isSameMonth && dateRows.length === daysInMonth) {
+      return firstDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    }
+    
+    const formatOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
+    return `${firstDate.toLocaleDateString('en-GB', formatOpts)} — ${lastDate.toLocaleDateString('en-GB', formatOpts)}`;
+  }, [dateRows]);
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -928,7 +979,7 @@ export const ProductionPlanningPage: React.FC = () => {
         <div>
           <h1 className="text-[22px] font-bold text-[#111827]">Production Planning</h1>
           <p className="text-sm text-[#6B7280] mt-0.5">
-            {new Date(Number(selectedMonth.split('-')[0]), Number(selectedMonth.split('-')[1]) - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}
+            {dateRangeLabel}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -973,7 +1024,10 @@ export const ProductionPlanningPage: React.FC = () => {
             className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
             <Download size={14} /> {isExporting ? 'Exporting...' : 'Export'}
           </button>
-          <button className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+          <button
+            type="button"
+            onClick={() => { console.log('CLICKED REFRESH'); refreshPlanner(); }}
+            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
             <RefreshCw size={14} /> Refresh
           </button>
         </div>
@@ -997,11 +1051,11 @@ export const ProductionPlanningPage: React.FC = () => {
               className="h-9 px-2.5 text-sm border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
           </div>
           <div className="flex items-end gap-2">
-            <button onClick={handleApply}
+            <button type="button" onClick={handleApply}
               className="h-9 px-4 text-sm font-semibold bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors">
               Apply
             </button>
-            <button onClick={handleReset}
+            <button type="button" onClick={handleReset}
               className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
               Clear Filter
             </button>
