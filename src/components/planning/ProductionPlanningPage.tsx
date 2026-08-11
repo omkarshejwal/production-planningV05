@@ -516,7 +516,15 @@ export const ProductionPlanningPage: React.FC = () => {
         
         if (row.date) {
            const parsedDate = parseDisplayDate(row.date);
-           rowValues.push(parsedDate || row.date);
+           if (parsedDate) {
+               // exceljs converts JS Date objects to Excel serial numbers using their UTC values.
+               // In positive timezones like IST (+05:30), a local midnight Date becomes the previous day in UTC.
+               // We must construct an explicit UTC Date so exceljs writes the exact intended date to the file.
+               const utcDateForExcel = new Date(Date.UTC(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate()));
+               rowValues.push(utcDateForExcel);
+           } else {
+               rowValues.push(row.date);
+           }
         } else {
            rowValues.push('');
         }
