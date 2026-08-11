@@ -621,7 +621,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                       onClick={() => openDrawerForEdit(null, machine.id, date)}
                                       title="Schedule a new job"
                                       className="flex items-center gap-0.5 h-5 px-1.5 text-[9px] font-semibold text-[#7C3AED] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#DDD6FE] rounded transition-colors whitespace-nowrap">
-                                      <ClipboardPlus size={8} /> Add Job
+                                      <ClipboardPlus size={8} /> End Job
                                     </button>
                                   </div>
                                 </>
@@ -629,7 +629,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                                 <div className="flex items-center gap-1 py-0.5">
                                   <button
                                     onClick={() => startEntry(date, machine.id)}
-                                    title="Add Job"
+                                    title="End Job"
                                     className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                     <Edit2 size={8} />
                                   </button>

@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { ActiveModule } from '../../types';
+import { useAuth } from '../../context/AuthContext';
 
 interface MenuNavItem {
   id: ActiveModule;
@@ -29,6 +30,7 @@ const NAV_ITEMS: MenuNavItem[] = [
 
 export const Sidebar: React.FC = () => {
   const { activeModule, setActiveModule, notifications } = useERP();
+  const { logout } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(true);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -82,7 +84,7 @@ export const Sidebar: React.FC = () => {
       {/* Logout button at bottom */}
       <div className="p-3 border-t border-slate-100">
         <button
-          onClick={() => alert('Log Out triggered - Returning to Login')}
+          onClick={() => void logout()}
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors ${isCollapsed ? 'justify-center px-0' : ''
             }`}
           title={isCollapsed ? 'Logout' : undefined}

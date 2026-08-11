@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import officialLogo from '../../assets/logo';
+import { useAuth } from '../../context/AuthContext';
 
 export const Header: React.FC = () => {
   const {
@@ -24,16 +25,28 @@ export const Header: React.FC = () => {
     notifications,
     markNotificationRead,
     clearAllNotifications,
-    user,
     bottles,
     machines,
     jobs,
     openDrawerForEdit,
   } = useERP();
+  const { user, logout } = useAuth();
 
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
+
+  const userName = user?.employee_name ?? 'User';
+  const userRole = user?.role ?? 'Employee';
+  const userEmail = user?.email ?? 'No email provided';
+  const userDepartment = user?.department ?? 'General';
+  const userInitials = userName
+    .split(' ')
+    .filter(Boolean)
+    .map((name) => name[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'U';
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -268,11 +281,11 @@ export const Header: React.FC = () => {
             className="flex items-center gap-2.5 p-1 rounded-lg hover:bg-slate-100 transition-colors"
           >
             <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center ring-2 ring-blue-100">
-              AS
+              {userInitials}
             </div>
             <div className="hidden lg:block text-left">
-              <p className="text-xs font-semibold text-slate-900 leading-tight">{user.name}</p>
-              <p className="text-[10px] text-slate-400 leading-tight">{user.role}</p>
+              <p className="text-xs font-semibold text-slate-900 leading-tight">{userName}</p>
+              <p className="text-[10px] text-slate-400 leading-tight">{userRole}</p>
             </div>
             <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
           </button>
@@ -280,10 +293,10 @@ export const Header: React.FC = () => {
           {showUserDropdown && (
             <div className="absolute right-0 top-11 w-64 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-2 animate-in fade-in-50">
               <div className="p-2 border-b border-slate-100">
-                <p className="text-xs font-bold text-slate-900">{user.name}</p>
-                <p className="text-[11px] text-slate-500">{user.email}</p>
+                <p className="text-xs font-bold text-slate-900">{userName}</p>
+                <p className="text-[11px] text-slate-500">{userEmail}</p>
                 <span className="inline-block mt-1 px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px] font-semibold">
-                  {user.plantLocation}
+                  {userDepartment}
                 </span>
               </div>
 
@@ -313,10 +326,10 @@ export const Header: React.FC = () => {
 
               <div className="pt-1 border-t border-slate-100">
                 <button
-                  onClick={() => {
-                    setShowUserDropdown(false);
-                    alert('Log Out triggered - Demo Session Reset');
-                  }}
+                   onClick={() => {
+                     setShowUserDropdown(false);
+                     void logout();
+                   }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                 >
                   <LogOut className="w-4 h-4" />

@@ -13,6 +13,8 @@ import { MachinesModule } from './components/machines/MachinesModule';
 import { SettingsModule } from './components/settings/SettingsModule';
 import { ProfileModule } from './components/profile/ProfileModule';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { LoginPage } from './components/auth/LoginPage';
 
 const MainLayout: React.FC = () => {
   const { activeModule } = useERP();
@@ -55,8 +57,15 @@ const MainLayout: React.FC = () => {
 
 export default function App() {
   return (
-    <ERPProvider>
-      <MainLayout />
-    </ERPProvider>
+    <AuthProvider>
+      <AuthenticatedApp />
+    </AuthProvider>
   );
 }
+
+const AuthenticatedApp: React.FC = () => {
+  const { user, isLoading } = useAuth();
+  if (isLoading) return <div className="min-h-screen bg-slate-100" />;
+  if (!user) return <LoginPage />;
+  return <ERPProvider><MainLayout /></ERPProvider>;
+};

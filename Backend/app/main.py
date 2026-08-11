@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.config import settings
@@ -9,6 +9,8 @@ from app.api.production import machines
 from app.api.production import products
 from app.api.production import jobs
 from app.api.production import audit_logs
+from app.api import auth
+from app.api.auth import get_current_user
 
 # Import Database tools
 from app.db.session import engine
@@ -43,10 +45,11 @@ app.add_middleware(
 )
 
 # This plugs the modules into the main application with the correct /api/production prefix
-app.include_router(machines.router, prefix="/api/production")
-app.include_router(products.router, prefix="/api/production")
-app.include_router(jobs.router, prefix="/api/production")
-app.include_router(audit_logs.router, prefix="/api/production")
+app.include_router(machines.router, prefix="/api/production", dependencies=[Depends(get_current_user)])
+app.include_router(products.router, prefix="/api/production", dependencies=[Depends(get_current_user)])
+app.include_router(jobs.router, prefix="/api/production", dependencies=[Depends(get_current_user)])
+app.include_router(audit_logs.router, prefix="/api/production", dependencies=[Depends(get_current_user)])
+app.include_router(auth.router)
 
 
 @app.on_event("startup")

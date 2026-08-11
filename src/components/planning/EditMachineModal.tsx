@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, X } from 'lucide-react';
 import { BottleEntry, EditSavePayload, MachineEntry, PackCatKey } from '../../types/planning';
 import { MACHINE_BOTTLES, NONE_ENTRY } from '../../data/bottleReference';
@@ -26,6 +26,8 @@ export function EditMachineModal({
   const mIdx = machineNo - 1;
   const bottles = MACHINE_BOTTLES[machineNo] ?? [];
   const [selected, setSelected] = useState(currentEntry.product);
+  const [bottleSearch, setBottleSearch] = useState('');
+  const [bottleDropdownOpen, setBottleDropdownOpen] = useState(false);
   const [salesExec, setSalesExec] = useState(currentEntry.salesExec ?? '');
   // Multi-packing allocations: key = enabled category, value = qty string for the input
   const [packingAllocations, setPackingAllocations] = useState<Partial<Record<PackCatKey, string>>>(() => {
@@ -61,6 +63,12 @@ export function EditMachineModal({
   const [jobStartTime, setJobStartTime] = useState(newJobStartTime ?? currentEntry.startTime ?? '');
   const [requiredBottles, setRequiredBottles] = useState('');
 
+  const filteredBottles = useMemo(() => {
+    const query = bottleSearch.trim().toLowerCase();
+    if (!query) return bottles;
+    return bottles.filter((b) => b.name.toLowerCase().includes(query));
+  }, [bottles, bottleSearch]);
+
   const section = currentEntry.section ?? MAX_SECTIONS(mIdx);
   const bottleRef = selected === 'None' ? NONE_ENTRY : bottles.find(b => b.name === selected) ?? NONE_ENTRY;
   const cutSpeed = selected !== 'None' ? (lookupSpeed(machineNo, selected, section) || bottleRef.speeds) : 0;
@@ -94,17 +102,93 @@ export function EditMachineModal({
           </div>
 
           {/* Bottle Name */}
-          <div>
-            <label className="block text-xs font-medium text-[#374151] mb-1.5">Bottle Name</label>
-            <div className="relative">
-              <select value={selected} onChange={e => setSelected(e.target.value)}
-                className="w-full h-9 pl-3 pr-8 text-sm border border-[#E5E7EB] rounded-lg bg-white text-[#111827] appearance-none focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB]">
-                <option value="None">None</option>
-                {bottles.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-              </select>
-              <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6B7280] pointer-events-none" />
+<div>
+  <label className="block text-xs font-medium text-[#374151] mb-1.5">
+    Bottle Name
+  </label>
+
+  <div className="relative">
+    {/* Dropdown Button */}
+    <button
+      type="button"
+      onClick={() => setBottleDropdownOpen(prev => !prev)}
+      className="w-full h-9 px-3 pr-8 text-sm text-left border border-[#E5E7EB] rounded-lg bg-white text-[#111827] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] relative"
+    >
+      <span className={selected === 'None' ? 'text-[#9CA3AF]' : 'text-[#111827]'}>
+        {selected === 'None' ? 'Select bottle' : selected}
+      </span>
+
+      <ChevronDown
+        size={14}
+        className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6B7280] transition-transform ${
+          bottleDropdownOpen ? 'rotate-180' : ''
+        }`}
+      />
+    </button>
+
+    {/* Dropdown Menu */}
+    {bottleDropdownOpen && (
+      <div className="absolute z-30 mt-1 w-full bg-white border border-[#E5E7EB] rounded-lg shadow-lg overflow-hidden">
+        
+        {/* Inline Search */}
+        <div className="p-2 border-b border-[#E5E7EB] bg-white">
+          <input
+            type="text"
+            autoFocus
+            value={bottleSearch}
+            onChange={e => setBottleSearch(e.target.value)}
+            placeholder="Search bottle name..."
+            className="w-full h-8 px-3 text-sm border border-[#E5E7EB] rounded-md bg-white text-[#111827] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] placeholder:text-[#9CA3AF]"
+          />
+        </div>
+
+        {/* Bottle Options */}
+        <div className="max-h-52 overflow-y-auto">
+          <button
+            type="button"
+            onClick={() => {
+              setSelected('None');
+              setBottleSearch('');
+              setBottleDropdownOpen(false);
+            }}
+            className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${
+              selected === 'None'
+                ? 'bg-[#EFF6FF] text-[#2563EB] font-medium'
+                : 'text-[#374151]'
+            }`}
+          >
+            None
+          </button>
+
+          {filteredBottles.map(b => (
+            <button
+              key={b.name}
+              type="button"
+              onClick={() => {
+                setSelected(b.name);
+                setBottleSearch('');
+                setBottleDropdownOpen(false);
+              }}
+              className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${
+                selected === b.name
+                  ? 'bg-[#EFF6FF] text-[#2563EB] font-medium'
+                  : 'text-[#374151]'
+              }`}
+            >
+              {b.name}
+            </button>
+          ))}
+
+          {filteredBottles.length === 0 && (
+            <div className="px-3 py-3 text-sm text-center text-[#9CA3AF]">
+              No matching bottles
             </div>
-          </div>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+</div>
 
           {/* Wt + Cut Speed reference */}
           {selected !== 'None' && (

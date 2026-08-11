@@ -10,6 +10,8 @@ from app.schemas.product import (
     BottleConfigurationResponse, BottleConfigurationCreate
 )
 from app.api.deps import require_manager_role
+from app.api.auth import get_current_user
+from app.models.user import User
 
 router = APIRouter(prefix="/products", tags=["Production Products"])
 
@@ -24,7 +26,8 @@ def get_all_bottles(db: Session = Depends(get_db)):
 def create_bottle(
     bottle_in: BottleMasterCreate, 
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Add a new base bottle to the database.
@@ -35,7 +38,7 @@ def create_bottle(
     db.refresh(new_bottle)
 
     db.add(AuditLog(
-        user_id=1, 
+        user_id=current_user.employee_id,
         action="CREATED_BOTTLE",
         details=f"User ({user_role}) created Bottle '{new_bottle.bottle_name}' with ID {new_bottle.bottle_id}"
     ))
@@ -54,7 +57,8 @@ def get_all_configurations(db: Session = Depends(get_db)):
 def create_configuration(
     config_in: BottleConfigurationCreate, 
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Configure a bottle's speed and weight for a specific machine and section.
@@ -71,7 +75,7 @@ def create_configuration(
     db.refresh(new_config)
 
     db.add(AuditLog(
-        user_id=1, 
+        user_id=current_user.employee_id,
         action="CONFIGURED_BOTTLE",
         details=f"User ({user_role}) configured Bottle {new_config.bottle_id} on Machine {new_config.machine_no} Section {new_config.section}"
     ))

@@ -101,8 +101,9 @@ export function calculateDrawForProductionDay(
     ? buildDateTime(dayValue, entry.endTime)
     : new Date(windowEnd);
 
-  if (productionEnd <= productionStart) {
-    return 0;
+  // An overnight end time belongs to the next production day, not the prior calendar day.
+  while (productionEnd <= productionStart) {
+    productionEnd.setDate(productionEnd.getDate() + 1);
   }
 
   const productionHours = clampIntervalToWindow(productionStart, productionEnd, windowStart, windowEnd);
@@ -130,6 +131,12 @@ export function calculateDailyDrawForEntries(
         ? buildDateTime(dayValue, entry.endTime)
         : new Date(windowEnd),
     }))
+    .map((entry) => {
+      while (entry.productionEnd <= entry.productionStart) {
+        entry.productionEnd.setDate(entry.productionEnd.getDate() + 1);
+      }
+      return entry;
+    })
     .sort((a, b) => a.productionStart.getTime() - b.productionStart.getTime());
 
   let totalDraw = 0;

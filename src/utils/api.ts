@@ -9,7 +9,7 @@ export const apiFetch = async (endpoint: string, options: RequestInit = {}) => {
 
     const headers = {
         "Content-Type": "application/json",
-        "x-user-role": "MANAGER", // Hardcoded for now as per backend requirements
+        ...(localStorage.getItem('authToken') ? { Authorization: `Bearer ${localStorage.getItem('authToken')}` } : {}),
         ...options.headers,
     };
 

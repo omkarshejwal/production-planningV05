@@ -1,6 +1,8 @@
-from fastapi import Header, HTTPException
+from fastapi import Depends, HTTPException
+from app.api.auth import get_current_user
+from app.models.user import User
 
-def require_manager_role(x_user_role: str = Header(default="OPERATOR")):
+def require_manager_role(user: User = Depends(get_current_user)):
     """
     Role-Based Access Control (RBAC) Dependency.
     Only allows ADMIN or MANAGER to access the endpoint.
@@ -8,9 +10,9 @@ def require_manager_role(x_user_role: str = Header(default="OPERATOR")):
     
     (Note: In a production AWS environment, this will decode a JWT token instead of reading a raw header).
     """
-    if x_user_role not in ["ADMIN", "MANAGER"]:
+    if user.role != "Editor":
         raise HTTPException(
             status_code=403, 
-            detail="Forbidden: You do not have permission to edit this data. Managers and Admins only."
+            detail="Forbidden: Editor access is required to edit this data."
         )
-    return x_user_role
+    return user.role

@@ -1362,7 +1362,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                         <button onClick={() => handleAddJob(mIdx, rowIdx)}
                                           title="Schedule a new job after this one finishes"
                                           className="flex items-center gap-0.5 h-5 px-1.5 text-[9px] font-semibold text-[#7C3AED] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#DDD6FE] rounded transition-colors whitespace-nowrap">
-                                          <ClipboardPlus size={8} /> Add Job
+                                          <ClipboardPlus size={8} /> End Job
                                         </button>
                                       )}
                                     </div>

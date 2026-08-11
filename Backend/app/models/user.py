@@ -1,20 +1,17 @@
-from sqlalchemy import Column, Integer, String, Boolean, Enum
-import enum
+from sqlalchemy import Boolean, Column, DateTime, String, func
 from app.db.base import Base
-
-class UserRole(str, enum.Enum):
-    ADMIN = "ADMIN"
-    MANAGER = "MANAGER"
-    OPERATOR = "OPERATOR"
+from app.db.base import production_table_args
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = production_table_args()
 
-    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(String, primary_key=True, index=True)
+    employee_name = Column(String, nullable=False)
+    department = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False) 
-    full_name = Column(String)
-    
-    # Enforces that 'role' must be one of the Enums defined above
-    role = Column(Enum(UserRole), default=UserRole.OPERATOR)
-    is_active = Column(Boolean, default=True) 
+    phone_number = Column(String, nullable=False, index=True)
+    password = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

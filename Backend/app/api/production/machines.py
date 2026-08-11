@@ -7,6 +7,8 @@ from app.models.machine import MachineMaster
 from app.models.audit_log import AuditLog
 from app.schemas.machine import MachineMasterResponse, MachineMasterCreate
 from app.api.deps import require_manager_role
+from app.api.auth import get_current_user
+from app.models.user import User
 
 router = APIRouter(prefix="/machines", tags=["Production Machines"])
 
@@ -22,7 +24,8 @@ def get_all_machines(db: Session = Depends(get_db)):
 def create_machine(
     machine_in: MachineMasterCreate, 
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Add a new machine to the database, enforcing factory hardware constraints.
@@ -52,7 +55,7 @@ def create_machine(
 
     # Automatically create an Audit Log
     db.add(AuditLog(
-        user_id=1, # Hardcoded to 1 until we build real user login
+        user_id=current_user.employee_id,
         action="CREATED_MACHINE",
         details=f"User ({user_role}) created Machine {new_machine.machine_no}"
     ))
