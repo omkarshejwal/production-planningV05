@@ -37,12 +37,14 @@ export interface ProductionJobRow {
   speeds: number;
   draw: number;
   quantity: number;
+  target_quantity?: number;
   production_hours?: number;
   start_time: string;             // "HH:MM"
   estimated_completion: string;   // "YYYY-MM-DDTHH:MM:00"
   completion_time?: string;       // "YYYY-MM-DDTHH:MM:00"
   changeover_minutes?: number;
   status: JobStatusSchema;
+  job_group_id?: string;
   packaging?: JobPackagingRow[];
 }
 

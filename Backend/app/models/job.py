@@ -15,6 +15,8 @@ class ProductionJob(Base):
     speeds = Column(Numeric(10, 2), nullable=False)
     draw = Column(Numeric(10, 2), nullable=False)
     quantity = Column(Numeric(12, 2), nullable=False)
+    target_quantity = Column(Numeric(12, 2))
+    job_group_id = Column(String(120))
     
     estimated_completion = Column(DateTime)
     completion_time = Column(DateTime)

@@ -13,7 +13,35 @@ from app.api.deps import require_manager_role
 
 router = APIRouter(prefix="/jobs", tags=["Production Jobs"])
 
-@router.get("/", response_model=List[ProductionJobResponse])
+def serialize_job(job: ProductionJob) -> dict:
+    return {
+        "plan_date": job.plan_date,
+        "machine_no": job.machine_no,
+        "start_time": job.start_time,
+        "bottle_id": job.bottle_id,
+        "section": job.section,
+        "weight": job.weight,
+        "speeds": job.speeds,
+        "draw": job.draw,
+        "quantity": job.quantity,
+        "target_quantity": job.target_quantity,
+        "job_group_id": job.job_group_id,
+        "estimated_completion": job.estimated_completion,
+        "completion_time": job.completion_time,
+        "changeover_minutes": job.changeover_minutes,
+        "status": job.status,
+        "packaging": [
+            {
+                "packaging_type": pack.packaging_type,
+                "quantity": pack.quantity,
+                "pallet_packing": pack.pallet_packing,
+                "pallet_quantity": pack.pallet_quantity,
+            }
+            for pack in job.packaging
+        ],
+    }
+
+@router.get("/")
 def get_all_jobs(
     db: Session = Depends(get_db),
     from_date: Optional[str] = None,
@@ -36,9 +64,9 @@ def get_all_jobs(
         query = query.order_by(ProductionJob.plan_date.desc(), ProductionJob.start_time.desc())
     if limit:
         query = query.limit(limit)
-    return query.all()
+    return [serialize_job(job) for job in query.all()]
 
-@router.post("/", response_model=ProductionJobResponse)
+@router.post("/")
 def create_job(
     job_in: ProductionJobCreate, 
     db: Session = Depends(get_db),
@@ -81,6 +109,8 @@ def create_job(
     gob = machine.gob_type if machine else (3 if job_in.machine_no in (1, 4) else 2)
     calculated_qty = speed * gob * running_minutes
     calculated_draw = (calculated_qty * bottle_config.weight) / Decimal("1000000")
+    resolved_quantity = job_in.quantity if job_in.quantity and job_in.quantity > 0 else calculated_qty
+    resolved_target_quantity = job_in.target_quantity if job_in.target_quantity and job_in.target_quantity > 0 else resolved_quantity
 
     # 3. Create or Update the Job (Upsert)
     existing_job = db.query(ProductionJob).filter_by(
@@ -95,7 +125,9 @@ def create_job(
         existing_job.weight = bottle_config.weight
         existing_job.speeds = speed
         existing_job.draw = job_in.draw if job_in.draw else calculated_draw
-        existing_job.quantity = calculated_qty
+        existing_job.quantity = resolved_quantity
+        existing_job.target_quantity = resolved_target_quantity
+        existing_job.job_group_id = job_in.job_group_id
         existing_job.estimated_completion = job_in.estimated_completion
         existing_job.completion_time = job_in.completion_time
         existing_job.changeover_minutes = job_in.changeover_minutes
@@ -120,7 +152,9 @@ def create_job(
             weight=bottle_config.weight,
             speeds=speed,
             draw=job_in.draw if job_in.draw else calculated_draw,
-            quantity=calculated_qty,
+            quantity=resolved_quantity,
+            target_quantity=resolved_target_quantity,
+            job_group_id=job_in.job_group_id,
             estimated_completion=job_in.estimated_completion,
             completion_time=job_in.completion_time,
             changeover_minutes=job_in.changeover_minutes,
@@ -144,7 +178,7 @@ def create_job(
 
     db.commit()
     db.refresh(new_job)
-    return new_job
+    return serialize_job(new_job)
 
 @router.delete("/{plan_date}/{machine_no}/{start_time}", status_code=204)
 def delete_job(
