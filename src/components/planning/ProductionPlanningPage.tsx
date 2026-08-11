@@ -1,6 +1,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import ExcelJS from 'exceljs';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { useERP } from '../../context/ERPContext';
 import { planningRepository } from '../../services/planningRepository';
 import { ProductionJobRow } from '../../data/planningSchema';
@@ -42,6 +44,7 @@ import {
   makeNoneEntry,
 } from '../../utils/planningCalculations';
 import { addCalendarDays } from '../../utils/calculations';
+import { buildExportData } from '../../utils/exportData';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
@@ -462,98 +465,77 @@ export const ProductionPlanningPage: React.FC = () => {
   const handleExport = async () => {
     if (isExporting) return;
 
-    const table = document.getElementById('production-planning-table') as HTMLTableElement | null;
-    if (!table) {
-      toast.error('Unable to locate the planning table for export.');
-      return;
-    }
-
-    const bodyRows = Array.from(table.querySelectorAll('tbody tr'));
-    if (bodyRows.length === 0) {
-      toast.info('No data available to export.');
-      return;
-    }
-
     setIsExporting(true);
 
     try {
-      const headerRows = Array.from(table.querySelectorAll('thead tr'));
-      const leafHeaderCells = Array.from(headerRows[headerRows.length - 1]?.querySelectorAll('th') || []);
-      const headers = leafHeaderCells.map((th, idx) => {
-        const text = th.textContent?.trim() || '';
-        if (text) return text;
-        return idx === 0 ? 'Date' : idx === leafHeaderCells.length - 1 ? 'Total Draw' : `Column ${idx + 1}`;
-      });
+      const { monthStart, monthEnd } = getMonthRange(selectedMonth);
+      const startIso = appliedFromDate || monthStart;
+      const endIso = appliedToDate || monthEnd;
 
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('Production Planning');
-      worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+      const exportRows = await buildExportData(startIso, endIso, bottles);
 
-      worksheet.addRow(headers);
-
-      const dateColIndex = headers.findIndex((h) => h.toLowerCase() === 'date') + 1;
-      const totalDrawColIndex = headers.findIndex((h) => h.toLowerCase() === 'total draw') + 1;
-
-      let lastDateText = '';
-      const numericLikeHeaders = new Set(['sec', 'wt', 'cut', 'qty', 'draw', 'total draw']);
-
-      for (const tr of bodyRows) {
-        const cells = Array.from(tr.querySelectorAll('td'));
-        if (cells.length === 0) continue;
-
-        const rowValues: Array<string | number | Date | null> = new Array(headers.length).fill('');
-
-        let offset = 0;
-        if (dateColIndex > 0) {
-          const maybeDateCell = cells[0];
-          const dateCandidate = maybeDateCell?.textContent?.trim() || '';
-          if (dateCandidate) {
-            lastDateText = dateCandidate;
-            const parsedDate = parseDisplayDate(dateCandidate);
-            rowValues[dateColIndex - 1] = parsedDate || dateCandidate;
-          } else if (lastDateText) {
-            const parsedDate = parseDisplayDate(lastDateText);
-            rowValues[dateColIndex - 1] = parsedDate || lastDateText;
-          }
-
-          if (maybeDateCell?.hasAttribute('rowspan')) {
-            offset = 1;
-          } else if (lastDateText) {
-            const parsedDate = parseDisplayDate(lastDateText);
-            rowValues[dateColIndex - 1] = parsedDate || lastDateText;
-          }
-        }
-
-        for (let i = 0; i < headers.length; i++) {
-          if (i === dateColIndex - 1) continue;
-
-          const sourceIdx = i - (dateColIndex > 0 ? 1 : 0) + offset;
-          const td = cells[sourceIdx];
-          const raw = td?.textContent?.replace(/\s+/g, ' ').trim() || '';
-          if (!raw || raw === '—' || raw === '-') {
-            rowValues[i] = '';
-            continue;
-          }
-
-          const headerName = headers[i].trim().toLowerCase();
-          const numberCandidate = raw.endsWith(' T') ? asNumber(raw.replace(/\s*T$/i, '')) : asNumber(raw);
-          if (numberCandidate !== null && (numericLikeHeaders.has(headerName) || /^-?\d+(\.\d+)?$/.test(raw.replace(/,/g, '').trim()))) {
-            rowValues[i] = numberCandidate;
-          } else {
-            rowValues[i] = raw;
-          }
-        }
-
-        worksheet.addRow(rowValues);
-      }
-
-      if (worksheet.rowCount <= 1) {
-        toast.info('No data available to export.');
+      if (exportRows.length === 0) {
+        toast.info('No data available to export for this date range.');
+        setIsExporting(false);
         return;
       }
 
-      const headerRow = worksheet.getRow(1);
-      headerRow.font = { bold: true };
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Production Planning');
+      worksheet.views = [{ state: 'frozen', ySplit: 2 }];
+
+      // Row 1: Grouped Headers
+      const topRow = ['Date'];
+      for (let i = 1; i <= 4; i++) {
+         topRow.push(`Machine No ${i}`, '', '', '', '', '');
+      }
+      topRow.push('Total Draw');
+      worksheet.addRow(topRow);
+
+      // Row 2: Sub-headers
+      const subRow = [''];
+      for (let i = 1; i <= 4; i++) {
+         subRow.push('Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw');
+      }
+      subRow.push('');
+      worksheet.addRow(subRow);
+
+      // Merge grouped headers
+      worksheet.mergeCells('A1:A2'); // Date
+      worksheet.mergeCells('B1:G1'); // Machine 1
+      worksheet.mergeCells('H1:M1'); // Machine 2
+      worksheet.mergeCells('N1:S1'); // Machine 3
+      worksheet.mergeCells('T1:Y1'); // Machine 4
+      worksheet.mergeCells('Z1:Z2'); // Total Draw
+
+      const dateColIndex = 1;
+
+      // Add Data Rows
+      for (const row of exportRows) {
+        const rowValues: any[] = [];
+        
+        if (row.date) {
+           const parsedDate = parseDisplayDate(row.date);
+           rowValues.push(parsedDate || row.date);
+        } else {
+           rowValues.push('');
+        }
+
+        for (const m of row.machines) {
+           rowValues.push(m.product, m.sec, m.wt, m.cut, m.qty, m.draw);
+        }
+        
+        rowValues.push(row.totalDraw);
+        worksheet.addRow(rowValues);
+      }
+
+      // Format Header Rows
+      const headerRow1 = worksheet.getRow(1);
+      const headerRow2 = worksheet.getRow(2);
+      headerRow1.font = { bold: true };
+      headerRow2.font = { bold: true };
+      headerRow1.alignment = { horizontal: 'center', vertical: 'middle' };
+      headerRow2.alignment = { horizontal: 'center', vertical: 'middle' };
 
       worksheet.eachRow((row, rowNumber) => {
         row.eachCell((cell, colNumber) => {
@@ -564,23 +546,17 @@ export const ProductionPlanningPage: React.FC = () => {
             right: { style: 'thin' },
           };
 
-          if (rowNumber === 1) {
-            cell.alignment = { horizontal: 'center', vertical: 'middle' };
-            return;
-          }
-
-          if (dateColIndex > 0 && colNumber === dateColIndex && cell.value instanceof Date) {
-            cell.numFmt = 'dd-mmm-yyyy';
-            cell.alignment = { horizontal: 'left', vertical: 'middle' };
-            return;
-          }
-
-          if (typeof cell.value === 'number') {
-            const isInteger = Number.isInteger(cell.value);
-            cell.numFmt = isInteger ? '#,##0' : '#,##0.00';
-            cell.alignment = { horizontal: 'center', vertical: 'middle' };
-          } else {
-            cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+          if (rowNumber > 2) {
+            if (colNumber === dateColIndex && cell.value instanceof Date) {
+              cell.numFmt = 'dd-mmm-yyyy';
+              cell.alignment = { horizontal: 'left', vertical: 'middle' };
+            } else if (typeof cell.value === 'number') {
+              const isInteger = Number.isInteger(cell.value);
+              cell.numFmt = isInteger ? '#,##0' : '#,##0.00';
+              cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            } else {
+              cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+            }
           }
         });
       });
@@ -622,10 +598,97 @@ export const ProductionPlanningPage: React.FC = () => {
       URL.revokeObjectURL(url);
 
       toast.success('Exported production planning to Excel.');
-    } catch {
+    } catch (error) {
+      console.error(error);
       toast.error('Failed to export Excel. Please try again.');
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const [isPrinting, setIsPrinting] = useState(false);
+
+  const handlePrint = async () => {
+    if (isPrinting) return;
+    setIsPrinting(true);
+    
+    try {
+      const { monthStart, monthEnd } = getMonthRange(selectedMonth);
+      const startIso = appliedFromDate || monthStart;
+      const endIso = appliedToDate || monthEnd;
+
+      const exportRows = await buildExportData(startIso, endIso, bottles);
+
+      if (exportRows.length === 0) {
+        toast.info('No data available to print for this date range.');
+        setIsPrinting(false);
+        return;
+      }
+
+      const doc = new jsPDF('landscape');
+      
+      const title = `Production Planning (${startIso} to ${endIso})`;
+      doc.setFontSize(14);
+      doc.text(title, 14, 15);
+
+      const head: any[] = [
+        [
+          { content: 'Date', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+          { content: 'Machine No 1', colSpan: 6, styles: { halign: 'center' } },
+          { content: 'Machine No 2', colSpan: 6, styles: { halign: 'center' } },
+          { content: 'Machine No 3', colSpan: 6, styles: { halign: 'center' } },
+          { content: 'Machine No 4', colSpan: 6, styles: { halign: 'center' } },
+          { content: 'Total Draw', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } }
+        ],
+        [
+          'Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw',
+          'Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw',
+          'Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw',
+          'Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw',
+        ]
+      ];
+
+      const body = exportRows.map(row => {
+         const rowValues: any[] = [];
+         if (row.date) {
+            const parsedDate = parseDisplayDate(row.date);
+            rowValues.push(parsedDate instanceof Date ? parsedDate.toLocaleDateString('en-GB') : row.date);
+         } else {
+            rowValues.push('');
+         }
+
+         for (const m of row.machines) {
+            rowValues.push(m.product, m.sec, m.wt, m.cut, m.qty, m.draw);
+         }
+         
+         rowValues.push(row.totalDraw);
+         return rowValues;
+      });
+
+      autoTable(doc, {
+        head,
+        body,
+        startY: 20,
+        theme: 'grid',
+        styles: { fontSize: 7, cellPadding: 1 },
+        headStyles: { fillColor: [243, 244, 246], textColor: [17, 24, 39], fontStyle: 'bold' }
+      });
+
+      const filename = buildExportFilename(
+        _month,
+        _year,
+        appliedFromDate,
+        appliedToDate,
+        filteredRowIndices.length !== allRowIndices.length
+      ).replace('.xlsx', '.pdf');
+
+      doc.save(filename);
+      toast.success('Generated PDF successfully.');
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to generate PDF. Please try again.');
+    } finally {
+      setIsPrinting(false);
     }
   };
 
@@ -890,8 +953,11 @@ export const ProductionPlanningPage: React.FC = () => {
             className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
             Next Month <ChevronRight size={14} />
           </button>
-          <button className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-            <Printer size={14} /> Print
+          <button
+            onClick={handlePrint}
+            disabled={isPrinting}
+            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+            <Printer size={14} /> {isPrinting ? 'Printing...' : 'Print'}
           </button>
           <button
             onClick={handleExport}

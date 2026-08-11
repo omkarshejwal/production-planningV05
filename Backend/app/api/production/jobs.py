@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from decimal import Decimal
 
 from app.db.session import get_db
@@ -14,11 +14,29 @@ from app.api.deps import require_manager_role
 router = APIRouter(prefix="/jobs", tags=["Production Jobs"])
 
 @router.get("/", response_model=List[ProductionJobResponse])
-def get_all_jobs(db: Session = Depends(get_db)):
+def get_all_jobs(
+    db: Session = Depends(get_db),
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    machine_no: Optional[int] = None,
+    limit: Optional[int] = None,
+    order_by: Optional[str] = None,
+):
     """
     Fetch all production jobs.
     """
-    return db.query(ProductionJob).all()
+    query = db.query(ProductionJob)
+    if from_date:
+        query = query.filter(ProductionJob.plan_date >= from_date)
+    if to_date:
+        query = query.filter(ProductionJob.plan_date <= to_date)
+    if machine_no:
+        query = query.filter(ProductionJob.machine_no == machine_no)
+    if order_by == "desc":
+        query = query.order_by(ProductionJob.plan_date.desc(), ProductionJob.start_time.desc())
+    if limit:
+        query = query.limit(limit)
+    return query.all()
 
 @router.post("/", response_model=ProductionJobResponse)
 def create_job(
