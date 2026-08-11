@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from typing import Optional, List
 from decimal import Decimal
 from datetime import date, datetime
@@ -15,15 +15,15 @@ class ProductionJobCreate(BaseModel):
     start_time: datetime
     bottle_id: int
     section: int
-    quantity: Decimal
-    target_quantity: Optional[Decimal] = None
+    
+    # We omit weight, speeds, and quantity. The Calculation Engine will pull weight/speeds 
+    # from BottleConfiguration and calculate quantity automatically!
     draw: Decimal
     
     estimated_completion: Optional[datetime] = None
     completion_time: Optional[datetime] = None
     changeover_minutes: int = 0
     status: Optional[str] = None
-    job_group_id: Optional[str] = None
 
     packaging: List[JobPackagingCreate] = []
 
@@ -37,12 +37,11 @@ class ProductionJobResponse(BaseModel):
     speeds: Decimal
     draw: Decimal
     quantity: Decimal
-    target_quantity: Optional[Decimal] = None
-    job_group_id: Optional[str] = None
     estimated_completion: Optional[datetime]
     completion_time: Optional[datetime]
     changeover_minutes: int
     status: str
     packaging: List[JobPackagingCreate] = []
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        from_attributes = True

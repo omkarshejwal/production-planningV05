@@ -43,7 +43,7 @@ import {
   lookupSpeed,
   makeNoneEntry,
 } from '../../utils/planningCalculations';
-import { addCalendarDays, calculateProductionDuration } from '../../utils/calculations';
+import { addCalendarDays } from '../../utils/calculations';
 import { buildExportData } from '../../utils/exportData';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
@@ -84,16 +84,6 @@ const parseDisplayDate = (value: string): Date | null => {
   const date = new Date(year, monthIndex, day);
   if (Number.isNaN(date.getTime())) return null;
   return date;
-};
-
-const formatDurationLabel = (totalHours: number): string => {
-  if (!Number.isFinite(totalHours) || totalHours <= 0) {
-    return '0d 0h (0.0 hrs)';
-  }
-
-  const days = Math.floor(totalHours / 24);
-  const hours = Math.round(totalHours % 24);
-  return `${days}d ${hours}h (${totalHours.toFixed(1)} hrs)`;
 };
 
 const normalizeMonthKey = (value: string): string => {
@@ -236,8 +226,6 @@ export const ProductionPlanningPage: React.FC = () => {
         cut: job.cutPerMin || 0,
         draw: job.drawTonsPerDay || 0,
         qty: job.productionQuantity || job.grossQuantity || 0,
-        requiredBottles: job.grossQuantity || job.productionQuantity || 0,
-        jobGroupId: job.linkedJobGroupId,
         section: job.sectionCount || 0,
         startTime: job.startTime || '07:00',
         endTime: isCompleted ? completionClock : '',
@@ -268,38 +256,6 @@ export const ProductionPlanningPage: React.FC = () => {
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
-
-  const getEntryChain = useCallback((entries: MachineEntry[], rowIdx: number) => {
-    const entry = entries[rowIdx];
-    if (!entry || entry.isBlank || !entry.product || entry.product === 'None') {
-      return { indices: [] as number[], totalRequired: 0, coveredBefore: 0, remaining: 0, remainingToSchedule: 0 };
-    }
-
-    const groupId = entry.jobGroupId || entry.product;
-    const indices = entries
-      .map((candidate, idx) => ({ candidate, idx }))
-      .filter(({ candidate }) => !candidate.isBlank && candidate.product === entry.product && (candidate.jobGroupId || candidate.product) === groupId)
-      .map(({ idx }) => idx)
-      .sort((left, right) => left - right);
-
-    const plannedQty = Math.max(entry.qty || 0, 0);
-    const totalRequired = entry.requiredBottles && entry.requiredBottles > 0
-      ? entry.requiredBottles
-      : indices.reduce((sum, idx) => sum + Math.max(entries[idx]?.qty || 0, 0), 0);
-    const coveredBefore = indices
-      .filter((idx) => idx < rowIdx)
-      .reduce((sum, idx) => sum + Math.max(entries[idx]?.qty || 0, 0), 0);
-    const scheduledTotal = indices.reduce((sum, idx) => sum + Math.max(entries[idx]?.qty || 0, 0), 0);
-
-    return {
-      indices,
-      totalRequired,
-      coveredBefore,
-      remaining: Math.max(totalRequired - coveredBefore, 0),
-      remainingToSchedule: Math.max(totalRequired - scheduledTotal, 0),
-      plannedQty,
-    };
-  }, []);
   const [showSection, setShowSection] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -382,18 +338,18 @@ export const ProductionPlanningPage: React.FC = () => {
                const hourlyQty = metrics.totalQuantity / 24;
                const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
 
-               const startClock = entry.startTime || '07:00';
-               const startDateTime = new Date(`${plan_date}T${startClock}:00`);
-               const estimatedCompletionDate = addCalendarDays(startDateTime, segmentHours / 24);
-               const estCompletion = entry.endTime
-                 ? (() => {
-                     const completionDate = new Date(`${plan_date}T${entry.endTime}:00`);
-                     if (completionDate < startDateTime) {
-                       completionDate.setDate(completionDate.getDate() + 1);
-                     }
-                     return completionDate.toISOString().slice(0, 19);
-                   })()
-                 : estimatedCompletionDate.toISOString().slice(0, 19);
+               const startParts = (entry.startTime || '07:00').split(':').map(Number);
+               const startMins = startParts[0] * 60 + startParts[1];
+               const totalMins = startMins + (segmentHours * 60);
+               
+               let estCompletion = '';
+               if (entry.endTime) {
+                  estCompletion = entry.endTime;
+               } else {
+                  const ch = Math.floor(totalMins / 60) % 24;
+                  const cm = Math.round(totalMins % 60);
+                  estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
+               }
 
                payloadRows.push({
                   plan_date,
@@ -404,14 +360,12 @@ export const ProductionPlanningPage: React.FC = () => {
                   speeds: entry.cut,
                   draw: entry.draw,
                   quantity: entry.qty,
-                  target_quantity: entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty,
                   production_hours: Number(segmentHours.toFixed(2)),
-                  start_time: startClock,
+                  start_time: entry.startTime || '07:00',
                   estimated_completion: estCompletion,
-                  completion_time: entry.status === 'completed' ? estCompletion : undefined,
+                  completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
                   changeover_minutes: changeover,
                   status: entry.status === 'completed' ? 'Completed' : 'Planned',
-                  job_group_id: entry.jobGroupId,
                   packaging: packagingRows
                } as any);
             }
@@ -751,37 +705,24 @@ export const ProductionPlanningPage: React.FC = () => {
     updateMachineLists(prev => {
       const source = prev[mIdx][rowIdx];
       if (!source || !source.product || source.product === 'None') return prev;
-      const chain = getEntryChain(prev[mIdx], rowIdx);
-      const dailyCapacity = calcProductionMetrics(source.cut, source.wt, mIdx + 1).totalQuantity;
-      if (dailyCapacity <= 0) {
-        toast.error('Unable to calculate daily production capacity for this job.');
-        return prev;
-      }
-      if (chain.remainingToSchedule <= 0) {
-        toast.error('This job is already fully scheduled.');
-        return prev;
-      }
       const nextIdx = rowIdx + 1;
       if (nextIdx >= prev[mIdx].length) return prev;
       const nextEntry = prev[mIdx][nextIdx];
       if (
         nextEntry && !nextEntry.isBlank &&
         nextEntry.product && nextEntry.product !== 'None' &&
-        (nextEntry.jobGroupId || nextEntry.product) !== (source.jobGroupId || source.product)
+        nextEntry.product !== source.product
       ) {
         toast.error('The next day already has a different production entry.');
         return prev;
       }
-      const nextQty = Math.min(chain.remainingToSchedule, dailyCapacity);
       const next = [...prev] as MachineLists;
       const list = [...next[mIdx]];
       list[nextIdx] = {
         ...source,
         eid: Date.now() + mIdx,
         isBlank: false,
-        qty: nextQty,
-        draw: calcDraw(source.wt, nextQty),
-        startTime: source.startTime,
+        startTime: undefined,
         endTime: undefined,
         status: 'running',
       };
@@ -882,8 +823,6 @@ export const ProductionPlanningPage: React.FC = () => {
       const qty = calcQty(cut, editModal.mIdx + 1);
       const requiredQtyValue = requiredBottles && requiredBottles > 0 ? requiredBottles : qty;
       const draw = calcDraw(bottle.wt, requiredQtyValue);
-      const existingGroupId = list[editModal.rowIdx]?.jobGroupId;
-      const groupId = existingGroupId || `MAC-${String(editModal.mIdx + 1).padStart(2, '0')}|${bottle.name}|${dateRowToIso(dateRows[editModal.rowIdx]?.date || '') || editModal.rowIdx}|${startTime || '07:00'}`;
       list[editModal.rowIdx] = {
         ...list[editModal.rowIdx],
         isBlank: false,
@@ -899,7 +838,6 @@ export const ProductionPlanningPage: React.FC = () => {
         palletPacking,
         palletPackingQty: palletPackingQty ?? null,
         requiredBottles: requiredBottles ?? null,
-        jobGroupId: groupId,
         section,
         startTime: startTime || undefined,
       };
@@ -1540,15 +1478,12 @@ export const ProductionPlanningPage: React.FC = () => {
         const { entry, mIdx, rowIdx } = tooltip;
         const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
         const dailyQty = metrics.totalQuantity;
-        const chain = getEntryChain(machineLists[mIdx], rowIdx);
-        const reqBottles = chain.totalRequired || entry.requiredBottles || null;
-        const remainingQty = chain.remaining;
-        const estDays = dailyQty > 0 && remainingQty > 0 ? remainingQty / dailyQty : 0;
-        const duration = calculateProductionDuration(remainingQty, entry.cut, undefined, mIdx + 1);
+        const reqBottles = entry.requiredBottles ?? null;
+        const estDays = dailyQty > 0 && reqBottles ? reqBottles / dailyQty : null;
 
         // Estimate completion date from start date row + estDays
         let estCompletionStr = '—';
-        if (dailyQty > 0) {
+        if (estDays !== null) {
           const startRow = dateRows[rowIdx];
           if (startRow) {
             // dateRows date is "DD Mon YYYY" from en-GB locale
@@ -1567,10 +1502,10 @@ export const ProductionPlanningPage: React.FC = () => {
                 estCompletionStr += `, ${ch % 12 || 12}:${String(cm).padStart(2, '0')} ${mer}`;
               }
             } else {
-              estCompletionStr = formatDurationLabel(duration.days * 24 + duration.hours);
+              estCompletionStr = `≈ ${estDays.toFixed(2)} days`;
             }
           } else {
-            estCompletionStr = duration.durationText;
+            estCompletionStr = `≈ ${estDays.toFixed(2)} days`;
           }
         }
 
@@ -1610,17 +1545,10 @@ export const ProductionPlanningPage: React.FC = () => {
                 </p>
               </div>
 
-              <div>
-                <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Remaining Bottles</p>
-                <p className="font-semibold text-[#FCD34D] text-sm">
-                  {remainingQty > 0 ? remainingQty.toLocaleString() : '0'}
-                </p>
-              </div>
-
               {/* Estimated Completion */}
               <div>
                 <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Estimated Completion</p>
-                <p className="font-semibold text-[#34D399] text-sm">{duration.durationText} · {estCompletionStr}</p>
+                <p className="font-semibold text-[#34D399] text-sm">{estCompletionStr}</p>
               </div>
 
               <div className="border-t border-[#334155] pt-2 space-y-2.5">

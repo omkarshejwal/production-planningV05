@@ -1,7 +1,6 @@
 # pyrefly: ignore [missing-import]
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect
 from sqlalchemy import text
 from app.core.config import settings
 
@@ -27,16 +26,6 @@ def initialize_database() -> None:
         with engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.production_schema}"'))
     Base.metadata.create_all(bind=engine)
-    inspector = inspect(engine)
-    schema = settings.production_schema
-    existing_columns = {column["name"] for column in inspector.get_columns("production_job", schema=schema)}
-    qualified_table = f'"{schema}"."production_job"' if schema else '"production_job"'
-
-    with engine.begin() as connection:
-        if "target_quantity" not in existing_columns:
-            connection.execute(text(f'ALTER TABLE {qualified_table} ADD COLUMN target_quantity NUMERIC(12, 2)'))
-        if "job_group_id" not in existing_columns:
-            connection.execute(text(f'ALTER TABLE {qualified_table} ADD COLUMN job_group_id VARCHAR(120)'))
 
 app = FastAPI(
     title="VitrumGlass Manufacturing API",

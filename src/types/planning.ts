@@ -22,7 +22,6 @@ export interface MachineEntry {
   palletPackingQty?: number | null;
   requiredBottles?: number | null;
   cumulativeQty?: number;
-  jobGroupId?: string;
   section?: number;
   startTime?: string; // "HH:MM" 24-h
   endTime?: string; // set when job is completed

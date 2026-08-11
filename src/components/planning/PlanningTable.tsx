@@ -16,7 +16,6 @@ import { useERP } from '../../context/ERPContext';
 import { ProductionJob } from '../../types';
 import {
   addCalendarDays,
-  calculateProductionDuration,
   calculateProductionMetrics,
   calculateEstimatedCompletionDays,
   formatDateDisplay,
@@ -25,9 +24,6 @@ import {
   formatNumber,
   generateMonthDates,
 } from '../../utils/calculations';
-import {
-  getJobContinuationProgress,
-} from '../../utils/jobContinuations';
 
 type DraftFields = {
   sectionCount?: string;
@@ -179,23 +175,24 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
     const weight = config?.weight ?? job.weightGrams;
     const cutSpeed = config?.speeds ?? job.cutPerMin;
     const startDateTime = new Date(`${job.date || job.startDate}T${job.startTime || '07:00'}:00`);
-    const progress = getJobContinuationProgress(job, jobs);
-    const metrics = calculateProductionMetrics(cutSpeed, weight, job.machineId, progress.plannedQuantity);
+
+    const requiredQty =
+      job.productionQuantity || job.grossQuantity;
+
+    const metrics = calculateProductionMetrics(cutSpeed, weight, job.machineId, requiredQty);
 
     const hourlyProduction = metrics.hourlyQuantity;
     const dailyProduction = metrics.totalQuantity;
     const plannedProduction = metrics.goodBottles;
-    const estimatedDays = calculateEstimatedCompletionDays(progress.remainingQuantity, dailyProduction);
-    const currentReferenceTime = progress.currentActualProduced > 0 && dailyProduction > 0
-      ? addCalendarDays(startDateTime, progress.currentActualProduced / dailyProduction)
-      : startDateTime;
-    const completion = addCalendarDays(currentReferenceTime, estimatedDays);
-    const remainingDuration = calculateProductionDuration(
-      progress.remainingQuantity,
-      cutSpeed,
-      undefined,
-      job.machineId
-    );
+    const dailyPerDay = metrics.totalQuantity;
+
+    const estimatedDays =
+      calculateEstimatedCompletionDays(
+        requiredQty,
+        dailyPerDay
+      );
+
+    const completion = addCalendarDays(startDateTime, estimatedDays);
     const packagingRows = packagingByJobKey.get(getJobKey(job)) || [];
     const selectedPackaging = ['ST', 'SN', 'SB', 'BT']
       .map((code) => ({
@@ -209,21 +206,16 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
       bottleWeight: `${weight} g`,
       machineNumber: job.machineId,
       sections: job.sectionCount,
-      status: progress.remainingQuantity <= 0 ? 'Completed' : job.status,
+      status: job.status,
       cutSpeed: formatDecimal(cutSpeed, 2),
       hourlyProduction: formatNumber(hourlyProduction),
       dailyProduction: formatNumber(dailyProduction),
       plannedProduction: formatNumber(plannedProduction),
       // goodBottlesLabel: `${formatDecimal(metrics.goodLiters, 2)}L (${formatNumber(goodPerDay)} bottles)`,
       startDateTime: formatDateTime(job.date || job.startDate, job.startTime || '07:00'),
-      endDateTime: dailyProduction > 0
-        ? formatDateTime(completion.toISOString().split('T')[0], completion.toTimeString().slice(0, 5))
-        : 'Not available',
-      totalRequired: formatNumber(progress.totalRequiredQuantity),
-      remainingQuantity: formatNumber(progress.remainingQuantity),
-      jobDuration: progress.remainingQuantity <= 0
-        ? '0d 0h (0.0 hrs)'
-        : remainingDuration.durationText,
+      endDateTime: formatDateTime(completion.toISOString().split('T')[0], completion.toTimeString().slice(0, 5)),
+      totalRequired: formatNumber(job.productionQuantity || job.grossQuantity),
+      jobDuration: `${estimatedDays.toFixed(2)} Days`,
       draw: `${formatDecimal(metrics.drawTons, 2)} T`,
       selectedPackaging,
       palletPacking: packagingRows.some((row) => row.pallet_packing === 'YES') ? 'YES' : 'NO',
@@ -338,7 +330,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
     if (entryBottleId) applyEntryConfig(machineId, entryBottleId, value);
   };
 
-  const handleSaveChanges = async () => {
+  const handleSaveChanges = () => {
     if (activeEntry) {
       if (!entryBottleId) {
         alert('Select a bottle from the bottle master to create the job.');
@@ -350,7 +342,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
         return;
       }
 
-      const saved = await saveJob({
+      const saved = saveJob({
         machineId: activeEntry.machineId,
         date: activeEntry.date,
         startDate: activeEntry.date,
@@ -826,9 +818,7 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
           </span>
         </div>
         <button
-          onClick={() => {
-            void handleSaveChanges();
-          }}
+          onClick={handleSaveChanges}
           disabled={!isDirty}
           className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
             ${isDirty
@@ -890,10 +880,6 @@ export const PlanningTable: React.FC<PlanningTableProps> = ({ onRefresh }) => {
                   <div>
                     <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Total Required Bottles</p>
                     <p className="font-semibold text-[#FCD34D] text-sm">{s.totalRequired}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Remaining Bottles</p>
-                    <p className="font-semibold text-[#FCD34D] text-sm">{s.remainingQuantity}</p>
                   </div>
                   <div>
                     <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Start Time</p>
