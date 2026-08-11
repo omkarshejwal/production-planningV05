@@ -285,8 +285,13 @@ const NUM_ROWS = new Date(_year, _month + 1, 0).getDate(); // days in current mo
 
 export const INITIAL_DATE_ROWS: DateRow[] = Array.from({ length: NUM_ROWS }, (_, i) => {
   const d = new Date(_year, _month, i + 1);
-  return { id: i + 1, date: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) };
+  return {
+    id: i + 1,
+    date: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }),
+    isoDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+  };
 });
+
 
 export const INITIAL_MACHINE_LISTS: MachineLists = [
   Array.from({ length: NUM_ROWS }, () => makeNoneEntry(0)),
