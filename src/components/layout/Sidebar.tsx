@@ -29,7 +29,7 @@ const NAV_ITEMS: MenuNavItem[] = [
 
 export const Sidebar: React.FC = () => {
   const { activeModule, setActiveModule, notifications } = useERP();
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(true);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
