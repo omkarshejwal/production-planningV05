@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   Bell,
-  Search,
   ChevronDown,
   Layers,
   User,
@@ -20,21 +19,15 @@ export const Header: React.FC = () => {
   const {
     activeModule,
     setActiveModule,
-    searchQuery,
-    setSearchQuery,
     notifications,
     markNotificationRead,
     clearAllNotifications,
-    bottles,
-    machines,
-    jobs,
-    openDrawerForEdit,
   } = useERP();
   const { user, logout } = useAuth();
 
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
-  const [showSearchResults, setShowSearchResults] = useState(false);
+  // const [showSearchResults, setShowSearchResults] = useState(false);
 
   const userName = user?.employee_name ?? 'User';
   const userRole = user?.role ?? 'Employee';
@@ -49,33 +42,6 @@ export const Header: React.FC = () => {
     .toUpperCase() || 'U';
 
   const unreadCount = notifications.filter((n) => !n.read).length;
-
-  // Filter search matches across Bottles, Machines, Jobs
-  const matchingBottles = searchQuery.trim()
-    ? bottles.filter(
-        (b) =>
-          b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          b.drawingNumber.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
-
-  const matchingMachines = searchQuery.trim()
-    ? machines.filter(
-        (m) =>
-          m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          m.code.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
-
-  const matchingJobs = searchQuery.trim()
-    ? jobs.filter(
-        (j) =>
-          j.jobNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          j.customerName.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
-
-  const totalSearchCount = matchingBottles.length + matchingMachines.length + matchingJobs.length;
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-4 md:px-6 flex items-center justify-between sticky top-0 z-40 shadow-xs">
@@ -101,110 +67,6 @@ export const Header: React.FC = () => {
 
       {/* Right: Search, Notifications, Profile */}
       <div className="flex items-center gap-3">
-        {/* Search Bar */}
-        <div className="relative">
-
-          {/* Search Dropdown Popup */}
-          {showSearchResults && searchQuery.trim() !== '' && (
-            <div className="absolute right-0 top-11 w-80 md:w-96 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-2 max-h-96 overflow-y-auto animate-in fade-in-50">
-              <div className="flex items-center justify-between px-3 py-1.5 text-xs font-semibold text-slate-400 border-b border-slate-100">
-                <span>SEARCH RESULTS ({totalSearchCount})</span>
-                <button
-                  onClick={() => setShowSearchResults(false)}
-                  className="text-slate-400 hover:text-slate-600"
-                >
-                  Close
-                </button>
-              </div>
-
-              {totalSearchCount === 0 ? (
-                <div className="p-4 text-center text-xs text-slate-500">
-                  No matching bottles, machines, or job numbers found for "{searchQuery}"
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {matchingBottles.length > 0 && (
-                    <div className="p-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 block mb-1">
-                        Bottles ({matchingBottles.length})
-                      </span>
-                      {matchingBottles.map((b) => (
-                        <div
-                          key={b.id}
-                          onClick={() => {
-                            setActiveModule('Production Planning');
-                            setShowSearchResults(false);
-                          }}
-                          className="p-2 hover:bg-slate-50 rounded-lg cursor-pointer flex items-center justify-between text-xs"
-                        >
-                          <div>
-                            <p className="font-semibold text-slate-800">{b.name}</p>
-                            <p className="text-[10px] text-slate-400">{b.drawingNumber} • {b.customerName}</p>
-                          </div>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 bg-slate-100 rounded text-slate-600">
-                            {b.color}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {matchingMachines.length > 0 && (
-                    <div className="p-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 block mb-1">
-                        Machines ({matchingMachines.length})
-                      </span>
-                      {matchingMachines.map((m) => (
-                        <div
-                          key={m.id}
-                          onClick={() => {
-                            setActiveModule('Machines');
-                            setShowSearchResults(false);
-                          }}
-                          className="p-2 hover:bg-slate-50 rounded-lg cursor-pointer flex items-center justify-between text-xs"
-                        >
-                          <div>
-                            <p className="font-semibold text-slate-800">{m.name} ({m.code})</p>
-                            <p className="text-[10px] text-slate-400">{m.sectionsCount} Sec • {m.sectionType}</p>
-                          </div>
-                          <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded font-medium">
-                            {m.status}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {matchingJobs.length > 0 && (
-                    <div className="p-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 block mb-1">
-                        Production Jobs ({matchingJobs.length})
-                      </span>
-                      {matchingJobs.map((j) => (
-                        <div
-                          key={j.id}
-                          onClick={() => {
-                            openDrawerForEdit(j);
-                            setShowSearchResults(false);
-                          }}
-                          className="p-2 hover:bg-slate-50 rounded-lg cursor-pointer flex items-center justify-between text-xs"
-                        >
-                          <div>
-                            <p className="font-semibold text-slate-800">{j.jobNumber}</p>
-                            <p className="text-[10px] text-slate-400">{j.customerName}</p>
-                          </div>
-                          <span className="text-[10px] px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded font-medium">
-                            {j.status}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
 
         {/* Notifications Popover */}
         <div className="relative">
@@ -247,9 +109,8 @@ export const Header: React.FC = () => {
                   <div
                     key={n.id}
                     onClick={() => markNotificationRead(n.id)}
-                    className={`p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
-                      n.read ? 'bg-white border-slate-100 opacity-75' : 'bg-blue-50/50 border-blue-100'
-                    }`}
+                    className={`p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${n.read ? 'bg-white border-slate-100 opacity-75' : 'bg-blue-50/50 border-blue-100'
+                      }`}
                   >
                     <div className="flex items-start gap-2">
                       {n.type === 'alert' && <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />}
@@ -320,16 +181,16 @@ export const Header: React.FC = () => {
                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg transition-colors"
                 >
                   <Settings className="w-4 h-4 text-slate-400" />
-                  Plant Master Settings
+                  Settings
                 </button>
               </div>
 
               <div className="pt-1 border-t border-slate-100">
                 <button
-                   onClick={() => {
-                     setShowUserDropdown(false);
-                     void logout();
-                   }}
+                  onClick={() => {
+                    setShowUserDropdown(false);
+                    void logout();
+                  }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                 >
                   <LogOut className="w-4 h-4" />
