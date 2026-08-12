@@ -1,4 +1,6 @@
+# pyrefly: ignore [missing-import]
 from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Boolean, ForeignKeyConstraint
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import relationship
 from app.db.base import Base, production_table_args
 
@@ -15,6 +17,7 @@ class ProductionJob(Base):
     speeds = Column(Numeric(10, 2), nullable=False)
     draw = Column(Numeric(10, 2), nullable=False)
     quantity = Column(Numeric(12, 2), nullable=False)
+    required_bottles = Column(Numeric(14, 2), nullable=True)
     
     estimated_completion = Column(DateTime)
     completion_time = Column(DateTime)

@@ -1,4 +1,6 @@
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from decimal import Decimal
@@ -96,6 +98,7 @@ def create_job(
         existing_job.speeds = speed
         existing_job.draw = job_in.draw if job_in.draw else calculated_draw
         existing_job.quantity = calculated_qty
+        existing_job.required_bottles = job_in.required_bottles
         existing_job.estimated_completion = job_in.estimated_completion
         existing_job.completion_time = job_in.completion_time
         existing_job.changeover_minutes = job_in.changeover_minutes
@@ -121,6 +124,7 @@ def create_job(
             speeds=speed,
             draw=job_in.draw if job_in.draw else calculated_draw,
             quantity=calculated_qty,
+            required_bottles=job_in.required_bottles,
             estimated_completion=job_in.estimated_completion,
             completion_time=job_in.completion_time,
             changeover_minutes=job_in.changeover_minutes,

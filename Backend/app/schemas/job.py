@@ -15,15 +15,15 @@ class ProductionJobCreate(BaseModel):
     start_time: datetime
     bottle_id: int
     section: int
-    
-    # We omit weight, speeds, and quantity. The Calculation Engine will pull weight/speeds 
-    # from BottleConfiguration and calculate quantity automatically!
+
     draw: Decimal
-    
+
+    required_bottles: Decimal
+
     estimated_completion: Optional[datetime] = None
     completion_time: Optional[datetime] = None
-    changeover_minutes: int = 0
-    status: Optional[str] = None
+    changeover_minutes: Optional[int] = 0
+    status: Optional[str] = "Planned"
 
     packaging: List[JobPackagingCreate] = []
 
@@ -37,10 +37,11 @@ class ProductionJobResponse(BaseModel):
     speeds: Decimal
     draw: Decimal
     quantity: Decimal
-    estimated_completion: Optional[datetime]
-    completion_time: Optional[datetime]
-    changeover_minutes: int
-    status: str
+    required_bottles: Optional[Decimal] = None
+    estimated_completion: Optional[datetime] = None
+    completion_time: Optional[datetime] = None
+    changeover_minutes: Optional[int] = 0
+    status: Optional[str] = "Planned"
     packaging: List[JobPackagingCreate] = []
 
     class Config:
