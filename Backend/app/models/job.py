@@ -15,6 +15,7 @@ class ProductionJob(Base):
     speeds = Column(Numeric(10, 2), nullable=False)
     draw = Column(Numeric(10, 2), nullable=False)
     quantity = Column(Numeric(12, 2), nullable=False)
+    required_bottles = Column(Numeric(14, 2), nullable=True)
     
     estimated_completion = Column(DateTime)
     completion_time = Column(DateTime)
