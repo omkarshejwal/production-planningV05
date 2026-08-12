@@ -48,7 +48,7 @@ export const PlanningDrawer: React.FC = () => {
   } = useERP();
 
   const [machineId, setMachineId] = useState('MAC-01');
-  const [date, setDate] = useState('2026-08-01');
+  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [bottleId, setBottleId] = useState('');
   const [bottleQuery, setBottleQuery] = useState('');
   const [sectionCount, setSectionCount] = useState(8);
@@ -175,7 +175,7 @@ export const PlanningDrawer: React.FC = () => {
     ) || bottles[0];
 
     setMachineId(defaultMachineId);
-    setDate(drawerDefaultDate || '2026-08-01');
+    setDate(drawerDefaultDate || new Date().toISOString().split('T')[0]);
     setBottleId(defaultBottle?.id || '');
     setBottleQuery(defaultBottle?.name || '');
     setSectionCount(

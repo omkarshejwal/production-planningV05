@@ -304,9 +304,12 @@ export function formatDateDisplay(dateStr: string): string {
 }
 
 /**
- * Generate full month dates array for August 2026 or any target month
+ * Generate full month dates array for a target month
  */
-export function generateMonthDates(year: number = 2026, monthIndex: number = 7): string[] {
+export function generateMonthDates(
+  year: number = new Date().getFullYear(),
+  monthIndex: number = new Date().getMonth()
+): string[] {
   // monthIndex 7 = August (0-indexed)
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const dates: string[] = [];

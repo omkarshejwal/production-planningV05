@@ -127,14 +127,24 @@ export const planningRepository = {
   /**
    * Fetches all master data and jobs from the FastAPI backend and populates the cache.
    * Must be called once on app boot, and again after any write operation.
+   *
+   * @param fromDate - ISO date string (YYYY-MM-DD). When provided with toDate,
+   *   the jobs fetch is scoped to this date range. Machines, bottles, and
+   *   configurations are always fetched in full (they are small master-data tables).
+   * @param toDate   - ISO date string (YYYY-MM-DD). Must be paired with fromDate.
    */
-  async init(): Promise<void> {
+  async init(fromDate?: string, toDate?: string): Promise<void> {
     try {
+      const jobsUrl =
+        fromDate && toDate
+          ? `/api/production/jobs/?from_date=${fromDate}&to_date=${toDate}`
+          : '/api/production/jobs/';
+
       const [rawMachines, rawBottles, rawConfigs, rawJobs] = await Promise.all([
         apiFetch('/api/production/machines/'),
         apiFetch('/api/production/products/bottles/'),
         apiFetch('/api/production/products/configurations/'),
-        apiFetch('/api/production/jobs/'),
+        apiFetch(jobsUrl),
       ]);
 
       _machines = (rawMachines as Record<string, unknown>[]).map(mapMachineRow);

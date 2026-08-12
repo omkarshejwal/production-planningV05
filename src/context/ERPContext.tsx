@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   ActiveModule,
   BottleMaster,
@@ -78,8 +78,8 @@ interface ERPContextType {
     patch: Partial<Pick<ProductionJob, 'sectionCount' | 'productionQuantity' | 'grossQuantity'>>
   ) => boolean;
   extendJob: (jobId: string, numberOfDays: number) => Promise<boolean>;
-  finishJob: (jobId: string) => Promise<boolean>;
   refreshPlanner: () => void;
+  reloadJobsForWindow: (from: string, to: string) => void;
   getBottleConfiguration: (machineId: string, bottleId: string, section: number) => BottleConfigurationRow | undefined;
   addBottle: (bottle: BottleMaster) => void;
   updateMachineStatus: (machineId: string, status: ISMachine['status']) => void;
@@ -163,9 +163,24 @@ const getDerivedJobWindow = (job: ProductionJob): { start: Date; end: Date } => 
 export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeModule, setActiveModule] = useState<ActiveModule>('Production Planning');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState('2026-08');
-  const [fromDate, setFromDate] = useState('2026-08-01');
-  const [toDate, setToDate] = useState('2026-08-31');
+
+  // Derive the current month dynamically so defaults are always today's month,
+  // not a hardcoded value that becomes stale over time.
+  const _bootNow = new Date();
+  const _bootMonth = `${_bootNow.getFullYear()}-${String(_bootNow.getMonth() + 1).padStart(2, '0')}`;
+  const _bootMonthStart = `${_bootMonth}-01`;
+  const _bootMonthEnd = `${_bootMonth}-${String(
+    new Date(_bootNow.getFullYear(), _bootNow.getMonth() + 1, 0).getDate()
+  ).padStart(2, '0')}`;
+
+  const [selectedMonth, setSelectedMonth] = useState(_bootMonth);
+  const [fromDate, setFromDate] = useState(_bootMonthStart);
+  const [toDate, setToDate] = useState(_bootMonthEnd);
+
+  // Tracks the date range that was passed to the last planningRepository.init() call.
+  // All write-then-reinit paths use these to re-fetch the same window, not the full table.
+  const [fetchWindowFrom, setFetchWindowFrom] = useState(_bootMonthStart);
+  const [fetchWindowTo, setFetchWindowTo] = useState(_bootMonthEnd);
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ProductionJob | null>(null);
@@ -192,9 +207,24 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const refreshPlanner = () => setPlannerVersion((v) => v + 1);
 
-  // Fetch all master data + jobs from the API on boot and after every write
+  /**
+   * Fetches jobs scoped to [from, to], updates the fetch-window record,
+   * and triggers a re-render so useMemo picks up the new cache.
+   *
+   * useCallback with [from, to] in the dep array means callers always get
+   * the latest version — no stale-closure risk on the window values.
+   */
+  const reloadJobsForWindow = useCallback((from: string, to: string) => {
+    setFetchWindowFrom(from);
+    setFetchWindowTo(to);
+    planningRepository.init(from, to).then(() => setPlannerVersion((v) => v + 1));
+  }, []);
+
+  // Fetch master data + jobs scoped to the current month on app boot.
+  // Uses the same _bootMonthStart/_bootMonthEnd computed above so the initial
+  // fetch is always today's month regardless of when the app is deployed.
   useEffect(() => {
-    planningRepository.init().then(() => {
+    planningRepository.init(_bootMonthStart, _bootMonthEnd).then(() => {
       // Force a re-render once cache is populated so useMemo picks up real data
       setPlannerVersion((v) => v + 1);
     });
@@ -508,8 +538,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     closeDrawer();
-    // Re-fetch from API to sync with AWS after save
-    planningRepository.init().then(() => refreshPlanner());
+    // Re-fetch from API scoped to the active window to sync with AWS after save
+    planningRepository.init(fetchWindowFrom, fetchWindowTo).then(() => refreshPlanner());
     return true;
   };
 
@@ -647,49 +677,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
-  const finishJob = async (jobId: string): Promise<boolean> => {
-    const job = jobs.find((j) => j.id === jobId);
-    if (!job) return false;
 
-    const updated = await planningRepository.updateProductionJob(
-      {
-        plan_date: job.date || job.startDate,
-        machine_no: job.machineId,
-        bottle_id: job.bottleId,
-        section: job.sectionCount,
-        start_time: job.startTime || '07:00',
-      },
-      {
-        plan_date: job.date || job.startDate,
-        machine_no: job.machineId,
-        bottle_id: job.bottleId,
-        section: job.sectionCount,
-        weight: job.weightGrams,
-        speeds: job.cutPerMin,
-        draw: calculateProductionMetrics(
-          job.cutPerMin,
-          job.weightGrams,
-          job.machineId,
-          job.productionQuantity || job.grossQuantity
-        ).drawTons,
-        quantity: job.productionQuantity || job.grossQuantity,
-        production_hours: job.productionHours,
-        start_time: job.startTime || '07:00',
-        estimated_completion: job.expectedEndTime || '23:00',
-        completion_time: job.expectedEndTime || '23:00',
-        changeover_minutes: Math.round((job.changeoverHours || 0) * 60),
-        status: 'Completed',
-      }
-    );
-
-    if (!updated.ok) {
-      alert(updated.error || 'Unable to finish job.');
-      return false;
-    }
-
-    refreshPlanner();
-    return true;
-  };
 
   const getBottleConfiguration = (machineId: string, bottleId: string, section: number) =>
     planningRepository.getBottleConfiguration(machineId, bottleId, section);
@@ -761,8 +749,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteJob,
         updateJobInline,
         extendJob,
-        finishJob,
         refreshPlanner,
+        reloadJobsForWindow,
         getBottleConfiguration,
         addBottle,
         updateMachineStatus,

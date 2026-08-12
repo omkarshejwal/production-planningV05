@@ -148,7 +148,7 @@ function loadFromStorage(): { machineLists: MachineLists; completedJobMap: Compl
 }
 
 export const ProductionPlanningPage: React.FC = () => {
-  const { jobs, bottles, refreshPlanner, selectedMonth, setSelectedMonth, fromDate, setFromDate, toDate, setToDate } = useERP();
+  const { jobs, bottles, refreshPlanner, reloadJobsForWindow, selectedMonth, setSelectedMonth, fromDate, setFromDate, toDate, setToDate } = useERP();
 
   // Filters
   const [draftFromDate, setDraftFromDate] = useState(fromDate);
@@ -392,8 +392,8 @@ export const ProductionPlanningPage: React.FC = () => {
 
       const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
       console.log("[SAVE] createProductionJobsBatch result:", batchResult);
-      await planningRepository.init();
-      refreshPlanner();
+      // Re-fetch scoped to the active window so the grid reflects saved data
+      reloadJobsForWindow(appliedFromDate, appliedToDate);
       setIsDirty(false);
       toast.success('Production data saved successfully to AWS Database.', { duration: 3000 });
     } catch (e) {
@@ -433,6 +433,10 @@ export const ProductionPlanningPage: React.FC = () => {
     setToDate(draftToDate);
     setAppliedFromDate(draftFromDate);
     setAppliedToDate(draftToDate);
+    // Trigger a fresh scoped fetch for the custom range
+    if (draftFromDate && draftToDate) {
+      reloadJobsForWindow(draftFromDate, draftToDate);
+    }
   };
 
   const handleReset = () => {
@@ -477,6 +481,8 @@ export const ProductionPlanningPage: React.FC = () => {
     setToDate(monthEnd);
     setAppliedFromDate(monthStart);
     setAppliedToDate(monthEnd);
+    // Trigger a fresh scoped fetch for the new month
+    reloadJobsForWindow(monthStart, monthEnd);
   };
 
   const handleExport = async () => {
@@ -1026,7 +1032,7 @@ export const ProductionPlanningPage: React.FC = () => {
           </button>
           <button
             type="button"
-            onClick={() => { console.log('CLICKED REFRESH'); refreshPlanner(); }}
+            onClick={() => { console.log('CLICKED REFRESH'); reloadJobsForWindow(appliedFromDate, appliedToDate); }}
             className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
             <RefreshCw size={14} /> Refresh
           </button>
@@ -1501,8 +1507,8 @@ export const ProductionPlanningPage: React.FC = () => {
           const { planDate, machineNo, startTime } = deleteModal;
           const res = await planningRepository.deleteProductionJob(planDate, machineNo, startTime);
           if (res.ok) {
-            await planningRepository.init();
-            refreshPlanner();
+            // Re-fetch scoped to the active window after delete
+            reloadJobsForWindow(appliedFromDate, appliedToDate);
             toast.success("Job deleted successfully.");
           } else {
             toast.error(res.error || "Failed to delete job");

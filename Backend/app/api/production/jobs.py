@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from decimal import Decimal
 
@@ -25,7 +25,7 @@ def get_all_jobs(
     """
     Fetch all production jobs.
     """
-    query = db.query(ProductionJob)
+    query = db.query(ProductionJob).options(selectinload(ProductionJob.packaging))
     if from_date:
         query = query.filter(ProductionJob.plan_date >= from_date)
     if to_date:
