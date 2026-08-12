@@ -21,6 +21,7 @@ export interface MachineEntry {
   palletPacking?: boolean | null;
   palletPackingQty?: number | null;
   requiredBottles?: number | null;
+  estimatedCompletion?: string;
   cumulativeQty?: number;
   section?: number;
   startTime?: string; // "HH:MM" 24-h

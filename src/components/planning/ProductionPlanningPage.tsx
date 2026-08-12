@@ -86,6 +86,99 @@ const parseDisplayDate = (value: string): Date | null => {
   return date;
 };
 
+const parseTimeToMinutes = (time?: string): number | null => {
+  if (!time) return null;
+
+  const [hoursRaw, minutesRaw] = time.split(':');
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+
+  if (
+    !Number.isFinite(hours) ||
+    !Number.isFinite(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
+};
+
+const formatCompletionDateTime = (date: Date): string => {
+  return date.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+};
+
+const calculateEstimatedCompletion = (
+  planDate: string,
+  startTime: string | undefined,
+  requiredBottles: number,
+  cut: number,
+  wt: number,
+  machineNo: number
+): string => {
+  if (!planDate || !startTime || requiredBottles <= 0 || cut <= 0) {
+    return '—';
+  }
+
+  const startMinutes = parseTimeToMinutes(startTime);
+
+  if (startMinutes === null) {
+    return '—';
+  }
+
+  // Reuse the application's existing production-rate calculation.
+  const metrics = calcProductionMetrics(cut, wt, machineNo);
+
+  const hourlyQty = metrics.totalQuantity / 24;
+
+  if (!Number.isFinite(hourlyQty) || hourlyQty <= 0) {
+    return '—';
+  }
+
+  const productionMinutes = (requiredBottles / hourlyQty) * 60;
+
+  if (!Number.isFinite(productionMinutes) || productionMinutes < 0) {
+    return '—';
+  }
+
+  const [year, month, day] = planDate.split('-').map(Number);
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  ) {
+    return '—';
+  }
+
+  const completion = new Date(
+    year,
+    month - 1,
+    day,
+    Math.floor(startMinutes / 60),
+    startMinutes % 60,
+    0,
+    0
+  );
+
+  completion.setMinutes(
+    completion.getMinutes() + Math.round(productionMinutes)
+  );
+
+  return formatCompletionDateTime(completion);
+};
+
+
 const normalizeMonthKey = (value: string): string => {
   const [yearStr, monthStr] = value.split('-');
   const year = Number(yearStr) || new Date().getFullYear();
@@ -163,10 +256,10 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const [startYear, startMonth, startDay] = startIso.split('-').map(Number);
     const [endYear, endMonth, endDay] = endIso.split('-').map(Number);
-    
+
     const startDate = new Date(startYear, startMonth - 1, startDay);
     const endDate = new Date(endYear, endMonth - 1, endDay);
-    
+
     const diffTime = endDate.getTime() - startDate.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
     const totalDays = diffDays > 0 ? diffDays : 1;
@@ -213,12 +306,12 @@ export const ProductionPlanningPage: React.FC = () => {
       let palletPacking = false;
       let palletQty = null;
       for (const p of packagingRows) {
-         packAllocations[p.packaging_type] = p.quantity;
-         packCat = p.packaging_type;
-         if (p.pallet_packing) {
-             palletPacking = true;
-             palletQty = p.pallet_quantity;
-         }
+        packAllocations[p.packaging_type] = p.quantity;
+        packCat = p.packaging_type;
+        if (p.pallet_packing) {
+          palletPacking = true;
+          palletQty = p.pallet_quantity;
+        }
       }
 
       const isCompleted = job.lifecycleStatus === 'COMPLETED' || (job as any).status === 'Completed';
@@ -227,22 +320,80 @@ export const ProductionPlanningPage: React.FC = () => {
       // calculation covers the production-day window instead of a zero-length interval.
       const completionClock = job.completionTime
         ? (job.completionTime.includes('T')
-            ? job.completionTime.split('T')[1].substring(0, 5)
-            : job.completionTime.substring(0, 5))
+          ? job.completionTime.split('T')[1].substring(0, 5)
+          : job.completionTime.substring(0, 5))
         : '';
+
+      // Backend/database field mapping.
+      // `quantity`, `start_time` and `speeds` are the actual production fields.
+      const backendQuantity = Number(
+        (job as any).quantity ??
+        (job as any).requiredBottles ??
+        (job as any).required_bottles ??
+        (job as any).productionQuantity ??
+        (job as any).grossQuantity ??
+        0
+      );
+
+      const backendSpeed = Number(
+        (job as any).speeds ??
+        (job as any).speed ??
+        job.cutPerMin ??
+        0
+      );
+
+      const backendStartTime =
+        (job as any).start_time ??
+        job.startTime ??
+        '07:00';
 
       const entry: MachineEntry = {
         eid: Math.random(),
+
         product,
-        wt: job.weightGrams || 0,
-        speeds: job.cutPerMin || 0,
-        cut: job.cutPerMin || 0,
-        draw: job.drawTonsPerDay || 0,
-        qty: job.productionQuantity || job.grossQuantity || 0,
-        section: job.sectionCount || 0,
-        startTime: job.startTime || '07:00',
+
+        wt: Number(
+          (job as any).weight ??
+          job.weightGrams ??
+          0
+        ),
+
+        speeds: backendSpeed,
+        cut: backendSpeed,
+
+        draw: Number(
+          (job as any).draw ??
+          job.drawTonsPerDay ??
+          0
+        ),
+
+        // Keep the actual database quantity.
+        qty: backendQuantity,
+
+        section: Number(
+          (job as any).section ??
+          job.sectionCount ??
+          0
+        ),
+
+        // Use the actual database start_time when available.
+        startTime: backendStartTime,
+
         endTime: isCompleted ? completionClock : '',
+
+        // IMPORTANT:
+        // quantity is the source of Total Required Bottles.
+        requiredBottles: backendQuantity,
+
+        // Keep backend estimated value if available.
+        // Tooltip will calculate it when this is missing.
+        estimatedCompletion:
+          (job as any).estimated_completion ??
+          (job as any).estimatedCompletion ??
+          '',
+
         status: isCompleted ? 'completed' : 'running',
+
         packingAllocations: packAllocations,
         packingCategory: packCat as any,
         palletPacking,
@@ -288,104 +439,104 @@ export const ProductionPlanningPage: React.FC = () => {
       console.log("handleSaveToDb started. dateRows:", dateRows.length, "isDirty:", isDirty);
 
       const calculateChangeover = (mIdx: number, rowIdx: number, startTime: string) => {
-         const key = `${mIdx}-${rowIdx}`;
-         const completed = completedJobMap[key];
-         if (!completed || completed.length === 0) return 0;
-         const lastEnd = completed[completed.length - 1].endTime;
-         if (!lastEnd) return 0;
-         const startParts = startTime.split(':').map(Number);
-         const endParts = lastEnd.split(':').map(Number);
-         let diff = (startParts[0] * 60 + startParts[1]) - (endParts[0] * 60 + endParts[1]);
-         if (diff < 0) diff += 24 * 60;
-         return diff;
+        const key = `${mIdx}-${rowIdx}`;
+        const completed = completedJobMap[key];
+        if (!completed || completed.length === 0) return 0;
+        const lastEnd = completed[completed.length - 1].endTime;
+        if (!lastEnd) return 0;
+        const startParts = startTime.split(':').map(Number);
+        const endParts = lastEnd.split(':').map(Number);
+        let diff = (startParts[0] * 60 + startParts[1]) - (endParts[0] * 60 + endParts[1]);
+        if (diff < 0) diff += 24 * 60;
+        return diff;
       };
 
       for (let mIdx = 0; mIdx < 4; mIdx++) {
-         for (let rowIdx = 0; rowIdx < dateRows.length; rowIdx++) {
-            const plan_date = dateRows[rowIdx].isoDate;
-            const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-            
-            const entriesToSave: MachineEntry[] = [];
-            const key = `${mIdx}-${rowIdx}`;
-            if (completedJobMap[key]) {
-               entriesToSave.push(...completedJobMap[key]);
+        for (let rowIdx = 0; rowIdx < dateRows.length; rowIdx++) {
+          const plan_date = dateRows[rowIdx].isoDate;
+          const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+
+          const entriesToSave: MachineEntry[] = [];
+          const key = `${mIdx}-${rowIdx}`;
+          if (completedJobMap[key]) {
+            entriesToSave.push(...completedJobMap[key]);
+          }
+          const currentEntry = machineLists[mIdx][rowIdx];
+          if (currentEntry && currentEntry.product !== 'None') {
+            entriesToSave.push(currentEntry);
+          }
+
+          if (entriesToSave.length > 0) {
+            console.log(`Found ${entriesToSave.length} entries for MAC-${mIdx + 1} at row ${rowIdx} (${plan_date})`, entriesToSave);
+          }
+
+          for (const entry of entriesToSave) {
+            if (entry.product === 'None') continue;
+            const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+            const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
+            if (!bottle) {
+              console.error(`Bottle not found in DB: ${entry.product}`);
+              toast.error(`Save failed: Bottle "${entry.product}" not found in system.`);
+              continue;
             }
-            const currentEntry = machineLists[mIdx][rowIdx];
-            if (currentEntry && currentEntry.product !== 'None') {
-               entriesToSave.push(currentEntry);
+
+            const packagingRows: any[] = [];
+            if (entry.packingAllocations) {
+              for (const [type, qty] of Object.entries(entry.packingAllocations)) {
+                packagingRows.push({
+                  packaging_type: type,
+                  quantity: qty,
+                  pallet_packing: entry.palletPacking || false,
+                  pallet_quantity: entry.palletPackingQty || null
+                });
+              }
+            } else if (entry.packingCategory) {
+              packagingRows.push({
+                packaging_type: entry.packingCategory,
+                quantity: entry.qty,
+                pallet_packing: entry.palletPacking || false,
+                pallet_quantity: entry.palletPackingQty || null
+              });
             }
 
-            if (entriesToSave.length > 0) {
-                console.log(`Found ${entriesToSave.length} entries for MAC-${mIdx + 1} at row ${rowIdx} (${plan_date})`, entriesToSave);
+            const changeover = entry.status === 'running' ? calculateChangeover(mIdx, rowIdx, entry.startTime || '07:00') : 0;
+
+            const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
+            const hourlyQty = metrics.totalQuantity / 24;
+            const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
+
+            const startParts = (entry.startTime || '07:00').split(':').map(Number);
+            const startMins = startParts[0] * 60 + startParts[1];
+            const totalMins = startMins + (segmentHours * 60);
+
+            let estCompletion = '';
+            if (entry.endTime) {
+              estCompletion = entry.endTime;
+            } else {
+              const ch = Math.floor(totalMins / 60) % 24;
+              const cm = Math.round(totalMins % 60);
+              estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
             }
 
-            for (const entry of entriesToSave) {
-               if (entry.product === 'None') continue;
-               const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-               const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
-               if (!bottle) {
-                   console.error(`Bottle not found in DB: ${entry.product}`);
-                   toast.error(`Save failed: Bottle "${entry.product}" not found in system.`);
-                   continue;
-               }
-
-               const packagingRows: any[] = [];
-               if (entry.packingAllocations) {
-                  for (const [type, qty] of Object.entries(entry.packingAllocations)) {
-                     packagingRows.push({
-                        packaging_type: type,
-                        quantity: qty,
-                        pallet_packing: entry.palletPacking || false,
-                        pallet_quantity: entry.palletPackingQty || null
-                     });
-                  }
-               } else if (entry.packingCategory) {
-                   packagingRows.push({
-                        packaging_type: entry.packingCategory,
-                        quantity: entry.qty,
-                        pallet_packing: entry.palletPacking || false,
-                        pallet_quantity: entry.palletPackingQty || null
-                   });
-               }
-
-               const changeover = entry.status === 'running' ? calculateChangeover(mIdx, rowIdx, entry.startTime || '07:00') : 0;
-
-               const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
-               const hourlyQty = metrics.totalQuantity / 24;
-               const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
-
-               const startParts = (entry.startTime || '07:00').split(':').map(Number);
-               const startMins = startParts[0] * 60 + startParts[1];
-               const totalMins = startMins + (segmentHours * 60);
-               
-               let estCompletion = '';
-               if (entry.endTime) {
-                  estCompletion = entry.endTime;
-               } else {
-                  const ch = Math.floor(totalMins / 60) % 24;
-                  const cm = Math.round(totalMins % 60);
-                  estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
-               }
-
-               payloadRows.push({
-                  plan_date,
-                  machine_no,
-                  bottle_id: bottle.id,
-                  section: entry.section || (mIdx === 0 || mIdx === 3 ? 8 : 10),
-                  weight: entry.wt,
-                  speeds: entry.cut,
-                  draw: entry.draw,
-                  quantity: entry.qty,
-                  production_hours: Number(segmentHours.toFixed(2)),
-                  start_time: entry.startTime || '07:00',
-                  estimated_completion: estCompletion,
-                  completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
-                  changeover_minutes: changeover,
-                  status: entry.status === 'completed' ? 'Completed' : 'Planned',
-                  packaging: packagingRows
-               } as any);
-            }
-         }
+            payloadRows.push({
+              plan_date,
+              machine_no,
+              bottle_id: bottle.id,
+              section: entry.section || (mIdx === 0 || mIdx === 3 ? 8 : 10),
+              weight: entry.wt,
+              speeds: entry.cut,
+              draw: entry.draw,
+              quantity: entry.qty,
+              production_hours: Number(segmentHours.toFixed(2)),
+              start_time: entry.startTime || '07:00',
+              estimated_completion: estCompletion,
+              completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
+              changeover_minutes: changeover,
+              status: entry.status === 'completed' ? 'Completed' : 'Planned',
+              packaging: packagingRows
+            } as any);
+          }
+        }
       }
 
       console.log("[SAVE] Full payloadRows being sent:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time })), null, 2));
@@ -407,7 +558,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const allRowIndices = useMemo(() =>
     Array.from({ length: dateRows.length }, (_, i) => i),
-  [dateRows.length]);
+    [dateRows.length]);
 
   const filteredRowIndices = useMemo(() => {
     const { year, month, monthStart, monthEnd } = getMonthRange(selectedMonth);
@@ -510,7 +661,7 @@ export const ProductionPlanningPage: React.FC = () => {
       // Row 1: Grouped Headers
       const topRow = ['Date'];
       for (let i = 1; i <= 4; i++) {
-         topRow.push(`Machine No ${i}`, '', '', '', '', '');
+        topRow.push(`Machine No ${i}`, '', '', '', '', '');
       }
       topRow.push('Total Draw');
       worksheet.addRow(topRow);
@@ -518,7 +669,7 @@ export const ProductionPlanningPage: React.FC = () => {
       // Row 2: Sub-headers
       const subRow = [''];
       for (let i = 1; i <= 4; i++) {
-         subRow.push('Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw');
+        subRow.push('Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw');
       }
       subRow.push('');
       worksheet.addRow(subRow);
@@ -536,26 +687,26 @@ export const ProductionPlanningPage: React.FC = () => {
       // Add Data Rows
       for (const row of exportRows) {
         const rowValues: any[] = [];
-        
+
         if (row.date) {
-           const parsedDate = parseDisplayDate(row.date);
-           if (parsedDate) {
-               // exceljs converts JS Date objects to Excel serial numbers using their UTC values.
-               // In positive timezones like IST (+05:30), a local midnight Date becomes the previous day in UTC.
-               // We must construct an explicit UTC Date so exceljs writes the exact intended date to the file.
-               const utcDateForExcel = new Date(Date.UTC(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate()));
-               rowValues.push(utcDateForExcel);
-           } else {
-               rowValues.push(row.date);
-           }
+          const parsedDate = parseDisplayDate(row.date);
+          if (parsedDate) {
+            // exceljs converts JS Date objects to Excel serial numbers using their UTC values.
+            // In positive timezones like IST (+05:30), a local midnight Date becomes the previous day in UTC.
+            // We must construct an explicit UTC Date so exceljs writes the exact intended date to the file.
+            const utcDateForExcel = new Date(Date.UTC(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate()));
+            rowValues.push(utcDateForExcel);
+          } else {
+            rowValues.push(row.date);
+          }
         } else {
-           rowValues.push('');
+          rowValues.push('');
         }
 
         for (const m of row.machines) {
-           rowValues.push(m.product, m.sec, m.wt, m.cut, m.qty, m.draw);
+          rowValues.push(m.product, m.sec, m.wt, m.cut, m.qty, m.draw);
         }
-        
+
         rowValues.push(row.totalDraw);
         worksheet.addRow(rowValues);
       }
@@ -642,7 +793,7 @@ export const ProductionPlanningPage: React.FC = () => {
   const handlePrint = async () => {
     if (isPrinting) return;
     setIsPrinting(true);
-    
+
     try {
       const { monthStart, monthEnd } = getMonthRange(selectedMonth);
       const startIso = appliedFromDate || monthStart;
@@ -657,7 +808,7 @@ export const ProductionPlanningPage: React.FC = () => {
       }
 
       const doc = new jsPDF('landscape');
-      
+
       const title = `Production Planning (${startIso} to ${endIso})`;
       doc.setFontSize(14);
       doc.text(title, 14, 15);
@@ -680,20 +831,20 @@ export const ProductionPlanningPage: React.FC = () => {
       ];
 
       const body = exportRows.map(row => {
-         const rowValues: any[] = [];
-         if (row.date) {
-            const parsedDate = parseDisplayDate(row.date);
-            rowValues.push(parsedDate instanceof Date ? parsedDate.toLocaleDateString('en-GB') : row.date);
-         } else {
-            rowValues.push('');
-         }
+        const rowValues: any[] = [];
+        if (row.date) {
+          const parsedDate = parseDisplayDate(row.date);
+          rowValues.push(parsedDate instanceof Date ? parsedDate.toLocaleDateString('en-GB') : row.date);
+        } else {
+          rowValues.push('');
+        }
 
-         for (const m of row.machines) {
-            rowValues.push(m.product, m.sec, m.wt, m.cut, m.qty, m.draw);
-         }
-         
-         rowValues.push(row.totalDraw);
-         return rowValues;
+        for (const m of row.machines) {
+          rowValues.push(m.product, m.sec, m.wt, m.cut, m.qty, m.draw);
+        }
+
+        rowValues.push(row.totalDraw);
+        return rowValues;
       });
 
       autoTable(doc, {
@@ -966,14 +1117,14 @@ export const ProductionPlanningPage: React.FC = () => {
     if (dateRows.length === 0) return '';
     const firstDate = new Date(dateRows[0].isoDate);
     const lastDate = new Date(dateRows[dateRows.length - 1].isoDate);
-    
+
     const isSameMonth = firstDate.getMonth() === lastDate.getMonth() && firstDate.getFullYear() === lastDate.getFullYear();
     const daysInMonth = new Date(firstDate.getFullYear(), firstDate.getMonth() + 1, 0).getDate();
-    
+
     if (isSameMonth && dateRows.length === daysInMonth) {
       return firstDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
     }
-    
+
     const formatOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
     return `${firstDate.toLocaleDateString('en-GB', formatOpts)} — ${lastDate.toLocaleDateString('en-GB', formatOpts)}`;
   }, [dateRows]);
@@ -1151,7 +1302,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
                   return Array.from({ length: maxSlots }, (_, slotIdx) => {
                     const isFirstSlot = slotIdx === 0;
-                    const isLastSlot  = slotIdx === maxSlots - 1;
+                    const isLastSlot = slotIdx === maxSlots - 1;
 
                     return (
                       <tr key={`${rowIdx}-${slotIdx}`}
@@ -1167,8 +1318,8 @@ export const ProductionPlanningPage: React.FC = () => {
 
                         {/* Machine columns — one <td> per column, per slot */}
                         {machineJobs.map(({ completed, running }, mIdx) => {
-                          const numCompleted  = completed.length;
-                          const hasRunning    = running !== null;
+                          const numCompleted = completed.length;
+                          const hasRunning = running !== null;
 
                           // Running job is always pinned to the LAST slot so all machines' active
                           // jobs land on the same horizontal row regardless of completed count.
@@ -1176,11 +1327,11 @@ export const ProductionPlanningPage: React.FC = () => {
 
                           // Completed jobs are packed to the top; empty slots fill the gap above them.
                           const completedOffset = maxSlots - 1 - numCompleted; // slots before first completed
-                          const completedIdx    = slotIdx - completedOffset;
-                          const completedJob    = !isRunningSlot && completedIdx >= 0 && completedIdx < numCompleted
+                          const completedIdx = slotIdx - completedOffset;
+                          const completedJob = !isRunningSlot && completedIdx >= 0 && completedIdx < numCompleted
                             ? completed[completedIdx]
                             : null;
-                          const isEmpty         = !isRunningSlot && completedJob === null;
+                          const isEmpty = !isRunningSlot && completedJob === null;
 
                           // ── Empty slot ──────────────────────────────────────────
                           if (isEmpty) {
@@ -1201,7 +1352,7 @@ export const ProductionPlanningPage: React.FC = () => {
                             const completedMetrics = calcProductionMetrics(completedJob.cut, completedJob.wt, mIdx + 1);
                             const completedDraw = getDrawForDateRow(rowIdx, completedJob, mIdx);
                             const cellBg = 'bg-[#F3F4F6]';
-                            const txt    = 'text-[10px] text-[#6B7280]';
+                            const txt = 'text-[10px] text-[#6B7280]';
                             return (
                               <React.Fragment key={mIdx}>
                                 {/* BN */}
@@ -1279,23 +1430,23 @@ export const ProductionPlanningPage: React.FC = () => {
 
                           // ── Running job row ──────────────────────────────────────
                           const entry = running!;
-                          const isBlank    = !!entry.isBlank;
+                          const isBlank = !!entry.isBlank;
                           const hasProduct = !isBlank && !!entry.product && entry.product !== 'None';
-                          const valid      = VALID_SECTIONS(mIdx);
+                          const valid = VALID_SECTIONS(mIdx);
                           const defaultSec = valid[valid.length - 1];
-                          const secVal     = entry.section && valid.includes(entry.section) ? entry.section : defaultSec;
-                          const isLowSec   = secVal < defaultSec;
+                          const secVal = entry.section && valid.includes(entry.section) ? entry.section : defaultSec;
+                          const isLowSec = secVal < defaultSec;
 
-                          const nextEntry    = machineLists[mIdx][rowIdx + 1];
+                          const nextEntry = machineLists[mIdx][rowIdx + 1];
                           const isContinuing = hasProduct &&
                             !!nextEntry && !nextEntry.isBlank &&
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
-                          const isLastDay  = !isContinuing;
-                          const canExtend  = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
+                          const isLastDay = !isContinuing;
+                          const canExtend = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
                           const runningMetrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                          const cellBg      = 'bg-white';
+                          const cellBg = 'bg-white';
 
                           return (
                             <React.Fragment key={mIdx}>
@@ -1325,13 +1476,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                             toast.error("Cannot delete: job start time is missing");
                                             return;
                                           }
-                                          
+
                                           const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
                                           if (!planDate) return;
-                                          
+
                                           // Consistent with how machine_no is built in handleSaveToDb (line 289)
                                           const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-                                          
+
                                           setDeleteModal({ planDate, machineNo, startTime: entry.startTime });
                                         }}
                                         title="Remove this job"
@@ -1356,11 +1507,10 @@ export const ProductionPlanningPage: React.FC = () => {
                                         <button onClick={() => handleContinueToNextDay(mIdx, rowIdx)}
                                           disabled={isContinuing}
                                           title={isContinuing ? 'Already continuing to next day' : 'Continue to next day'}
-                                          className={`w-5 h-5 flex items-center justify-center rounded border transition-colors ${
-                                            isContinuing
-                                              ? 'text-[#9CA3AF] bg-[#F3F4F6] border-[#E5E7EB] cursor-default'
-                                              : 'text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border-[#BBF7D0]'
-                                          }`}>
+                                          className={`w-5 h-5 flex items-center justify-center rounded border transition-colors ${isContinuing
+                                            ? 'text-[#9CA3AF] bg-[#F3F4F6] border-[#E5E7EB] cursor-default'
+                                            : 'text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border-[#BBF7D0]'
+                                            }`}>
                                           <Plus size={8} />
                                         </button>
                                       )}
@@ -1533,140 +1683,225 @@ export const ProductionPlanningPage: React.FC = () => {
         );
       })()}
 
-      {/* Fixed-position tooltip — renders above ALL table overflow */}
-      {tooltip && (() => {
-        const { entry, mIdx, rowIdx } = tooltip;
-        const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
-        const dailyQty = metrics.totalQuantity;
-        const reqBottles = entry.requiredBottles ?? null;
-        const estDays = dailyQty > 0 && reqBottles ? reqBottles / dailyQty : null;
 
-        // Estimate completion date from start date row + estDays
-        let estCompletionStr = '—';
-        if (estDays !== null) {
-          const startRow = dateRows[rowIdx];
-          if (startRow) {
-            // dateRows date is "DD Mon YYYY" from en-GB locale
-            const parts = startRow.date.split(' ');
-            const startDate = new Date(`${parts[1]} ${parts[0]} ${parts[2]}`);
-            if (!isNaN(startDate.getTime())) {
-              const completionDate = addCalendarDays(startDate, estDays);
-              estCompletionStr = completionDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-              // Append start time offset if present
-              if (entry.startTime) {
-                const [sh, sm] = entry.startTime.split(':').map(Number);
-                const totalMins = sh * 60 + sm + (estDays % 1) * 24 * 60;
-                const ch = Math.floor(totalMins / 60) % 24;
-                const cm = Math.round(totalMins % 60);
-                const mer = ch < 12 ? 'AM' : 'PM';
-                estCompletionStr += `, ${ch % 12 || 12}:${String(cm).padStart(2, '0')} ${mer}`;
-              }
-            } else {
-              estCompletionStr = `≈ ${estDays.toFixed(2)} days`;
-            }
+
+      {/* Fixed-position tooltip — renders above ALL table overflow */}
+      {/* Fixed-position tooltip */}
+      {tooltip && (() => {
+        const entry = tooltip.entry;
+
+        // Production calculation
+        const metrics = calcProductionMetrics(
+          entry.cut,
+          entry.wt,
+          tooltip.mIdx + 1
+        );
+
+        const goodLiters = metrics.goodLiters;
+        const goodBottles = metrics.goodBottles;
+
+        // ============================================================
+        // REQUIRED BOTTLES
+        // ============================================================
+        // `quantity` from the database is mapped to entry.requiredBottles.
+        const requiredBottles = Number(
+          entry.requiredBottles ??
+          entry.qty ??
+          0
+        );
+
+        // ============================================================
+        // ESTIMATED COMPLETION
+        // ============================================================
+
+        let estimatedCompletion = '—';
+
+        const planDate =
+          dateRows[tooltip.rowIdx]?.isoDate || '';
+
+        if (entry.status === 'completed' && entry.endTime && planDate) {
+          // Completed jobs use their actual completion time.
+          const endMinutes = parseTimeToMinutes(entry.endTime);
+
+          if (endMinutes !== null) {
+            const [year, month, day] = planDate.split('-').map(Number);
+
+            const completionDate = new Date(
+              year,
+              month - 1,
+              day,
+              Math.floor(endMinutes / 60),
+              endMinutes % 60,
+              0,
+              0
+            );
+
+            estimatedCompletion = formatCompletionDateTime(completionDate);
+          }
+        } else {
+          // Running/planned jobs calculate completion using:
+          // start time + required quantity + production rate.
+          estimatedCompletion = calculateEstimatedCompletion(
+            planDate,
+            entry.startTime,
+            requiredBottles,
+            entry.speeds || entry.cut,
+            entry.wt,
+            tooltip.mIdx + 1
+          );
+        }
+
+        // If backend already supplied a valid estimated completion,
+        // use it as a fallback.
+        if (estimatedCompletion === '—' && entry.estimatedCompletion) {
+          const backendDate = new Date(entry.estimatedCompletion);
+
+          if (!Number.isNaN(backendDate.getTime())) {
+            estimatedCompletion = formatCompletionDateTime(backendDate);
           } else {
-            estCompletionStr = `≈ ${estDays.toFixed(2)} days`;
+            estimatedCompletion = entry.estimatedCompletion;
           }
         }
+
+        // Packing allocation
+        const packing = entry.packingAllocations
+          ? Object.entries(entry.packingAllocations)
+          : [];
+
+        const packingNames: Record<string, string> = {
+          ST: 'Shrink Tray',
+          SN: 'Shrink Naked',
+          SB: 'Shrink Box',
+          BT: 'Bottom Tray'
+        };
 
         return (
           <div
             className="pointer-events-none fixed z-9999"
-            style={{ left: tooltip.x + 14, top: tooltip.y - 8, transform: 'translateY(-100%)' }}
+            style={{
+              left: tooltip.x + 14,
+              top: tooltip.y - 8,
+              transform: 'translateY(-100%)'
+            }}
           >
-            <div className="bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 min-w-55 text-xs space-y-2.5">
-              {/* Bottle name header */}
-              {entry.product && entry.product !== 'None' && (
-                <div className="pb-2 border-b border-[#334155]">
-                  <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Bottle</p>
-                  <p className="font-bold text-white text-sm leading-tight">{entry.product}</p>
-                </div>
-              )}
+            <div className="relative bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 w-70 text-xs">
 
-              {entry.salesExec && (
-                <div>
-                  <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Sales Executive</p>
-                  <p className="font-semibold text-white text-sm">{entry.salesExec}</p>
-                </div>
-              )}
+              {/* BOTTLE */}
+              <div className="pb-2.5 border-b border-[#334155]">
+                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  Bottle
+                </p>
 
-              <div>
-                <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Daily Good Bottles (90%)</p>
-                <p className="font-bold text-[#38BDF8] text-sm">
-                  {metrics.goodBottles > 0 ? `${metrics.goodLiters.toFixed(2)} L (${metrics.goodBottles.toLocaleString()} bottles)` : '—'}
+                <p className="font-bold text-white text-sm mt-1">
+                  {entry.product || '—'}
                 </p>
               </div>
 
-              {/* Total Required Bottles */}
-              <div>
-                <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Total Required Bottles</p>
-                <p className="font-semibold text-[#FCD34D] text-sm">
-                  {reqBottles ? reqBottles.toLocaleString() : '—'}
+
+              {/* DAILY GOOD BOTTLES */}
+              <div className="py-2.5 border-b border-[#334155]">
+                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  Daily Good Bottles (90%)
+                </p>
+
+                <p className="font-bold text-[#38BDF8] text-sm mt-1">
+                  {goodLiters.toFixed(2)} L ({goodBottles.toLocaleString()} bottles)
                 </p>
               </div>
 
-              {/* Estimated Completion */}
-              <div>
-                <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Estimated Completion</p>
-                <p className="font-semibold text-[#34D399] text-sm">{estCompletionStr}</p>
+
+              {/* TOTAL REQUIRED BOTTLES */}
+              <div className="py-2.5 border-b border-[#334155]">
+                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  Total Required Bottles
+                </p>
+
+                <p className="font-bold text-[#FCD34D] text-sm mt-1">
+                  {requiredBottles > 0
+                    ? requiredBottles.toLocaleString()
+                    : '—'}
+                </p>
               </div>
 
-              <div className="border-t border-[#334155] pt-2 space-y-2.5">
-                {(() => {
-                  const allocs = entry.packingAllocations;
-                  const descMap: Record<PackCatKey, string> = { ST: 'Shrink Tray', SN: 'Shrink Naked', SB: 'Shrink Box', BT: 'Bottom Tray' };
-                  if (allocs && Object.keys(allocs).length > 0) {
-                    return (
-                      <div>
-                        <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-1">Packing Allocation</p>
-                        <div className="space-y-0.5">
-                          {(Object.entries(allocs) as [PackCatKey, number][]).map(([k, v]) => (
-                            <div key={k} className="flex items-center justify-between">
-                              <span className="text-white text-xs">
-                                <span className="bg-[#334155] px-1.5 py-0.5 rounded mr-1.5 font-bold text-[10px]">{k}</span>
-                                {descMap[k]}
-                              </span>
-                              <span className="text-[#38BDF8] font-semibold text-xs ml-3">{v > 0 ? v.toLocaleString() : '—'}</span>
-                            </div>
-                          ))}
+
+              {/* ESTIMATED COMPLETION */}
+              <div className="py-2.5 border-b border-[#334155]">
+                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  Estimated Completion
+                </p>
+
+                <p className="font-bold text-[#34D399] text-sm mt-1">
+                  {estimatedCompletion}
+                </p>
+              </div>
+
+
+              {/* PACKING ALLOCATION */}
+              <div className="py-2.5 border-b border-[#334155]">
+                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest mb-2">
+                  Packing Allocation
+                </p>
+
+                {packing.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {packing.map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="bg-[#475569] text-white px-1.5 py-0.5 rounded text-[9px] font-bold">
+                            {key}
+                          </span>
+
+                          <span className="text-white truncate">
+                            {packingNames[key] || key}
+                          </span>
                         </div>
-                      </div>
-                    );
-                  }
-                  if (entry.packingCategory) {
-                    return (
-                      <div>
-                        <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Packing Category</p>
-                        <p className="font-semibold text-white">
-                          <span className="bg-[#334155] px-1.5 py-0.5 rounded mr-1.5 font-bold">{entry.packingCategory}</span>
-                          {descMap[entry.packingCategory as PackCatKey] ?? ''}
-                        </p>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
 
-                {entry.palletPacking !== null && entry.palletPacking !== undefined && (
-                  <div>
-                    <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-1">Pallet Packing</p>
-                    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${entry.palletPacking ? 'bg-[#16A34A]' : 'bg-[#DC2626]'}`}>
-                      {entry.palletPacking ? 'YES' : 'NO'}
-                    </span>
+                        <span className="text-[#38BDF8] font-semibold shrink-0">
+                          {Number(value).toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
                   </div>
+                ) : (
+                  <span className="text-[#64748B]">
+                    —
+                  </span>
                 )}
-
-                {/* Pallet Packing Quantity */}
-                <div>
-                  <p className="text-[#94A3B8] font-medium uppercase tracking-widest text-[9px] mb-0.5">Pallet Packing Qty</p>
-                  <p className="font-semibold text-white text-sm">
-                    {entry.palletPacking && entry.palletPackingQty ? entry.palletPackingQty.toLocaleString() : '—'}
-                  </p>
-                </div>
               </div>
 
-              {/* Arrow */}
-              <div className="absolute top-full left-4 border-l-[5px] border-r-[5px] border-t-[5px] border-l-transparent border-r-transparent border-t-[#1E293B]" />
+
+              {/* PALLET PACKING QTY */}
+              <div className="pt-2.5">
+                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  Pallet Packing Qty
+                </p>
+
+                <p className="text-white font-semibold text-sm mt-1">
+                  {entry.palletPackingQty
+                    ? entry.palletPackingQty.toLocaleString()
+                    : '—'}
+                </p>
+              </div>
+
+
+              {/* Tooltip arrow */}
+              <div
+                className="
+            absolute
+            top-full
+            left-4
+            border-l-[5px]
+            border-r-[5px]
+            border-t-[5px]
+            border-l-transparent
+            border-r-transparent
+            border-t-[#1E293B]
+          "
+              />
+
             </div>
           </div>
         );

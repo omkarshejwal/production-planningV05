@@ -61,32 +61,50 @@ const mapJobRow = (raw: Record<string, unknown>): ProductionJobRow => {
   const bottleId = toStr(raw.bottle_id);
 
   return {
-    plan_date: toStr(raw.plan_date),
-    machine_no: machineId,
-    bottle_id: bottleId,
-    section: toNum(raw.section),
-    weight: toNum(raw.weight),
-    speeds: toNum(raw.speeds),
-    draw: toNum(raw.draw),
-    quantity: toNum(raw.quantity),
-    production_hours: toNum(raw.production_hours) || undefined,
-    start_time: startTime,
-    estimated_completion: estimatedCompletion,
-    completion_time: completionTime,
-    changeover_minutes: toNum(raw.changeover_minutes),
-    status: (raw.status as ProductionJobRow['status']) || 'Planned',
-    packaging: Array.isArray(raw.packaging) ? raw.packaging.map((p: any) => ({
-      plan_date: toStr(raw.plan_date),
-      machine_no: machineId,
-      bottle_id: bottleId,
-      section: toNum(raw.section),
-      start_time: startTime,
-      packaging_type: p.packaging_type,
-      quantity: toNum(p.quantity),
-      pallet_packing: p.pallet_packing ? 'YES' : 'NO',
-      pallet_quantity: toNum(p.pallet_quantity)
-    })) : []
-  };
+  plan_date: toStr(raw.plan_date),
+  machine_no: machineId,
+  bottle_id: bottleId,
+
+  section: toNum(raw.section),
+  weight: toNum(raw.weight),
+  speeds: toNum(raw.speeds),
+  draw: toNum(raw.draw),
+  quantity: toNum(raw.quantity),
+
+  // Required bottles from database
+  requiredBottles:
+    toNum(raw.required_bottles ?? raw.requiredBottles) || undefined,
+
+  production_hours:
+    toNum(raw.production_hours) || undefined,
+
+  start_time: startTime,
+
+  // Estimated completion from database
+  estimated_completion: estimatedCompletion,
+
+  completion_time: completionTime,
+
+  changeover_minutes:
+    toNum(raw.changeover_minutes),
+
+  status:
+    (raw.status as ProductionJobRow['status']) || 'Planned',
+
+  packaging: Array.isArray(raw.packaging)
+    ? raw.packaging.map((p: any) => ({
+        plan_date: toStr(raw.plan_date),
+        machine_no: machineId,
+        bottle_id: bottleId,
+        section: toNum(raw.section),
+        start_time: startTime,
+        packaging_type: p.packaging_type,
+        quantity: toNum(p.quantity),
+        pallet_packing: p.pallet_packing ? 'YES' : 'NO',
+        pallet_quantity: toNum(p.pallet_quantity)
+      }))
+    : []
+};
 };
 
 /**

@@ -38,7 +38,8 @@ export interface ProductionJobRow {
   draw: number;
   quantity: number;
   production_hours?: number;
-  start_time: string;             // "HH:MM"
+  start_time: string;
+  requiredBottles?: number;             // "HH:MM"
   estimated_completion: string;   // "YYYY-MM-DDTHH:MM:00"
   completion_time?: string;       // "YYYY-MM-DDTHH:MM:00"
   changeover_minutes?: number;
