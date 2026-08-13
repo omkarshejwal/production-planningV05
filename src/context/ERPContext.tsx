@@ -29,7 +29,6 @@ import {
   addCalendarDays,
   calculateProductionMetrics,
   calculateEstimatedCompletionDays,
-  formatDateTime,
 } from '../utils/calculations';
 import { planningRepository } from '../services/planningRepository';
 
@@ -127,8 +126,6 @@ const getMachineDisplayName = (machineNo: string) => {
   return Number.isNaN(parsed) ? machineNo : `Machine No ${parsed}`;
 };
 
-const SHIFT_START_TIMES = ['07:00', '15:00', '23:00'];
-
 const parseDateTime = (date: string, time: string): Date => {
   const [year, month, day] = date.split('-').map(Number);
   const [hours, minutes] = time.split(':').map(Number);
@@ -137,20 +134,6 @@ const parseDateTime = (date: string, time: string): Date => {
 
 const formatTimeOnly = (date: Date): string =>
   `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-
-const getNextShiftStart = (endDateTime: Date): Date => {
-  const candidates = SHIFT_START_TIMES.map((time) => {
-    const [hours, minutes] = time.split(':').map(Number);
-    const candidate = new Date(endDateTime);
-    candidate.setHours(hours, minutes, 0, 0);
-    if (candidate <= endDateTime) {
-      candidate.setDate(candidate.getDate() + 1);
-    }
-    return candidate;
-  });
-
-  return candidates.sort((a, b) => a.getTime() - b.getTime())[0];
-};
 
 const getDerivedJobWindow = (job: ProductionJob): { start: Date; end: Date } => {
   const start = parseDateTime(job.date || job.startDate, job.startTime || '07:00');
@@ -633,41 +616,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const source = jobs.find((j) => j.id === jobId);
     if (!source || numberOfDays < 1) return false;
 
-    const continuationRows: ProductionJobRow[] = [];
-    let nextStart = parseDateTime(source.date || source.startDate, source.startTime || '07:00');
+    const days = Math.max(1, Math.min(10, Math.floor(numberOfDays) || 1));
+    const planDate = source.date || source.startDate;
+    if (!planDate) return false;
 
-    for (let d = 1; d <= numberOfDays; d += 1) {
-      nextStart = getNextShiftStart(nextStart);
-      const nextPlanDate = nextStart.toISOString().split('T')[0];
-      const nextStartTime = formatTimeOnly(nextStart);
-      const quantity = source.productionQuantity || source.grossQuantity;
-      const metrics = calculateProductionMetrics(source.cutPerMin, source.weightGrams, source.machineId, quantity);
-      const draw = metrics.drawTons;
-      const estimatedDays = calculateEstimatedCompletionDays(quantity, metrics.totalQuantity);
-      const estimatedCompletion = formatTimeOnly(addCalendarDays(nextStart, estimatedDays));
-      const productionHours = metrics.hourlyQuantity > 0 ? Number((quantity / metrics.hourlyQuantity).toFixed(2)) : 0;
+    const created = await planningRepository.extendProductionJob({
+      plan_date: planDate,
+      machine_no: source.machineId,
+      start_time: source.startTime || '07:00',
+      days,
+    });
 
-      continuationRows.push({
-        plan_date: nextPlanDate,
-        machine_no: source.machineId,
-        bottle_id: source.bottleId,
-        section: source.sectionCount,
-        weight: source.weightGrams,
-        speeds: source.cutPerMin,
-        draw,
-        quantity,
-        production_hours: productionHours,
-        start_time: nextStartTime,
-        estimated_completion: estimatedCompletion,
-        completion_time: source.lifecycleStatus === 'COMPLETED' ? estimatedCompletion : undefined,
-        changeover_minutes: Math.round((source.changeoverHours || 0) * 60),
-        status: source.lifecycleStatus === 'COMPLETED' ? 'Completed' : 'Planned',
-      });
-
-      nextStart = addCalendarDays(parseDateTime(nextPlanDate, nextStartTime), estimatedDays);
-    }
-
-    const created = await planningRepository.createProductionJobsBatch(continuationRows);
     if (!created.ok) {
       alert(created.error || 'Failed to extend production job.');
       refreshPlanner();

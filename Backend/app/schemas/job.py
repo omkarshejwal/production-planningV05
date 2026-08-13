@@ -27,6 +27,12 @@ class ProductionJobCreate(BaseModel):
 
     packaging: List[JobPackagingCreate] = []
 
+class ExtendJobRequest(BaseModel):
+    plan_date: date
+    machine_no: int
+    start_time: datetime
+    days: int = 1
+
 class ProductionJobResponse(BaseModel):
     plan_date: date
     machine_no: int

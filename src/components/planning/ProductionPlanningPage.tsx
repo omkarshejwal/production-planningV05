@@ -14,7 +14,6 @@ import {
   Clock,
   Download,
   Filter,
-  Lock,
   Minus,
   Pencil,
   Plus,
@@ -420,7 +419,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   // Date rows are fixed; each machine owns an independent flat array.
 
-  const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string } | null>(null);
+  const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number } | null>(null);
   const [endJobModal, setEndJobModal] = useState<{ mIdx: number; rowIdx: number } | null>(null);
   const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
@@ -881,35 +880,47 @@ export const ProductionPlanningPage: React.FC = () => {
     }
   };
 
-  // Continue the same bottle into the next date row for this machine only
-  const handleContinueToNextDay = (mIdx: number, rowIdx: number) => {
-    updateMachineLists(prev => {
-      const source = prev[mIdx][rowIdx];
-      if (!source || !source.product || source.product === 'None') return prev;
-      const nextIdx = rowIdx + 1;
-      if (nextIdx >= prev[mIdx].length) return prev;
-      const nextEntry = prev[mIdx][nextIdx];
-      if (
-        nextEntry && !nextEntry.isBlank &&
-        nextEntry.product && nextEntry.product !== 'None' &&
-        nextEntry.product !== source.product
-      ) {
-        toast.error('The next day already has a different production entry.');
-        return prev;
-      }
-      const next = [...prev] as MachineLists;
-      const list = [...next[mIdx]];
-      list[nextIdx] = {
-        ...source,
-        eid: Date.now() + mIdx,
-        isBlank: false,
-        startTime: undefined,
-        endTime: undefined,
-        status: 'running',
-      };
-      next[mIdx] = list;
-      return next;
+  // Extend the selected job by N days. The backend inserts a continuation row
+  // for the job (using its actual daily production window) and cascades the
+  // shift through every subsequent job on this machine — preserving their
+  // order, quantity, machine, bottle, section and speed. The grid is then
+  // refreshed from the database response so the schedule matches exactly what
+  // was saved. `completedIndex` targets an ended job in the completed list.
+  const handleExtendJob = async (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
+    const planDate = dateRows[rowIdx]?.isoDate;
+    if (!planDate) {
+      toast.error('Could not determine the job date.');
+      return;
+    }
+
+    let startTime: string | undefined;
+    if (completedIndex !== undefined) {
+      startTime = completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]?.startTime;
+    } else {
+      startTime = machineLists[mIdx]?.[rowIdx]?.startTime;
+    }
+    if (!startTime) {
+      toast.error('Cannot extend: job start time is missing.');
+      return;
+    }
+
+    const daysToAdd = Math.max(1, Math.min(10, Math.floor(days) || 1));
+    const result = await planningRepository.extendProductionJob({
+      plan_date: planDate,
+      machine_no: `MAC-${String(mIdx + 1).padStart(2, '0')}`,
+      start_time: startTime,
+      days: daysToAdd,
     });
+
+    if (!result.ok) {
+      toast.error(result.error || 'Failed to extend production job.');
+      return;
+    }
+
+    // Refresh the schedule from the database so every shifted job is shown
+    // exactly as it was recalculated and saved.
+    reloadJobsForWindow(appliedFromDate, appliedToDate);
+    toast.success(`Job extended by ${daysToAdd} day${daysToAdd === 1 ? '' : 's'}. All following jobs were shifted.`);
   };
 
   // Remove blank entry at rowIdx from machine mIdx only
@@ -925,6 +936,12 @@ export const ProductionPlanningPage: React.FC = () => {
   };
 
   const openEdit = (mIdx: number, rowIdx: number) => setEditModal({ mIdx, rowIdx });
+
+  // Open the edit modal for a COMPLETED job entry (editable now)
+  const openEditCompleted = (mIdx: number, rowIdx: number, completedIndex: number) =>
+    setEditModal({ mIdx, rowIdx, completedIndex });
+
+  const isEditingCompleted = !!editModal && editModal.completedIndex !== undefined;
 
   const updateSection = (mIdx: number, rowIdx: number, val: number) => {
     updateMachineLists(prev => {
@@ -997,33 +1014,52 @@ export const ProductionPlanningPage: React.FC = () => {
   const handleSave = (payload: EditSavePayload) => {
     if (!editModal) return;
     const { bottle, packingCategory, packingAllocations, palletPacking, palletPackingQty, requiredBottles, section, startTime } = payload;
-    updateMachineLists(prev => {
-      const next = [...prev] as MachineLists;
-      const list = [...next[editModal.mIdx]];
-      const cut = bottle.speeds > 0 ? bottle.speeds : 0;
-      const qty = calcQty(cut, editModal.mIdx + 1);
-      const requiredQtyValue = requiredBottles && requiredBottles > 0 ? requiredBottles : qty;
-      const draw = calcDraw(bottle.wt, requiredQtyValue);
-      list[editModal.rowIdx] = {
-        ...list[editModal.rowIdx],
-        isBlank: false,
-        product: bottle.name,
-        wt: bottle.wt,
-        speeds: bottle.speeds,
-        cut,
-        draw,
-        qty,
-        packingCategory,
-        packingAllocations,
-        palletPacking,
-        palletPackingQty: palletPackingQty ?? null,
-        requiredBottles: requiredBottles ?? null,
-        section,
-        startTime: startTime || undefined,
-      };
-      next[editModal.mIdx] = list;
-      return next;
-    });
+    const cut = bottle.speeds > 0 ? bottle.speeds : 0;
+    const qty = calcQty(cut, editModal.mIdx + 1);
+    const requiredQtyValue = requiredBottles && requiredBottles > 0 ? requiredBottles : qty;
+    const draw = calcDraw(bottle.wt, requiredQtyValue);
+    const updatedFields: Partial<MachineEntry> = {
+      isBlank: false,
+      product: bottle.name,
+      wt: bottle.wt,
+      speeds: bottle.speeds,
+      cut,
+      draw,
+      qty,
+      packingCategory,
+      packingAllocations,
+      palletPacking,
+      palletPackingQty: palletPackingQty ?? null,
+      requiredBottles: requiredBottles ?? null,
+      section,
+      startTime: startTime || undefined,
+    };
+
+    if (editModal.completedIndex !== undefined) {
+      // Editing a COMPLETED job entry — write back to the completed map
+      const key = `${editModal.mIdx}-${editModal.rowIdx}`;
+      setCompletedJobMap(prev => {
+        const list = prev[key] ?? [];
+        const nextList = list.map((entry, idx) =>
+          idx === editModal.completedIndex
+            ? { ...entry, ...updatedFields, status: 'completed' as const }
+            : entry
+        );
+        return { ...prev, [key]: nextList };
+      });
+    } else {
+      updateMachineLists(prev => {
+        const next = [...prev] as MachineLists;
+        const list = [...next[editModal.mIdx]];
+        list[editModal.rowIdx] = {
+          ...list[editModal.rowIdx],
+          ...updatedFields,
+        };
+        next[editModal.mIdx] = list;
+        return next;
+      });
+    }
+    setIsDirty(true);
     setEditModal(null);
   };
 
@@ -1059,6 +1095,21 @@ export const ProductionPlanningPage: React.FC = () => {
     }
 
     return rawDraw;
+  };
+
+  // Produced quantity for a job on a given day — derived from the same
+  // production-hours model as the Draw column (draw = wt × qty / 1e6).
+  const getDailyProducedQty = (rowIdx: number, entry: MachineEntry | null | undefined, mIdx: number) => {
+    const draw = getDrawForDateRow(rowIdx, entry, mIdx);
+    const wt = Number(entry?.wt) || 0;
+    if (draw <= 0 || wt <= 0) return 0;
+    return (draw * 1_000_000) / wt;
+  };
+
+  // Format a bottle count in lakhs, e.g. 341000 → "3.41L".
+  const formatLakh = (qty: number) => {
+    if (qty <= 0) return '—';
+    return `${(qty / 100000).toFixed(2)}L`;
   };
 
 
@@ -1109,7 +1160,14 @@ export const ProductionPlanningPage: React.FC = () => {
     return calculateDailyDrawForEntries(dayValue, perMachineEntries);
   };
 
-  const editingEntry = editModal ? machineLists[editModal.mIdx]?.[editModal.rowIdx] : null;
+  const editingEntry = (() => {
+    if (!editModal) return null;
+    const { mIdx, rowIdx, completedIndex } = editModal;
+    if (completedIndex !== undefined) {
+      return completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex] ?? null;
+    }
+    return machineLists[mIdx]?.[rowIdx] ?? null;
+  })();
 
   const showTooltip = (e: React.MouseEvent, entry: MachineEntry, mIdx: number, rowIdx: number) => {
     setTooltip({ entry, mIdx, rowIdx, x: e.clientX, y: e.clientY });
@@ -1327,6 +1385,9 @@ export const ProductionPlanningPage: React.FC = () => {
                           const numCompleted = completed.length;
                           const hasRunning = running !== null;
 
+                          const valid = VALID_SECTIONS(mIdx);
+                          const defaultSec = valid[valid.length - 1];
+
                           // Running job is always pinned to the LAST slot so all machines' active
                           // jobs land on the same horizontal row regardless of completed count.
                           const isRunningSlot = hasRunning && slotIdx === maxSlots - 1;
@@ -1353,49 +1414,69 @@ export const ProductionPlanningPage: React.FC = () => {
                             );
                           }
 
-                          // ── Completed job row ────────────────────────────────────
+                          // ── Completed/ended job row — rendered exactly like a
+                          // running job (no special greyed-out layout) ─────────────
                           if (completedJob) {
-                            const completedMetrics = calcProductionMetrics(completedJob.cut, completedJob.wt, mIdx + 1);
                             const completedDraw = getDrawForDateRow(rowIdx, completedJob, mIdx);
-                            const cellBg = 'bg-[#F3F4F6]';
-                            const txt = 'text-[10px] text-[#6B7280]';
+                            const isLowSec = completedJob.section !== undefined &&
+                              valid.includes(completedJob.section) &&
+                              completedJob.section < defaultSec;
+                            const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                            const cellBg = 'bg-white';
+                            const txt = 'text-sm text-[#6B7280]';
                             return (
                               <React.Fragment key={mIdx}>
                                 {/* BN */}
                                 <td className={`px-2 py-1.5 border-l-2 border-r border-[#E5E7EB] ${cellBg}`}
-                                  style={{ borderLeftColor: '#9CA3AF' }}>
+                                  style={{ borderLeftColor: accentColor }}>
                                   <div className="flex items-center justify-between gap-1 mb-0.5">
-                                    <div className="flex items-center gap-1">
-                                      <Lock size={7} className="text-[#9CA3AF] shrink-0" />
-                                      <span className="text-[9px] font-bold text-[#9CA3AF]">JOB {completedIdx + 1}</span>
+                                    <div className="flex items-center gap-0.5">
+                                      <Clock size={7} className="text-[#6B7280] shrink-0" />
+                                      <span className="text-[8px] text-[#6B7280]">
+                                        {fmtTime(completedJob.startTime)} → {fmtTime(completedJob.endTime)}
+                                      </span>
                                     </div>
-                                    <button
-                                      onClick={() => {
-                                        if (!completedJob.startTime) {
-                                          toast.error("Cannot delete: job start time is missing");
-                                          return;
-                                        }
-                                        const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
-                                        if (!planDate) return;
-                                        const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-                                        setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, isCompleted: true });
-                                      }}
-                                      title="Delete historical job"
-                                      className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
-                                    >
-                                      <Minus size={7} />
-                                    </button>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        onClick={() => openEditCompleted(mIdx, rowIdx, completedIdx)}
+                                        title="Edit completed job"
+                                        className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors"
+                                      >
+                                        <Pencil size={8} />
+                                      </button>
+                                      <button
+                                        onClick={() => handleExtendJob(mIdx, rowIdx, 1, completedIdx)}
+                                        title="Extend this ended job by one day and shift all following jobs"
+                                        className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors"
+                                      >
+                                        <Plus size={8} />
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (!completedJob.startTime) {
+                                            toast.error("Cannot delete: job start time is missing");
+                                            return;
+                                          }
+                                          const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
+                                          if (!planDate) return;
+                                          const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+                                          setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, isCompleted: true });
+                                        }}
+                                        title="Delete historical job"
+                                        className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
+                                      >
+                                        <Minus size={8} />
+                                      </button>
+                                    </div>
                                   </div>
-                                  <p className="text-[10px] font-semibold text-[#4B5563] truncate leading-tight">
+                                  <p
+                                    onMouseEnter={e => completedJob.product && completedJob.product !== 'None' ? showTooltip(e, completedJob, mIdx, rowIdx) : undefined}
+                                    onMouseMove={moveTooltip}
+                                    onMouseLeave={hideTooltip}
+                                    className={`text-[11px] font-semibold truncate leading-tight cursor-default ${completedJob.product && completedJob.product !== 'None' ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                     {completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—'}
                                   </p>
-                                  <div className="flex items-center gap-0.5 mt-0.5">
-                                    <Clock size={7} className="text-[#9CA3AF] shrink-0" />
-                                    <span className="text-[8px] text-[#9CA3AF]">
-                                      {fmtTime(completedJob.startTime)} → {fmtTime(completedJob.endTime)}
-                                    </span>
-                                  </div>
-                                  {/* Job-wide cumulative total — shown only on the final completed row */}
+                                  {/* Job-wide cumulative total */}
                                   {(completedJob.cumulativeQty ?? 0) > 0 && (
                                     <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
                                       <span className="text-[8px] text-[#1D4ED8] font-semibold">
@@ -1406,8 +1487,8 @@ export const ProductionPlanningPage: React.FC = () => {
                                 </td>
                                 {/* Sec */}
                                 {showSection && (
-                                  <td className={`px-1 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                    <span className={txt}>{completedJob.section ?? '—'}</span>
+                                  <td className={`px-0.5 text-center border-r border-[#E5E7EB] ${isLowSec ? 'bg-[#FEF2F2]' : cellBg}`}>
+                                    <span className="text-sm text-[#7C3AED]">{completedJob.section ?? '—'}</span>
                                   </td>
                                 )}
                                 {/* Wt */}
@@ -1420,7 +1501,12 @@ export const ProductionPlanningPage: React.FC = () => {
                                 </td>
                                 {/* Qty */}
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                  <span className={txt}>{completedMetrics.goodBottles > 0 ? `${completedMetrics.goodLiters.toFixed(2)}L` : '—'}</span>
+                                  <span className="text-sm font-medium text-[#111827]">
+                                    {(() => {
+                                      const cQty = getDailyProducedQty(rowIdx, completedJob, mIdx);
+                                      return formatLakh(cQty);
+                                    })()}
+                                  </span>
                                 </td>
                                 {/* Draw */}
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
@@ -1438,8 +1524,6 @@ export const ProductionPlanningPage: React.FC = () => {
                           const entry = running!;
                           const isBlank = !!entry.isBlank;
                           const hasProduct = !isBlank && !!entry.product && entry.product !== 'None';
-                          const valid = VALID_SECTIONS(mIdx);
-                          const defaultSec = valid[valid.length - 1];
                           const secVal = entry.section && valid.includes(entry.section) ? entry.section : defaultSec;
                           const isLowSec = secVal < defaultSec;
 
@@ -1449,7 +1533,6 @@ export const ProductionPlanningPage: React.FC = () => {
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay = !isContinuing;
                           const canExtend = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
-                          const runningMetrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                           const cellBg = 'bg-white';
@@ -1510,13 +1593,9 @@ export const ProductionPlanningPage: React.FC = () => {
                                         </button>
                                       )}
                                       {canExtend && (
-                                        <button onClick={() => handleContinueToNextDay(mIdx, rowIdx)}
-                                          disabled={isContinuing}
-                                          title={isContinuing ? 'Already continuing to next day' : 'Continue to next day'}
-                                          className={`w-5 h-5 flex items-center justify-center rounded border transition-colors ${isContinuing
-                                            ? 'text-[#9CA3AF] bg-[#F3F4F6] border-[#E5E7EB] cursor-default'
-                                            : 'text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border-[#BBF7D0]'
-                                            }`}>
+                                        <button onClick={() => handleExtendJob(mIdx, rowIdx, 1)}
+                                          title="Extend this job by one day and shift all following jobs"
+                                          className="w-5 h-5 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors">
                                           <Plus size={8} />
                                         </button>
                                       )}
@@ -1570,7 +1649,12 @@ export const ProductionPlanningPage: React.FC = () => {
                               {/* Qty */}
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 <span className="text-sm font-medium text-[#111827]">
-                                  {hasProduct ? (runningMetrics.goodBottles > 0 ? `${runningMetrics.goodLiters.toFixed(2)}L` : '—') : ''}
+                                  {hasProduct
+                                    ? (() => {
+                                        const rQty = getDailyProducedQty(rowIdx, entry, mIdx);
+                                        return formatLakh(rQty);
+                                      })()
+                                    : ''}
                                 </span>
                               </td>
                               {/* Draw — during changeover use previous job's draw rate */}
@@ -1689,8 +1773,6 @@ export const ProductionPlanningPage: React.FC = () => {
         );
       })()}
 
-
-
       {/* Fixed-position tooltip — renders above ALL table overflow */}
       {/* Fixed-position tooltip */}
       {tooltip && (() => {
@@ -1717,58 +1799,58 @@ export const ProductionPlanningPage: React.FC = () => {
           0
         );
 
-        // ============================================================
-        // ESTIMATED COMPLETION
-        // ============================================================
+        // // ============================================================
+        // // ESTIMATED COMPLETION
+        // // ============================================================
 
-        let estimatedCompletion = '—';
+        // let estimatedCompletion = '—';
 
-        const planDate =
-          dateRows[tooltip.rowIdx]?.isoDate || '';
+        // const planDate =
+        //   dateRows[tooltip.rowIdx]?.isoDate || '';
 
-        if (entry.status === 'completed' && entry.endTime && planDate) {
-          // Completed jobs use their actual completion time.
-          const endMinutes = parseTimeToMinutes(entry.endTime);
+        // if (entry.status === 'completed' && entry.endTime && planDate) {
+        //   // Completed jobs use their actual completion time.
+        //   const endMinutes = parseTimeToMinutes(entry.endTime);
 
-          if (endMinutes !== null) {
-            const [year, month, day] = planDate.split('-').map(Number);
+        //   if (endMinutes !== null) {
+        //     const [year, month, day] = planDate.split('-').map(Number);
 
-            const completionDate = new Date(
-              year,
-              month - 1,
-              day,
-              Math.floor(endMinutes / 60),
-              endMinutes % 60,
-              0,
-              0
-            );
+        //     const completionDate = new Date(
+        //       year,
+        //       month - 1,
+        //       day,
+        //       Math.floor(endMinutes / 60),
+        //       endMinutes % 60,
+        //       0,
+        //       0
+        //     );
 
-            estimatedCompletion = formatCompletionDateTime(completionDate);
-          }
-        } else {
-          // Running/planned jobs calculate completion using:
-          // start time + required quantity + production rate.
-          estimatedCompletion = calculateEstimatedCompletion(
-            planDate,
-            entry.startTime,
-            requiredBottles,
-            entry.speeds || entry.cut,
-            entry.wt,
-            tooltip.mIdx + 1
-          );
-        }
+        //     estimatedCompletion = formatCompletionDateTime(completionDate);
+        //   }
+        // } else {
+        //   // Running/planned jobs calculate completion using:
+        //   // start time + required quantity + production rate.
+        //   estimatedCompletion = calculateEstimatedCompletion(
+        //     planDate,
+        //     entry.startTime,
+        //     requiredBottles,
+        //     entry.speeds || entry.cut,
+        //     entry.wt,
+        //     tooltip.mIdx + 1
+        //   );
+        // }
 
-        // If backend already supplied a valid estimated completion,
-        // use it as a fallback.
-        if (estimatedCompletion === '—' && entry.estimatedCompletion) {
-          const backendDate = new Date(entry.estimatedCompletion);
+        // // If backend already supplied a valid estimated completion,
+        // // use it as a fallback.
+        // if (estimatedCompletion === '—' && entry.estimatedCompletion) {
+        //   const backendDate = new Date(entry.estimatedCompletion);
 
-          if (!Number.isNaN(backendDate.getTime())) {
-            estimatedCompletion = formatCompletionDateTime(backendDate);
-          } else {
-            estimatedCompletion = entry.estimatedCompletion;
-          }
-        }
+        //   if (!Number.isNaN(backendDate.getTime())) {
+        //     estimatedCompletion = formatCompletionDateTime(backendDate);
+        //   } else {
+        //     estimatedCompletion = entry.estimatedCompletion;
+        //   }
+        // }
 
         // Packing allocation
         const packing = entry.packingAllocations
@@ -1832,7 +1914,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
 
               {/* ESTIMATED COMPLETION */}
-              <div className="py-2.5 border-b border-[#334155]">
+              {/* <div className="py-2.5 border-b border-[#334155]">
                 <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
                   Estimated Completion
                 </p>
@@ -1840,7 +1922,7 @@ export const ProductionPlanningPage: React.FC = () => {
                 <p className="font-bold text-[#34D399] text-sm mt-1">
                   {estimatedCompletion}
                 </p>
-              </div>
+              </div> */}
 
 
               {/* PACKING ALLOCATION */}

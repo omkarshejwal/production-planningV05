@@ -245,6 +245,36 @@ export const planningRepository = {
     }
   },
 
+  /**
+   * Extends a production job by `days` extra days. The backend inserts a
+   * continuation row for the job and shifts every subsequent job on the same
+   * machine forward by the same number of days.
+   */
+  async extendProductionJob(params: {
+    plan_date: string;
+    machine_no: string;
+    start_time: string;
+    days: number;
+  }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const machineInt = this._machineIdToInt(params.machine_no);
+      const startTimeIso = this._buildStartTime(params.plan_date, params.start_time);
+      await apiFetch('/api/production/jobs/extend/', {
+        method: 'POST',
+        body: JSON.stringify({
+          plan_date: params.plan_date,
+          machine_no: machineInt,
+          start_time: startTimeIso,
+          days: params.days,
+        }),
+      });
+      return { ok: true };
+    } catch (err: any) {
+      console.error('extendProductionJob failed:', err);
+      return { ok: false, error: err.message || 'Failed to extend job' };
+    }
+  },
+
   async updateProductionJob(
     _originalKey: {
       plan_date: string;

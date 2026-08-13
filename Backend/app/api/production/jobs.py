@@ -1,16 +1,19 @@
 # pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException
 # pyrefly: ignore [missing-import]
+from sqlalchemy import and_, or_
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from decimal import Decimal
+from datetime import timedelta
 
 from app.db.session import get_db
 from app.models.job import ProductionJob, JobPackaging
 from app.models.machine import MachineMaster
 from app.models.product import BottleConfiguration
 from app.models.audit_log import AuditLog
-from app.schemas.job import ProductionJobResponse, ProductionJobCreate
+from app.schemas.job import ProductionJobResponse, ProductionJobCreate, ExtendJobRequest
 from app.api.deps import require_manager_role
 
 router = APIRouter(prefix="/jobs", tags=["Production Jobs"])
@@ -149,6 +152,162 @@ def create_job(
     db.commit()
     db.refresh(new_job)
     return new_job
+
+@router.post("/extend/", response_model=List[ProductionJobResponse])
+def extend_job(
+    req: ExtendJobRequest,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role)
+):
+    """
+    Extend a production job by N extra days.
+
+    - A continuation row for the selected job is inserted on each of the next N
+      calendar days (same daily production window as the source job).
+    - Every subsequent job on the same machine — including jobs that start later
+      on the source's own day and jobs on strictly later days — is shifted
+      forward by N days so no job is overwritten and the original order is kept.
+    - The selected job itself and all other jobs remain unchanged.
+    """
+    days = max(1, min(int(req.days) if req.days else 1, 10))
+
+    source = db.query(ProductionJob).filter_by(
+        plan_date=req.plan_date,
+        machine_no=req.machine_no,
+        start_time=req.start_time,
+    ).first()
+
+    if not source:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Snapshot the source fields now — the session identity map is cleared below.
+    # The daily production window comes from the actual job data (estimated
+    # completion, falling back to the real completion time for ended jobs),
+    # never a hardcoded time.
+    src_end = source.estimated_completion or source.completion_time
+    src = {
+        "bottle_id": source.bottle_id,
+        "section": source.section,
+        "weight": source.weight,
+        "speeds": source.speeds,
+        "draw": source.draw,
+        "quantity": source.quantity,
+        "required_bottles": source.required_bottles,
+        "estimated_completion": source.estimated_completion,
+        "completion_time": source.completion_time,
+        "window_end": src_end,
+        "changeover_minutes": source.changeover_minutes,
+    }
+
+    # ── 1. Shift every subsequent job on this machine forward by N days ─────────
+    # "Subsequent" means any job that comes after the selected job in the
+    # machine's production sequence: a job that starts later on the same day OR
+    # a job on a strictly later day.
+    # Process in descending order so each destination slot is vacated before we
+    # write into it (a job may be moving onto the key a later job just vacated).
+    subsequent = (
+        db.query(ProductionJob)
+        .filter(
+            ProductionJob.machine_no == req.machine_no,
+            or_(
+                ProductionJob.plan_date > req.plan_date,
+                and_(
+                    ProductionJob.plan_date == req.plan_date,
+                    ProductionJob.start_time > req.start_time,
+                ),
+            ),
+        )
+        .order_by(ProductionJob.plan_date.desc(), ProductionJob.start_time.desc())
+        .all()
+    )
+
+    for job in subsequent:
+        new_plan = job.plan_date + timedelta(days=days)
+        new_start = job.start_time + timedelta(days=days)
+
+        db.query(JobPackaging).filter_by(
+            plan_date=job.plan_date,
+            machine_no=req.machine_no,
+            start_time=job.start_time,
+        ).update(
+            {"plan_date": new_plan, "start_time": new_start},
+            synchronize_session=False,
+        )
+        db.flush()
+
+        db.query(ProductionJob).filter_by(
+            plan_date=job.plan_date,
+            machine_no=req.machine_no,
+            start_time=job.start_time,
+        ).update(
+            {
+                "plan_date": new_plan,
+                "start_time": new_start,
+                "estimated_completion": (
+                    (job.estimated_completion + timedelta(days=days))
+                    if job.estimated_completion else None
+                ),
+                "completion_time": (
+                    (job.completion_time + timedelta(days=days))
+                    if job.completion_time else None
+                ),
+            },
+            synchronize_session=False,
+        )
+        db.flush()
+
+    # Drop the stale in-memory copies of the rows that were moved, so inserting
+    # a continuation at a vacated (plan_date, start_time) key never collides
+    # with an old identity-map entry.
+    db.expire_all()
+    db.flush()
+
+    # ── 2. Insert a continuation row for the selected job on each of the next N days
+    for d in range(1, days + 1):
+        new_plan = req.plan_date + timedelta(days=d)
+        new_start = req.start_time + timedelta(days=d)
+
+        existing = db.query(ProductionJob).filter_by(
+            plan_date=new_plan,
+            machine_no=req.machine_no,
+            start_time=new_start,
+        ).first()
+        if existing:
+            continue
+
+        db.add(ProductionJob(
+            plan_date=new_plan,
+            machine_no=req.machine_no,
+            start_time=new_start,
+            bottle_id=src["bottle_id"],
+            section=src["section"],
+            weight=src["weight"],
+            speeds=src["speeds"],
+            draw=src["draw"],
+            quantity=src["quantity"],
+            required_bottles=src["required_bottles"],
+            estimated_completion=(
+                (src["window_end"] + timedelta(days=d))
+                if src["window_end"] else None
+            ),
+            completion_time=None,
+            changeover_minutes=src["changeover_minutes"],
+            status="Planned",
+        ))
+
+    db.commit()
+
+    affected = (
+        db.query(ProductionJob)
+        .options(selectinload(ProductionJob.packaging))
+        .filter(
+            ProductionJob.machine_no == req.machine_no,
+            ProductionJob.plan_date >= req.plan_date,
+        )
+        .order_by(ProductionJob.plan_date, ProductionJob.start_time)
+        .all()
+    )
+    return affected
 
 @router.delete("/{plan_date}/{machine_no}/{start_time}", status_code=204)
 def delete_job(
