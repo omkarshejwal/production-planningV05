@@ -364,6 +364,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         completionTime: row.completion_time,
         productionQuantity: row.quantity,
         productionHours: resolvedProductionHours,
+        requiredBottles: row.requiredBottles ?? null,
         linkedJobGroupId: `${row.machine_no}|${row.bottle_id}|${row.section}|${row.start_time}`,
         sequenceNumber,
         lifecycleStatus: row.status === 'Completed' ? 'COMPLETED' : 'ACTIVE',

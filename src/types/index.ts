@@ -86,6 +86,7 @@ export interface ProductionJob {
   completionTime?: string; // Actual completion from backend (YYYY-MM-DDTHH:mm)
   productionQuantity?: number; // Planned quantity for this specific day job
   productionHours?: number; // Planned production hours for this specific day job (max 24)
+  requiredBottles?: number | null; // User-entered Required Bottles / Quantity for this job
   linkedJobGroupId?: string;
   sequenceNumber?: number; // Vertical stack order inside machine-day cell
   lifecycleStatus?: PlanningLifecycleStatus;

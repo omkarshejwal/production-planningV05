@@ -328,10 +328,16 @@ export const ProductionPlanningPage: React.FC = () => {
       // `quantity`, `start_time` and `speeds` are the actual production fields.
       const backendQuantity = Number(
         (job as any).quantity ??
-        (job as any).requiredBottles ??
-        (job as any).required_bottles ??
         (job as any).productionQuantity ??
         (job as any).grossQuantity ??
+        0
+      );
+
+      // User-entered Required Bottles — the exact value saved to the database
+      // (never the bottle's 24-hour production quantity).
+      const backendRequiredBottles = Number(
+        (job as any).requiredBottles ??
+        (job as any).required_bottles ??
         0
       );
 
@@ -383,7 +389,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
         // IMPORTANT:
         // quantity is the source of Total Required Bottles.
-        requiredBottles: backendQuantity,
+        requiredBottles: backendRequiredBottles > 0 ? backendRequiredBottles : backendQuantity,
 
         // Keep backend estimated value if available.
         // Tooltip will calculate it when this is missing.
@@ -527,6 +533,7 @@ export const ProductionPlanningPage: React.FC = () => {
               speeds: entry.cut,
               draw: entry.draw,
               quantity: entry.qty,
+              requiredBottles: entry.requiredBottles ?? undefined,
               production_hours: Number(segmentHours.toFixed(2)),
               start_time: entry.startTime || '07:00',
               estimated_completion: estCompletion,
@@ -1702,7 +1709,8 @@ export const ProductionPlanningPage: React.FC = () => {
         // ============================================================
         // REQUIRED BOTTLES
         // ============================================================
-        // `quantity` from the database is mapped to entry.requiredBottles.
+        // `required_bottles` from the database (the user-entered value)
+        // is mapped to entry.requiredBottles.
         const requiredBottles = Number(
           entry.requiredBottles ??
           entry.qty ??
