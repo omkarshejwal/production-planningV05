@@ -15,6 +15,7 @@ export interface MachineEntry {
   draw: number;
   qty: number;
   isBlank?: boolean;
+  salesExec?: string;
   packingCategory?: PackCatKey | "";
   packingAllocations?: Partial<Record<PackCatKey, number>>;
   palletPacking?: boolean | null;
