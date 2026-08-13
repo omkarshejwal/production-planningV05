@@ -15,7 +15,6 @@ export interface MachineEntry {
   draw: number;
   qty: number;
   isBlank?: boolean;
-  salesExec?: string;
   packingCategory?: PackCatKey | "";
   packingAllocations?: Partial<Record<PackCatKey, number>>;
   palletPacking?: boolean | null;
@@ -44,7 +43,6 @@ export type MachineLists = [MachineEntry[], MachineEntry[], MachineEntry[], Mach
 
 export interface EditSavePayload {
   bottle: BottleEntry;
-  salesExec: string;
   packingCategory: PackCatKey | "";
   packingAllocations: Partial<Record<PackCatKey, number>>;
   palletPacking: boolean | null;

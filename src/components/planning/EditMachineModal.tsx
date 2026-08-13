@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, X } from 'lucide-react';
 import { BottleEntry, EditSavePayload, MachineEntry, PackCatKey } from '../../types/planning';
 import { MACHINE_BOTTLES, NONE_ENTRY } from '../../data/bottleReference';
@@ -28,7 +28,7 @@ export function EditMachineModal({
   const [selected, setSelected] = useState(currentEntry.product);
   const [bottleSearch, setBottleSearch] = useState('');
   const [bottleDropdownOpen, setBottleDropdownOpen] = useState(false);
-  // const [salesExec, setSalesExec] = useState(currentEntry.salesExec ?? '');
+  
   // Multi-packing allocations: key = enabled category, value = qty string for the input
   const [packingAllocations, setPackingAllocations] = useState<Partial<Record<PackCatKey, string>>>(() => {
     if (currentEntry.packingAllocations && Object.keys(currentEntry.packingAllocations).length > 0) {
@@ -37,7 +37,8 @@ export function EditMachineModal({
       ) as Partial<Record<PackCatKey, string>>;
     }
     if (currentEntry.packingCategory) {
-      return { [currentEntry.packingCategory]: '' } as Partial<Record<PackCatKey, string>>;
+      const initialQty = currentEntry.requiredBottles != null ? String(currentEntry.requiredBottles) : '';
+      return { [currentEntry.packingCategory]: initialQty } as Partial<Record<PackCatKey, string>>;
     }
     return {};
   });
@@ -60,9 +61,14 @@ export function EditMachineModal({
   const [palletPackingQty, setPalletPackingQty] = useState<string>(
     currentEntry.palletPackingQty != null ? String(currentEntry.palletPackingQty) : ''
   );
+  const [requiredBottles, setRequiredBottles] = useState<string>(
+  currentEntry.requiredBottles != null ? String(currentEntry.requiredBottles) : ''
+);
+
+useEffect(() => {
+  setRequiredBottles(currentEntry.requiredBottles != null ? String(currentEntry.requiredBottles) : '');
+}, [currentEntry.requiredBottles]);
   const [jobStartTime, setJobStartTime] = useState(newJobStartTime ?? currentEntry.startTime ?? '');
-  const [requiredBottles, setRequiredBottles] = useState('');
-  const salesExec = currentEntry.salesExec ?? '';
 
   const filteredBottles = useMemo(() => {
     const query = bottleSearch.trim().toLowerCase();
@@ -357,7 +363,6 @@ export function EditMachineModal({
                 disabled={!allocValid}
                 onClick={() => onSave({
                   bottle,
-                  salesExec,
                   packingCategory: primaryCat,
                   packingAllocations: numericAllocs,
                   palletPacking: hasSN ? palletPacking : null,

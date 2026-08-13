@@ -989,7 +989,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const handleSave = (payload: EditSavePayload) => {
     if (!editModal) return;
-    const { bottle, salesExec, packingCategory, packingAllocations, palletPacking, palletPackingQty, requiredBottles, section, startTime } = payload;
+    const { bottle, packingCategory, packingAllocations, palletPacking, palletPackingQty, requiredBottles, section, startTime } = payload;
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
       const list = [...next[editModal.mIdx]];
@@ -1006,7 +1006,6 @@ export const ProductionPlanningPage: React.FC = () => {
         cut,
         draw,
         qty,
-        salesExec,
         packingCategory,
         packingAllocations,
         palletPacking,
