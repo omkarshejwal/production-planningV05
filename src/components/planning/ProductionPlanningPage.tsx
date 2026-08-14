@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import ExcelJS from 'exceljs';
 import jsPDF from 'jspdf';
@@ -415,6 +415,7 @@ export const ProductionPlanningPage: React.FC = () => {
     }
     setMachineLists(newLists);
     setCompletedJobMap(newCompleted);
+    setPendingOps([]);
   }, [jobs, bottles, dateRows, selectedMonth]);
 
   // Date rows are fixed; each machine owns an independent flat array.
@@ -424,6 +425,25 @@ export const ProductionPlanningPage: React.FC = () => {
   const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [pendingOps, setPendingOps] = useState<Array<{
+    seq: number;
+    kind: 'extend' | 'delete';
+    plan_date: string;
+    machine_no: string;
+    start_time: string;
+    days?: number;
+    // For deletes: the DB keys to remove on save — the deleted job's key plus
+    // the pre-shift key of every job that moved back to fill the gap.
+    deleteKeys?: Array<{ plan_date: string; machine_no: string; start_time: string }>;
+  }>>([]);
+  const opSeqRef = useRef(1);
+
+  // Moves an ISO date forward/backward by whole calendar days.
+  const shiftIsoDate = (isoDate: string, days: number): string => {
+    const [y, m, d] = isoDate.split('-').map(Number);
+    const dt = new Date(y, m - 1, d + days);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  };
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
   const [showSection, setShowSection] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
@@ -437,32 +457,287 @@ export const ProductionPlanningPage: React.FC = () => {
     });
   }, []);
 
+  // Builds the API payload row for a single grid entry — the same field
+  // mapping that was previously inlined in handleSaveToDb.
+  const buildRowPayload = (mIdx: number, rowIdx: number, entry: MachineEntry, plan_date: string): ProductionJobRow | null => {
+    if (entry.product === 'None') return null;
+    const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
+    if (!bottle) return null;
+
+    const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+
+    const packagingRows: any[] = [];
+    if (entry.packingAllocations) {
+      for (const [type, qty] of Object.entries(entry.packingAllocations)) {
+        packagingRows.push({
+          packaging_type: type,
+          quantity: qty,
+          pallet_packing: entry.palletPacking || false,
+          pallet_quantity: entry.palletPackingQty || null
+        });
+      }
+    } else if (entry.packingCategory) {
+      packagingRows.push({
+        packaging_type: entry.packingCategory,
+        quantity: entry.qty,
+        pallet_packing: entry.palletPacking || false,
+        pallet_quantity: entry.palletPackingQty || null
+      });
+    }
+
+    const key = `${mIdx}-${rowIdx}`;
+    const completed = completedJobMap[key];
+    const calculateChangeover = (startTime: string) => {
+      if (!completed || completed.length === 0) return 0;
+      const lastEnd = completed[completed.length - 1].endTime;
+      if (!lastEnd) return 0;
+      const startParts = startTime.split(':').map(Number);
+      const endParts = lastEnd.split(':').map(Number);
+      let diff = (startParts[0] * 60 + startParts[1]) - (endParts[0] * 60 + endParts[1]);
+      if (diff < 0) diff += 24 * 60;
+      return diff;
+    };
+
+    const changeover = entry.status === 'running' ? calculateChangeover(entry.startTime || '07:00') : 0;
+
+    const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
+    const hourlyQty = metrics.totalQuantity / 24;
+    const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
+
+    const startParts = (entry.startTime || '07:00').split(':').map(Number);
+    const startMins = startParts[0] * 60 + startParts[1];
+    const totalMins = startMins + (segmentHours * 60);
+
+    let estCompletion = '';
+    if (entry.endTime) {
+      estCompletion = entry.endTime;
+    } else {
+      const ch = Math.floor(totalMins / 60) % 24;
+      const cm = Math.round(totalMins % 60);
+      estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
+    }
+
+    return {
+      plan_date,
+      machine_no,
+      bottle_id: bottle.id,
+      section: entry.section || (mIdx === 0 || mIdx === 3 ? 8 : 10),
+      weight: entry.wt,
+      speeds: entry.cut,
+      draw: entry.draw,
+      quantity: entry.qty,
+      requiredBottles: entry.requiredBottles ?? undefined,
+      production_hours: Number(segmentHours.toFixed(2)),
+      start_time: entry.startTime || '07:00',
+      estimated_completion: estCompletion,
+      completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
+      changeover_minutes: changeover,
+      status: entry.status === 'completed' ? 'Completed' : 'Planned',
+      packaging: packagingRows
+    } as any;
+  };
+
+  // Locates a job in the current working schedule by its DB identity key.
+  const findEntryForKey = (planDate: string, machineNo: string, startTime: string): { mIdx: number; rowIdx: number; entry: MachineEntry } | null => {
+    const mIdx = parseInt(machineNo.replace('MAC-', '')) - 1;
+    if (mIdx < 0 || mIdx > 3) return null;
+    const rowIdx = dateRows.findIndex(r => r.isoDate === planDate);
+    if (rowIdx === -1) return null;
+    const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+    const completedMatch = completed.find(e => e.startTime === startTime);
+    if (completedMatch) return { mIdx, rowIdx, entry: completedMatch };
+    const running = machineLists[mIdx][rowIdx];
+    if (running && !running.isBlank && running.product !== 'None' && running.startTime === startTime) {
+      return { mIdx, rowIdx, entry: running };
+    }
+    return null;
+  };
+
+  // Applies a job extension to the local working schedule, mirroring the
+  // backend's shift + continuation behaviour within the visible window.
+  // Rows that shift beyond the window are handled by the backend on save.
+  const applyExtendLocally = (
+    mIdx: number,
+    rowIdx: number,
+    days: number,
+    sourceStartTime: string,
+    completedIndex?: number
+  ) => {
+    const nextLists = [...machineLists] as MachineLists;
+    nextLists[mIdx] = [...machineLists[mIdx]];
+
+    const nextCompleted: CompletedJobMap = {};
+    for (const [k, v] of Object.entries(completedJobMap)) {
+      nextCompleted[k] = [...v];
+    }
+
+    const srcTime = sourceStartTime || '07:00';
+    const totalRows = nextLists[mIdx].length;
+
+    type Shiftable = { row: number; startTime: string; isRunning: boolean; completedIdx: number; entry: MachineEntry };
+    const shiftable: Shiftable[] = [];
+    for (let r = 0; r < totalRows; r++) {
+      const running = nextLists[mIdx][r];
+      if (running && !running.isBlank && running.product && running.product !== 'None') {
+        shiftable.push({ row: r, startTime: running.startTime || '07:00', isRunning: true, completedIdx: -1, entry: running });
+      }
+      const comps = nextCompleted[`${mIdx}-${r}`] ?? [];
+      comps.forEach((entry, ci) => {
+        shiftable.push({ row: r, startTime: entry.startTime || '07:00', isRunning: false, completedIdx: ci, entry });
+      });
+    }
+
+    // "Subsequent" = later dates, or the same date at a later start time.
+    // Processed in descending order so each destination slot is vacated before
+    // anything is written into it (mirrors the backend's ordering).
+    const subsequent = shiftable
+      .filter(({ row, startTime }) => row > rowIdx || (row === rowIdx && startTime > srcTime))
+      .sort((a, b) => (b.row - a.row) || b.startTime.localeCompare(a.startTime));
+
+    for (const ref of subsequent) {
+      const destRow = ref.row + days;
+
+      if (ref.isRunning) {
+        nextLists[mIdx][ref.row] = makeNoneEntry(mIdx);
+      } else {
+        const srcKey = `${mIdx}-${ref.row}`;
+        nextCompleted[srcKey] = (nextCompleted[srcKey] ?? []).filter((_, ci) => ci !== ref.completedIdx);
+      }
+
+      if (destRow >= totalRows) continue;
+
+      if (ref.isRunning) {
+        nextLists[mIdx][destRow] = ref.entry;
+      } else {
+        const destKey = `${mIdx}-${destRow}`;
+        const list = nextCompleted[destKey] ?? [];
+        list.push(ref.entry);
+        list.sort((x, y) => (x.startTime || '07:00').localeCompare(y.startTime || '07:00'));
+        nextCompleted[destKey] = list;
+      }
+    }
+
+    const source = completedIndex !== undefined
+      ? completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]
+      : machineLists[mIdx]?.[rowIdx];
+
+    if (source && source.product && source.product !== 'None') {
+      for (let d = 1; d <= days; d++) {
+        const destRow = rowIdx + d;
+        if (destRow >= totalRows) break;
+        const existing = nextLists[mIdx][destRow];
+        // A shifted job may occupy this slot; the grid can only hold one
+        // running job per day, so keep the shifted job visible. The backend
+        // still creates the continuation row, so nothing is lost on save.
+        if (existing && !existing.isBlank && existing.product !== 'None') {
+          continue;
+        }
+        nextLists[mIdx][destRow] = {
+          ...source,
+          eid: Math.random(),
+          status: 'running',
+          startTime: srcTime,
+          endTime: '',
+          estimatedCompletion: '',
+          cumulativeQty: undefined,
+        };
+      }
+    }
+
+    setMachineLists(nextLists);
+    setCompletedJobMap(nextCompleted);
+    setIsDirty(true);
+  };
+
+  // Removes a job from the working schedule and pulls every later job on the
+  // same machine back one day so the freed slot is filled and the production
+  // sequence stays continuous. Jobs before the deleted job are untouched.
+  // Returns the pre-shift DB keys of every moved job so the save step can
+  // remove their old rows too (the batch upsert only writes the new positions).
+  const applyDeleteLocally = (
+    mIdx: number,
+    rowIdx: number,
+    startTime: string,
+    isCompleted: boolean
+  ): Array<{ plan_date: string; machine_no: string; start_time: string }> => {
+    const nextLists = [...machineLists] as MachineLists;
+    nextLists[mIdx] = [...machineLists[mIdx]];
+
+    const nextCompleted: CompletedJobMap = {};
+    for (const [k, v] of Object.entries(completedJobMap)) {
+      nextCompleted[k] = [...v];
+    }
+
+    const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+    const movedKeys: Array<{ plan_date: string; machine_no: string; start_time: string }> = [];
+    const recordKey = (row: number, entry: MachineEntry) => {
+      movedKeys.push({
+        plan_date: dateRows[row]?.isoDate ?? '',
+        machine_no: machineNo,
+        start_time: entry.startTime || '07:00',
+      });
+    };
+
+    if (isCompleted) {
+      const key = `${mIdx}-${rowIdx}`;
+      nextCompleted[key] = (nextCompleted[key] ?? []).filter(e => e.startTime !== startTime);
+    } else {
+      nextLists[mIdx][rowIdx] = makeNoneEntry(mIdx);
+    }
+
+    // "Subsequent" = any visible job on a strictly later day. Same-day jobs are
+    // separate records of that day and stay put. Collect everything first, then
+    // shift ascending so each destination slot was just vacated (or is the
+    // deleted job's own slot) when it is written.
+    type Shiftable = { row: number; startTime: string; isRunning: boolean; entry: MachineEntry };
+    const shiftable: Shiftable[] = [];
+    for (let r = rowIdx + 1; r < nextLists[mIdx].length; r++) {
+      const running = nextLists[mIdx][r];
+      if (running && !running.isBlank && running.product && running.product !== 'None') {
+        shiftable.push({ row: r, startTime: running.startTime || '07:00', isRunning: true, entry: running });
+      }
+      const comps = nextCompleted[`${mIdx}-${r}`] ?? [];
+      for (const entry of comps) {
+        shiftable.push({ row: r, startTime: entry.startTime || '07:00', isRunning: false, entry });
+      }
+    }
+
+    for (const ref of shiftable) {
+      const destRow = ref.row - 1;
+      recordKey(ref.row, ref.entry);
+
+      if (ref.isRunning) {
+        nextLists[mIdx][ref.row] = makeNoneEntry(mIdx);
+        nextLists[mIdx][destRow] = ref.entry;
+      } else {
+        const srcKey = `${mIdx}-${ref.row}`;
+        nextCompleted[srcKey] = (nextCompleted[srcKey] ?? []).filter(e => e.eid !== ref.entry.eid);
+        const destKey = `${mIdx}-${destRow}`;
+        const list = nextCompleted[destKey] ?? [];
+        list.push(ref.entry);
+        list.sort((x, y) => (x.startTime || '07:00').localeCompare(y.startTime || '07:00'));
+        nextCompleted[destKey] = list;
+      }
+    }
+
+    setMachineLists(nextLists);
+    setCompletedJobMap(nextCompleted);
+    setIsDirty(true);
+    return movedKeys;
+  };
+
   const handleSaveToDb = async () => {
     setIsSaving(true);
     try {
       const payloadRows: ProductionJobRow[] = [];
-      console.log("handleSaveToDb started. dateRows:", dateRows.length, "isDirty:", isDirty);
-
-      const calculateChangeover = (mIdx: number, rowIdx: number, startTime: string) => {
-        const key = `${mIdx}-${rowIdx}`;
-        const completed = completedJobMap[key];
-        if (!completed || completed.length === 0) return 0;
-        const lastEnd = completed[completed.length - 1].endTime;
-        if (!lastEnd) return 0;
-        const startParts = startTime.split(':').map(Number);
-        const endParts = lastEnd.split(':').map(Number);
-        let diff = (startParts[0] * 60 + startParts[1]) - (endParts[0] * 60 + endParts[1]);
-        if (diff < 0) diff += 24 * 60;
-        return diff;
-      };
 
       for (let mIdx = 0; mIdx < 4; mIdx++) {
         for (let rowIdx = 0; rowIdx < dateRows.length; rowIdx++) {
           const plan_date = dateRows[rowIdx].isoDate;
-          const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+          const key = `${mIdx}-${rowIdx}`;
 
           const entriesToSave: MachineEntry[] = [];
-          const key = `${mIdx}-${rowIdx}`;
           if (completedJobMap[key]) {
             entriesToSave.push(...completedJobMap[key]);
           }
@@ -471,86 +746,92 @@ export const ProductionPlanningPage: React.FC = () => {
             entriesToSave.push(currentEntry);
           }
 
-          if (entriesToSave.length > 0) {
-            console.log(`Found ${entriesToSave.length} entries for MAC-${mIdx + 1} at row ${rowIdx} (${plan_date})`, entriesToSave);
-          }
-
           for (const entry of entriesToSave) {
-            if (entry.product === 'None') continue;
-            const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-            const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
-            if (!bottle) {
+            const row = buildRowPayload(mIdx, rowIdx, entry, plan_date);
+            if (!row) {
               console.error(`Bottle not found in DB: ${entry.product}`);
               toast.error(`Save failed: Bottle "${entry.product}" not found in system.`);
               continue;
             }
-
-            const packagingRows: any[] = [];
-            if (entry.packingAllocations) {
-              for (const [type, qty] of Object.entries(entry.packingAllocations)) {
-                packagingRows.push({
-                  packaging_type: type,
-                  quantity: qty,
-                  pallet_packing: entry.palletPacking || false,
-                  pallet_quantity: entry.palletPackingQty || null
-                });
-              }
-            } else if (entry.packingCategory) {
-              packagingRows.push({
-                packaging_type: entry.packingCategory,
-                quantity: entry.qty,
-                pallet_packing: entry.palletPacking || false,
-                pallet_quantity: entry.palletPackingQty || null
-              });
-            }
-
-            const changeover = entry.status === 'running' ? calculateChangeover(mIdx, rowIdx, entry.startTime || '07:00') : 0;
-
-            const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
-            const hourlyQty = metrics.totalQuantity / 24;
-            const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
-
-            const startParts = (entry.startTime || '07:00').split(':').map(Number);
-            const startMins = startParts[0] * 60 + startParts[1];
-            const totalMins = startMins + (segmentHours * 60);
-
-            let estCompletion = '';
-            if (entry.endTime) {
-              estCompletion = entry.endTime;
-            } else {
-              const ch = Math.floor(totalMins / 60) % 24;
-              const cm = Math.round(totalMins % 60);
-              estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
-            }
-
-            payloadRows.push({
-              plan_date,
-              machine_no,
-              bottle_id: bottle.id,
-              section: entry.section || (mIdx === 0 || mIdx === 3 ? 8 : 10),
-              weight: entry.wt,
-              speeds: entry.cut,
-              draw: entry.draw,
-              quantity: entry.qty,
-              requiredBottles: entry.requiredBottles ?? undefined,
-              production_hours: Number(segmentHours.toFixed(2)),
-              start_time: entry.startTime || '07:00',
-              estimated_completion: estCompletion,
-              completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
-              changeover_minutes: changeover,
-              status: entry.status === 'completed' ? 'Completed' : 'Planned',
-              packaging: packagingRows
-            } as any);
+            payloadRows.push(row);
           }
         }
       }
 
-      console.log("[SAVE] Full payloadRows being sent:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time })), null, 2));
+      // Replay the deferred operations in the order they were made.
+      //  - Each extension's source is upserted first so the backend builds
+      //    continuation rows from the latest (possibly edited) values.
+      //  - An extension shifts every subsequent job on the same machine, so any
+      //    delete recorded before that extension is re-keyed to its
+      //    post-extension position before the deletes actually run. This applies
+      //    to every key a delete recorded (the deleted job + the shifted jobs).
+      const deleteOps = pendingOps
+        .filter(o => o.kind === 'delete')
+        .map(o => ({
+          ...o,
+          deleteKeys: o.deleteKeys?.map(k => ({ ...k })),
+        }));
+      const remainingOps: typeof pendingOps = [];
+
+      for (const op of pendingOps) {
+        if (op.kind === 'delete') continue;
+
+        const source = findEntryForKey(op.plan_date, op.machine_no, op.start_time);
+        if (!source) continue;
+        const sourceRow = buildRowPayload(source.mIdx, source.rowIdx, source.entry, op.plan_date);
+        if (sourceRow) {
+          await planningRepository.createProductionJob(sourceRow);
+        }
+        const res = await planningRepository.extendProductionJob({
+          plan_date: op.plan_date,
+          machine_no: op.machine_no,
+          start_time: op.start_time,
+          days: op.days || 1,
+        });
+        if (!res.ok) {
+          toast.error(res.error || 'Failed to extend production job.');
+          remainingOps.push(op);
+          continue;
+        }
+
+        const shiftBy = op.days || 1;
+        for (const dOp of deleteOps) {
+          if (dOp.seq >= op.seq) continue;
+          for (const key of dOp.deleteKeys ?? []) {
+            if (key.machine_no !== op.machine_no) continue;
+            const isAfter = key.plan_date > op.plan_date ||
+              (key.plan_date === op.plan_date && key.start_time > op.start_time);
+            if (!isAfter) continue;
+            key.plan_date = shiftIsoDate(key.plan_date, shiftBy);
+          }
+        }
+      }
+      setPendingOps(remainingOps);
+
+      // A delete removes the job itself plus every job that moved back to fill
+      // its gap, keyed by their pre-shift positions. Deleting a key that no
+      // longer exists is harmless (e.g. a key an earlier extension already
+      // moved), and the batch upsert below re-creates the final grid.
+      for (const dOp of deleteOps) {
+        const keys = dOp.deleteKeys && dOp.deleteKeys.length > 0
+          ? dOp.deleteKeys
+          : [{ plan_date: dOp.plan_date, machine_no: dOp.machine_no, start_time: dOp.start_time }];
+        for (const key of keys) {
+          const del = await planningRepository.deleteProductionJob(key.plan_date, key.machine_no, key.start_time);
+          if (!del.ok && !del.error?.toLowerCase().includes('not found')) {
+            toast.error(del.error || `Failed to delete job for ${key.plan_date}.`);
+          }
+        }
+      }
 
       const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
-      console.log("[SAVE] createProductionJobsBatch result:", batchResult);
-      // Re-fetch scoped to the active window so the grid reflects saved data
+      if (!batchResult.ok) {
+        toast.error(batchResult.error || 'Failed to save production data.');
+        return;
+      }
+
       reloadJobsForWindow(appliedFromDate, appliedToDate);
+      setPendingOps([]);
       setIsDirty(false);
       toast.success('Production data saved successfully to AWS Database.', { duration: 3000 });
     } catch (e) {
@@ -886,7 +1167,7 @@ export const ProductionPlanningPage: React.FC = () => {
   // order, quantity, machine, bottle, section and speed. The grid is then
   // refreshed from the database response so the schedule matches exactly what
   // was saved. `completedIndex` targets an ended job in the completed list.
-  const handleExtendJob = async (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
+  const handleExtendJob = (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
     const planDate = dateRows[rowIdx]?.isoDate;
     if (!planDate) {
       toast.error('Could not determine the job date.');
@@ -905,21 +1186,23 @@ export const ProductionPlanningPage: React.FC = () => {
     }
 
     const daysToAdd = Math.max(1, Math.min(10, Math.floor(days) || 1));
-    const result = await planningRepository.extendProductionJob({
-      plan_date: planDate,
-      machine_no: `MAC-${String(mIdx + 1).padStart(2, '0')}`,
-      start_time: startTime,
-      days: daysToAdd,
-    });
+    const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
 
-    if (!result.ok) {
-      toast.error(result.error || 'Failed to extend production job.');
-      return;
-    }
+    // Apply the shift locally so the grid reflects the pending change
+    // immediately; the backend extend is deferred until Save.
+    applyExtendLocally(mIdx, rowIdx, daysToAdd, startTime, completedIndex);
+    setPendingOps(prev => [
+      ...prev,
+      {
+        seq: opSeqRef.current++,
+        kind: 'extend',
+        plan_date: planDate,
+        machine_no: machineNo,
+        start_time: startTime,
+        days: daysToAdd,
+      },
+    ]);
 
-    // Refresh the schedule from the database so every shifted job is shown
-    // exactly as it was recalculated and saved.
-    reloadJobsForWindow(appliedFromDate, appliedToDate);
     toast.success(`Job extended by ${daysToAdd} day${daysToAdd === 1 ? '' : 's'}. All following jobs were shifted.`);
   };
 
@@ -1742,16 +2025,32 @@ export const ProductionPlanningPage: React.FC = () => {
         cancelLabel="Cancel"
         isDanger={true}
         requireWord={deleteModal?.isCompleted ? "DELETE" : undefined}
-        onConfirm={async () => {
+        onConfirm={() => {
           if (!deleteModal) return;
-          const { planDate, machineNo, startTime } = deleteModal;
-          const res = await planningRepository.deleteProductionJob(planDate, machineNo, startTime);
-          if (res.ok) {
-            // Re-fetch scoped to the active window after delete
-            reloadJobsForWindow(appliedFromDate, appliedToDate);
-            toast.success("Job deleted successfully.");
-          } else {
-            toast.error(res.error || "Failed to delete job");
+          const { planDate, machineNo, startTime, isCompleted } = deleteModal;
+          const mIdx = parseInt(machineNo.replace('MAC-', '')) - 1;
+          const rowIdx = dateRows.findIndex(r => r.isoDate === planDate);
+          if (mIdx >= 0 && mIdx < 4 && rowIdx !== -1) {
+            // Shift every later job on this machine back one day so the freed
+            // slot is filled, and capture the pre-shift DB keys to remove on
+            // save (the deleted job plus each job that moved).
+            const movedKeys = applyDeleteLocally(mIdx, rowIdx, startTime, !!isCompleted);
+            setPendingOps(prev => [
+              ...prev,
+              {
+                seq: opSeqRef.current++,
+                kind: 'delete',
+                plan_date: planDate,
+                machine_no: machineNo,
+                start_time: startTime,
+                deleteKeys: [
+                  { plan_date: planDate, machine_no: machineNo, start_time: startTime },
+                  ...movedKeys,
+                ],
+              },
+            ]);
+            setIsDirty(true);
+            toast.success("Job removed. Click Save to apply the changes.");
           }
           setDeleteModal(null);
         }}
