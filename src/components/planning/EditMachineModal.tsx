@@ -68,7 +68,7 @@ export function EditMachineModal({
 useEffect(() => {
   setRequiredBottles(currentEntry.requiredBottles != null ? String(currentEntry.requiredBottles) : '');
 }, [currentEntry.requiredBottles]);
-  const [jobStartTime, setJobStartTime] = useState(newJobStartTime ?? currentEntry.startTime ?? '');
+  const [jobStartTime, setJobStartTime] = useState(newJobStartTime ?? currentEntry.startTime ?? '07:00');
 
   const filteredBottles = useMemo(() => {
     const query = bottleSearch.trim().toLowerCase();
