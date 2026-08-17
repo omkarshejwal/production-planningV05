@@ -1,363 +1,717 @@
-# 🏭 Vitrum Glass Production Planning System
+# Vitrum Glass — Production Planning ERP
 
-<div align="center">
+A web-based **Production Planning and Scheduling ERP system** developed for **Vitrum Glass** to simplify daily production planning, machine allocation, bottle scheduling, quantity management, packing allocation, and production monitoring.
 
-### Production Planning & Manufacturing Execution Platform for Glass Manufacturing
-
-*A modern, intelligent, and scalable production planning system designed to streamline manufacturing operations, optimize machine utilization, and improve production efficiency.*
-
-![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge\&logo=react)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge\&logo=typescript)
-![Vite](https://img.shields.io/badge/Vite-Latest-646CFF?style=for-the-badge\&logo=vite)
-![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4.x-38B2AC?style=for-the-badge\&logo=tailwind-css)
-![Status](https://img.shields.io/badge/Status-Development-orange?style=for-the-badge)
-
-</div>
+The application provides a centralized production-planning table where users can manage production jobs across multiple machines while viewing important production information in real time.
 
 ---
 
-# 📖 Overview
+## 📌 Overview
 
-The **Vitrum Glass Production Planning System** is an enterprise-grade manufacturing application developed specifically for the glass manufacturing industry.
+The Vitrum Glass Production Planning System is designed to replace manual production planning processes with a fast and interactive digital planning system.
 
-The platform helps production planners create, manage, and monitor manufacturing schedules while optimizing machine capacity, reducing downtime, and ensuring efficient production planning across multiple production lines.
+It allows production planners to:
 
-The application provides an intuitive dashboard for production planning, bottle master management, machine allocation, job scheduling, packing configuration, and real-time production tracking.
-
----
-
-# ✨ Key Features
-
-## 📊 Production Dashboard
-
-* Live production planning overview
-* Machine-wise production status
-* Production timeline visualization
-* Daily production summary
-* Capacity utilization monitoring
-
----
-
-## 🏭 Machine Management
-
-* Support for multiple production machines
-* Machine capacity allocation
-* Automatic job assignment
-* Manual job scheduling
-* Changeover management
-* Machine availability tracking
+* Plan bottle production by date
+* Assign jobs to individual machines
+* Set and modify job start times
+* Define required bottle quantities
+* Calculate estimated completion time
+* Allocate packing quantities
+* Track good-bottle production
+* View machine-wise production details
+* Monitor daily draw
+* Extend or modify existing jobs
+* Remove jobs and automatically reorganize upcoming jobs
+* View detailed production information through tooltips
+* Save planning changes
+* Navigate between months
+* Filter production plans by date
 
 ---
 
-## 🍾 Bottle Master Management
+# 🚀 Main Features
 
-* Centralized bottle database
-* Bottle specification management
-* Capacity configuration
-* Bottle category management
-* Production speed configuration
-* Machine compatibility settings
+## 1. Production Planning Calendar
 
----
+The main Production Planning screen provides a day-by-day production schedule.
 
-## 📅 Production Planning
+Each date contains planning information for:
 
-* Create production jobs
-* Drag-and-drop scheduling
-* Production calendar
-* Manual start/end time adjustment
-* Automatic planning suggestions
-* Conflict detection
+* Machine No. 1
+* Machine No. 2
+* Machine No. 3
+* Machine No. 4
+* Total Daily Draw
+
+Users can easily understand which bottle is running on which machine and for how long.
 
 ---
 
-## 📦 Packing Configuration
+## 2. Machine-Wise Job Planning
 
-* Multiple packing categories
-* Shrink Tray
-* Bottom Tray
-* Naked Packing
-* Pallet Configuration
-* Quantity distribution across packing types
+Production jobs are organized by machine.
 
----
+Each machine displays:
 
-## ⚙ Machine Section Configuration
+| Field       | Description                       |
+| ----------- | --------------------------------- |
+| Bottle Name | Bottle/product being manufactured |
+| Start Time  | Time at which production starts   |
+| Sec         | Cutting/production speed          |
+| Wt          | Bottle weight                     |
+| Cut         | Calculated cut value              |
+| Qty         | Required production quantity      |
+| Draw        | Daily machine draw                |
 
-* Dynamic section configuration
-
-### Machine 1
-
-* 6 Sections
-* 7 Sections
-* 8 Sections
-
-### Machine 2
-
-* 8 Sections
-* 9 Sections
-* 10 Sections
-
-### Machine 3
-
-* 8 Sections
-* 9 Sections
-* 10 Sections
-
-### Machine 4
-
-* 6 Sections
-* 7 Sections
-* 8 Sections
+This allows planners to understand the complete production plan from a single screen.
 
 ---
 
-## 📈 Planning Intelligence
+## 3. Job Start Time
 
-* Production time calculation
-* Automatic completion estimation
-* Machine load balancing
-* Capacity validation
-* Planning conflict alerts
-* Schedule optimization
+The default production start time is:
 
----
+**07:00 AM**
 
-## 📋 Job Management
+Users can change the start time whenever required.
 
-* Create production jobs
-* Edit jobs
-* Delete jobs
-* Duplicate production orders
-* Production priority management
-* Order tracking
+Changing the start time affects the job's production timeline while keeping the existing production calculation logic intact.
+
+The system supports jobs starting at different times during the day.
 
 ---
 
-## 📊 Reports
+## 4. Continuous Production Timing
 
-* Production Summary
-* Machine Utilization
-* Production History
-* Planning Report
-* Downtime Analysis
-* Performance Analytics
+Production timing is calculated based on the actual start time of the job.
 
----
+For example:
 
-# 🛠 Tech Stack
-
-| Technology   | Purpose               |
-| ------------ | --------------------- |
-| React 19     | Frontend Framework    |
-| TypeScript   | Type Safety           |
-| Vite         | Build Tool            |
-| Tailwind CSS | UI Styling            |
-| React Router | Routing               |
-| React Hooks  | State Management      |
-| REST API     | Backend Communication |
-
----
-
-# 📂 Project Structure
-
+```text
+Production Day Start
+        ↓
+     07:00 AM
+        ↓
+Job A starts at 07:00 AM
+        ↓
+Job B starts at 09:00 AM
+        ↓
+Job C starts later
 ```
-vitrum-production-planning/
+
+The system maintains the production timeline so that jobs can be planned continuously throughout the production day.
+
+---
+
+## 5. Bottle Quantity Management
+
+Users can modify the required quantity of an existing job.
+
+For example:
+
+```text
+Original Quantity
+1,000,000 bottles
+
+        ↓
+
+User changes quantity
+
+1,200,000 bottles
+
+        ↓
+
+System updates
+- Completion time
+- Production duration
+- Planning timeline
+- Quantity-related calculations
+```
+
+The updated values are reflected throughout the planning interface.
+
+---
+
+## 6. Packing Allocation
+
+Each production job can have multiple packing categories.
+
+Supported packing categories:
+
+* **ST — Shrink Tray**
+* **SN — Shrink Naked**
+* **SB — Shrink Box**
+* **BT — Bottom Tray**
+
+Users can allocate the required bottle quantity between different packing categories.
+
+Example:
+
+```text
+Total Required Bottles: 1,000,000
+
+Shrink Naked   → 300,000
+Shrink Tray    → 200,000
+Shrink Box     → 50,000
+Bottom Tray    → 450,000
+
+Allocated       → 1,000,000
+Status          → Balanced
+```
+
+The system validates the allocation to ensure that:
+
+**Total Packing Allocation = Total Required Bottles**
+
+---
+
+## 7. Packing Tooltip
+
+Production jobs provide a detailed tooltip containing packing information.
+
+Example:
+
+```text
+BOTTLE
+40 ml Ajanta Export
+
+DAILY GOOD BOTTLES (90%)
+5.10 L (509,911 bottles)
+
+TOTAL REQUIRED BOTTLES
+1,000,000
+
+PACKING ALLOCATION
+SN  Shrink Naked     300,000
+ST  Shrink Tray      200,000
+SB  Shrink Box        50,000
+BT  Bottom Tray      450,000
+
+PALLET PACKING QTY
+100,000
+```
+
+This allows users to quickly inspect production and packing information without opening the edit window.
+
+---
+
+## 8. Good Bottle Calculation
+
+The planning table displays the expected **good-bottle production**.
+
+Good bottles represent the production quantity after applying the configured production efficiency/yield.
+
+The system uses the existing production calculation logic to display the expected good output.
+
+---
+
+## 9. Estimated Completion
+
+When creating or editing a job, the system calculates an estimated completion duration.
+
+Example:
+
+```text
+Required Bottles
+1,000,000
+
+        ↓
+
+Production Calculation
+
+        ↓
+
+Estimated Completion
+≈ 2.80 Days
+```
+
+This helps planners understand how long a job is expected to occupy a machine.
+
+---
+
+## 10. Job Editing
+
+Users can edit an existing production job.
+
+Editable information includes:
+
+* Start Time
+* Bottle Name
+* Required Quantity
+* Packing Allocation
+
+Machine number and other calculated values are displayed according to the selected machine/job configuration.
+
+After editing, users can save the changes using:
+
+**Save Changes**
+
+---
+
+## 11. Job Extension
+
+Users can extend an existing production job without rebuilding the entire monthly plan.
+
+When a job is extended, upcoming production jobs are adjusted according to the updated production timeline.
+
+---
+
+## 12. Job Removal & Automatic Reorganization
+
+If a job is removed from the middle of a production schedule, the system reorganizes the upcoming jobs.
+
+Instead of leaving an unnecessary blank space:
+
+```text
+Before:
+
+Job A
+Job B
+[Removed Job]
+Job C
+Job D
+```
+
+The schedule becomes:
+
+```text
+After:
+
+Job A
+Job B
+Job C
+Job D
+```
+
+This keeps the production schedule continuous and easy to understand.
+
+---
+
+# 📊 Daily Draw
+
+The system calculates the daily **Draw** for production planning.
+
+The Total Draw displayed for each day represents the combined machine production draw according to the application's existing calculation logic.
+
+Conceptually:
+
+```text
+Total Daily Draw
+=
+Machine 1 Draw
++ Machine 2 Draw
++ Machine 3 Draw
++ Machine 4 Draw
++ Applicable Job Changeover Draw
+```
+
+The existing draw formulas are preserved when job timing or quantities are modified.
+
+---
+
+# 📅 Monthly Planning
+
+The system supports month-based production planning.
+
+Users can navigate between:
+
+* Previous Month
+* Current Month
+* Next Month
+
+The planning table automatically displays the corresponding production dates.
+
+Users can also select a custom date range using the filter controls.
+
+---
+
+# 🔎 Production Filters
+
+Production plans can be filtered using:
+
+```text
+From Date
+To Date
+```
+
+After selecting the required date range, users can apply the filter to display only the required planning period.
+
+The **Clear Filter** option restores the complete planning view.
+
+---
+
+# 📋 Production Register
+
+The main production table acts as the Production Register.
+
+It provides a centralized view of:
+
+* Production dates
+* Machine assignments
+* Bottle names
+* Production speed
+* Bottle weight
+* Cut value
+* Required quantity
+* Draw
+* Start time
+* Job status
+* Packing information
+
+This makes the production schedule easier for planners and production teams to monitor.
+
+---
+
+# 💾 Data Management
+
+The application is designed to provide fast interaction while minimizing unnecessary server requests.
+
+Production planning data can be maintained on the frontend while the user is making changes.
+
+Changes are persisted when the user saves the relevant job/planning data.
+
+This approach helps provide:
+
+* Faster UI interaction
+* Real-time editing
+* Reduced unnecessary API calls
+* Better planning performance
+* Smoother user experience
+
+Persistent production data can be stored in the application's backend database.
+
+---
+
+# 🖥️ User Interface
+
+The application uses a clean ERP-style interface designed for production planners.
+
+### Main UI Sections
+
+* Vitrum Glass branding
+* Production Planning navigation
+* Monthly navigation
+* Date filters
+* Production Register
+* Machine-wise production columns
+* Job action buttons
+* Edit Job modal
+* Packing allocation interface
+* Production tooltips
+* Daily Draw display
+
+The interface is designed to keep a large amount of production information visible without requiring users to navigate through multiple pages.
+
+---
+
+# 🏭 Machine Planning Structure
+
+The current planning interface supports four machines:
+
+```text
+                 Production Planning
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+   Machine No. 1    Machine No. 2    Machine No. 3
+        │                │                │
+        └────────────────┼────────────────┘
+                         │
+                   Machine No. 4
+```
+
+Each machine maintains its own production schedule.
+
+---
+
+# 🧩 Production Job Structure
+
+A production job can be represented conceptually as:
+
+```text
+Production Job
+│
+├── Date
+├── Machine
+├── Bottle
+├── Start Time
+├── Required Quantity
+├── Production Speed
+├── Bottle Weight
+├── Cut Value
+├── Estimated Duration
+├── Estimated Completion
+├── Good Bottle Quantity
+├── Packing Allocation
+│   ├── Shrink Tray
+│   ├── Shrink Naked
+│   ├── Shrink Box
+│   └── Bottom Tray
+└── Draw
+```
+
+---
+
+# 🛠️ Technology Stack
+
+The application is built using modern web technologies.
+
+### Frontend
+
+* React.js
+* JavaScript / TypeScript
+* HTML5
+* CSS3
+* Responsive UI components
+
+### Backend / Database
+
+* REST API
+* PostgreSQL
+* Server-side data persistence
+
+### Infrastructure
+
+* AWS
+* Local development environment
+
+### Development Tools
+
+* Git
+* GitHub
+* VS Code
+* npm
+
+---
+
+# 📁 Suggested Project Structure
+
+```text
+vitrum-glass-production-planning/
+│
+├── src/
+│   ├── components/
+│   │   ├── ProductionTable/
+│   │   ├── MachinePlanning/
+│   │   ├── JobModal/
+│   │   ├── PackingAllocation/
+│   │   ├── ProductionTooltip/
+│   │   └── Filters/
+│   │
+│   ├── pages/
+│   │   └── ProductionPlanning/
+│   │
+│   ├── services/
+│   │   └── api/
+│   │
+│   ├── utils/
+│   │   ├── calculations/
+│   │   ├── production/
+│   │   └── packing/
+│   │
+│   ├── hooks/
+│   │
+│   └── App.*
 │
 ├── public/
 │
-├── src/
-│   ├── assets/
-│   ├── components/
-│   ├── pages/
-│   ├── layouts/
-│   ├── hooks/
-│   ├── services/
-│   ├── utils/
-│   ├── context/
-│   ├── types/
-│   ├── styles/
-│   └── App.tsx
-│
+├── .env
 ├── package.json
-├── vite.config.ts
-├── tsconfig.json
 └── README.md
 ```
 
 ---
 
-# 🚀 Getting Started
+# ⚙️ Installation
 
-## Prerequisites
-
-* Node.js 20+
-* npm
-* Git
-
----
-
-## Installation
-
-Clone the repository
+## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/vitrum-production-planning.git
+git clone <repository-url>
+cd vitrum-glass-production-planning
 ```
 
-Go into the project directory
-
-```bash
-cd vitrum-production-planning
-```
-
-Install dependencies
+## 2. Install Dependencies
 
 ```bash
 npm install
 ```
 
-Install backend dependencies
+## 3. Configure Environment Variables
 
-```bash
-cd Backend
-pip install -r requirements.txt
+Create a `.env` file according to the project's backend/API configuration.
+
+Example:
+
+```env
+VITE_API_URL=http://localhost:8000
 ```
 
-Create the backend environment file
-
-```bash
-cp Backend/.env.example Backend/.env
-```
-
-Start the backend API
-
-```bash
-cd Backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Start the frontend development server
-
-```bash
-npm run dev
-```
-
-Open your browser
-
-```
-http://localhost:3000
-```
-
-The backend defaults to a local SQLite database, so the app can run without any external database setup. To use PostgreSQL instead, set `DATABASE_URL` in `Backend/.env`.
+Add the required database/backend environment variables on the server side.
 
 ---
 
-# 📦 Available Scripts
+# ▶️ Run the Application
+
+Start the development server:
 
 ```bash
 npm run dev
 ```
 
-Runs the application in development mode.
+The application will be available through the local development URL shown by the development server.
+
+---
+
+# 🏗️ Production Build
+
+Create a production build:
 
 ```bash
 npm run build
 ```
 
-Builds the application for production.
+Preview the production build:
 
 ```bash
 npm run preview
 ```
 
-Previews the production build.
+---
 
-```bash
-npm run lint
-```
+# 🔐 Data & Security
 
-Runs the TypeScript check.
+Production planning data should be protected through:
+
+* User authentication
+* Role-based authorization
+* API validation
+* Database constraints
+* Secure environment variables
+* Server-side validation
+* Protected production APIs
+
+Database credentials and API secrets must never be committed to GitHub.
 
 ---
 
-# 🎯 Modules
+# 👥 User Roles
 
-* Dashboard
-* Production Planning
+The ERP can support different roles such as:
+
+### Admin
+
+* Manage users
+* Manage machines
+* Manage bottle master data
+* Manage production settings
+* Access complete planning data
+
+### Editor / Planner
+
+* Create production jobs
+* Edit production jobs
+* Change quantities
+* Change start times
+* Allocate packing
+* Extend jobs
+* Remove jobs
+* Save production plans
+
+### Viewer
+
+* View production schedules
+* View machine plans
+* View quantities
+* View draw
+* View packing information
+
+---
+
+# 🎯 Objectives
+
+The main objectives of the Vitrum Glass Production Planning ERP are:
+
+1. Digitize production planning.
+2. Reduce manual planning work.
+3. Improve machine utilization.
+4. Provide accurate production timelines.
+5. Simplify bottle quantity management.
+6. Improve packing allocation visibility.
+7. Provide accurate daily production information.
+8. Make production changes easy and fast.
+9. Reduce planning errors.
+10. Provide a centralized production planning system.
+
+---
+
+# 🔮 Future Enhancements
+
+Possible future modules include:
+
+* Production Dashboard
+* Machine Utilization
+* Production Reports
 * Bottle Master
 * Machine Master
-* Job Management
-* Planning Calendar
-* Packing Management
-* Reports
-* Settings
+* Packing Master
+* Production History
+* User Management
+* Role & Permission Management
+* Shift Management
+* Downtime Management
+* Changeover Management
+* Production vs Target Reports
+* Export to Excel/PDF
+* Advanced production analytics
+* Audit logs
+* Notifications
+* ERP-wide reporting
 
 ---
 
-# 🔐 Planned Features
+# 📈 Future ERP Modules
 
-* User Authentication
-* Role-Based Access Control
-* Real-Time Production Monitoring
-* ERP Integration
-* Inventory Management
-* Quality Control Module
-* Maintenance Planning
-* Excel Import/Export
-* Production KPI Dashboard
-* Notification System
-* Audit Logs
-* Mobile Responsive Interface
+The Production Planning module can become part of a complete Vitrum Glass ERP:
+
+```text
+                    VITRUM GLASS ERP
+                           │
+       ┌───────────────────┼───────────────────┐
+       │                   │                   │
+   Production          Inventory          Employees
+       │                   │                   │
+   Planning            Materials          Attendance
+   Scheduling          Stock              Payroll
+   Machines            Purchases
+   Packing
+       │
+       └───────────────┬───────────────────────
+                       │
+                  Reports & Analytics
+```
 
 ---
 
-# 🌟 Project Goals
+# 🤝 Development
 
-* Improve production planning efficiency
-* Reduce machine idle time
-* Optimize manufacturing schedules
-* Minimize production conflicts
-* Increase overall equipment utilization
-* Simplify production planning workflow
-* Deliver a modern user experience for manufacturing teams
+This project is developed for **Vitrum Glass** with the goal of creating a practical, fast, and user-friendly production management system.
 
----
-
-# 🤝 Contributing
-
-1. Create a feature branch
-
-```bash
-git checkout -b feature/your-feature
-```
-
-2. Commit your changes
-
-```bash
-git commit -m "Add your feature"
-```
-
-3. Push the branch
-
-```bash
-git push origin feature/your-feature
-```
-
-4. Create a Pull Request
+Development follows a modular approach so that new ERP modules can be added without affecting the existing production-planning functionality.
 
 ---
 
 # 📄 License
 
-This project is proprietary software developed for **Vitrum Glass**. Unauthorized copying, distribution, or modification without permission is prohibited.
+This application is intended for internal use by **Vitrum Glass**.
+
+All rights reserved.
 
 ---
 
-# 👨‍💻 Developer
+## Vitrum Glass
 
-**Ashish Mankar**
+**Production Planning ERP System**
 
-Frontend Developer
-
-Built with ❤️ for **Vitrum Glass Production Planning**.
+> Plan smarter. Produce efficiently. Manage production in real time.
