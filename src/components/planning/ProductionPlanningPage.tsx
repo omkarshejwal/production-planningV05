@@ -300,7 +300,7 @@ export const ProductionPlanningPage: React.FC = () => {
       const bottle = bottles.find(b => b.id === job.bottleId || b.id === (job as any).bottle_id);
       const product = bottle ? bottle.name : (job.bottleId ? `Bottle ${job.bottleId}` : '');
 
-      
+
       const packagingRows = (job as any).packaging || [];
       const packAllocations: Record<string, number> = {};
       let packCat = '';
@@ -557,6 +557,28 @@ export const ProductionPlanningPage: React.FC = () => {
 
       const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
       console.log("[SAVE] createProductionJobsBatch result:", batchResult);
+
+      // Clean up stale DB rows: jobs that exist in the DB but are no longer
+      // in the current grid state (e.g. user deleted a job, or extend shifted
+      // a job to a new position).  Without this step, deleted jobs would
+      // reappear on the next refresh because the upsert only creates/updates.
+      const currentKeys = new Set(
+        payloadRows.map(r => `${r.plan_date}|${r.machine_no}|${r.start_time}`)
+      );
+      const dbJobs = planningRepository.getProductionJobs();
+      const staleJobs = dbJobs.filter(j => {
+        const key = `${j.plan_date}|${j.machine_no}|${j.start_time}`;
+        return !currentKeys.has(key);
+      });
+      if (staleJobs.length > 0) {
+        console.log(`[SAVE] Cleaning up ${staleJobs.length} stale job(s) from DB`);
+        await Promise.all(
+          staleJobs.map(j =>
+            planningRepository.deleteProductionJob(j.plan_date, j.machine_no, j.start_time)
+          )
+        );
+      }
+
       // Re-fetch scoped to the active window so the grid reflects saved data
       reloadJobsForWindow(appliedFromDate, appliedToDate);
       setIsDirty(false);
@@ -594,10 +616,17 @@ export const ProductionPlanningPage: React.FC = () => {
       toast.error('From Date cannot be greater than To Date.');
       return;
     }
+    if (isDirty) {
+      const ok = window.confirm(
+        'You have unsaved changes that will be lost when changing the date range. Discard them?'
+      );
+      if (!ok) return;
+    }
     setFromDate(draftFromDate);
     setToDate(draftToDate);
     setAppliedFromDate(draftFromDate);
     setAppliedToDate(draftToDate);
+    setIsDirty(false);
     // Trigger a fresh scoped fetch for the custom range
     if (draftFromDate && draftToDate) {
       reloadJobsForWindow(draftFromDate, draftToDate);
@@ -637,6 +666,12 @@ export const ProductionPlanningPage: React.FC = () => {
   }, [selectedMonth, fromDate, toDate, draftFromDate, draftToDate, appliedFromDate, setFromDate, setToDate, setSelectedMonth]);
 
   const switchToMonth = (targetMonth: string) => {
+    if (isDirty) {
+      const ok = window.confirm(
+        'You have unsaved changes that will be lost when switching months. Discard them?'
+      );
+      if (!ok) return;
+    }
     const normalized = normalizeMonthKey(targetMonth);
     const { monthStart, monthEnd } = getMonthRange(normalized);
     setSelectedMonth(normalized);
@@ -646,6 +681,7 @@ export const ProductionPlanningPage: React.FC = () => {
     setToDate(monthEnd);
     setAppliedFromDate(monthStart);
     setAppliedToDate(monthEnd);
+    setIsDirty(false);
     // Trigger a fresh scoped fetch for the new month
     reloadJobsForWindow(monthStart, monthEnd);
   };
@@ -888,47 +924,88 @@ export const ProductionPlanningPage: React.FC = () => {
     }
   };
 
-  // Extend the selected job by N days. The backend inserts a continuation row
-  // for the job (using its actual daily production window) and cascades the
-  // shift through every subsequent job on this machine — preserving their
-  // order, quantity, machine, bottle, section and speed. The grid is then
-  // refreshed from the database response so the schedule matches exactly what
-  // was saved. `completedIndex` targets an ended job in the completed list.
-  const handleExtendJob = async (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
-    const planDate = dateRows[rowIdx]?.isoDate;
-    if (!planDate) {
-      toast.error('Could not determine the job date.');
-      return;
-    }
-
-    let startTime: string | undefined;
-    if (completedIndex !== undefined) {
-      startTime = completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]?.startTime;
-    } else {
-      startTime = machineLists[mIdx]?.[rowIdx]?.startTime;
-    }
-    if (!startTime) {
-      toast.error('Cannot extend: job start time is missing.');
-      return;
-    }
-
+  // Extend the selected job by N days entirely in local state.
+  // Creates continuation rows for the job on subsequent days and shifts every
+  // following job on the same machine forward — preserving order, quantity,
+  // machine, bottle, section and speed. The changes are persisted when the
+  // user clicks Save. `completedIndex` targets an ended job in the completed list.
+  const handleExtendJob = (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
     const daysToAdd = Math.max(1, Math.min(10, Math.floor(days) || 1));
-    const result = await planningRepository.extendProductionJob({
-      plan_date: planDate,
-      machine_no: `MAC-${String(mIdx + 1).padStart(2, '0')}`,
-      start_time: startTime,
-      days: daysToAdd,
+    const list = machineLists[mIdx];
+    if (!list || rowIdx < 0 || rowIdx >= list.length) return;
+
+    // Identify the source entry
+    const sourceEntry = completedIndex !== undefined
+      ? completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]
+      : list[rowIdx];
+    if (!sourceEntry || sourceEntry.product === 'None') {
+      toast.error('Cannot extend: no job found.');
+      return;
+    }
+
+    // 1. Build continuation entries (same bottle/specs, new day slots)
+    const continuations: MachineEntry[] = Array.from({ length: daysToAdd }, () => ({
+      ...sourceEntry,
+      eid: Math.random(),
+      startTime: sourceEntry.startTime,
+      endTime: '',
+      status: 'running' as const,
+    }));
+
+    // 2. Shift machineLists entries forward by daysToAdd
+    updateMachineLists(prev => {
+      const next = [...prev] as MachineLists;
+      const origList = [...next[mIdx]];
+      const newList: MachineEntry[] = new Array(origList.length);
+
+      // Copy unchanged prefix (including the source job itself)
+      for (let i = 0; i <= rowIdx && i < origList.length; i++) {
+        newList[i] = origList[i];
+      }
+      // Insert continuation entries
+      for (let d = 0; d < daysToAdd; d++) {
+        const targetIdx = rowIdx + 1 + d;
+        if (targetIdx < newList.length) {
+          newList[targetIdx] = continuations[d];
+        }
+      }
+      // Shift remaining entries forward
+      for (let i = rowIdx + 1; i < origList.length; i++) {
+        const targetIdx = i + daysToAdd;
+        if (targetIdx < newList.length) {
+          newList[targetIdx] = origList[i];
+        }
+      }
+      // Fill any unassigned slots with blanks
+      for (let i = 0; i < newList.length; i++) {
+        if (!newList[i]) newList[i] = makeNoneEntry(mIdx);
+      }
+
+      next[mIdx] = newList;
+      return next;
     });
 
-    if (!result.ok) {
-      toast.error(result.error || 'Failed to extend production job.');
-      return;
-    }
+    // 3. Shift completedJobMap keys forward by daysToAdd
+    setCompletedJobMap(prev => {
+      const nextMap: CompletedJobMap = {};
+      for (const [key, entries] of Object.entries(prev)) {
+        const [kMIdx, kRowIdx] = key.split('-').map(Number);
+        if (kMIdx !== mIdx || kRowIdx <= rowIdx) {
+          nextMap[key] = entries; // unchanged
+        } else {
+          const newRowIdx = kRowIdx + daysToAdd;
+          if (newRowIdx < dateRows.length) {
+            nextMap[`${mIdx}-${newRowIdx}`] = entries;
+          }
+        }
+      }
+      return nextMap;
+    });
 
-    // Refresh the schedule from the database so every shifted job is shown
-    // exactly as it was recalculated and saved.
-    reloadJobsForWindow(appliedFromDate, appliedToDate);
-    toast.success(`Job extended by ${daysToAdd} day${daysToAdd === 1 ? '' : 's'}. All following jobs were shifted.`);
+    setIsDirty(true);
+    toast.success(
+      `Job extended by ${daysToAdd} day${daysToAdd === 1 ? '' : 's'}. All following jobs were shifted.`
+    );
   };
 
   // Remove blank entry at rowIdx from machine mIdx only
@@ -1019,9 +1096,9 @@ export const ProductionPlanningPage: React.FC = () => {
     setEditModal({ mIdx, rowIdx, newJobStartTime: newStartTime });
   };
 
-  const handleSave = async (payload: EditSavePayload) => {
+  const handleSave = (payload: EditSavePayload) => {
     if (!editModal) return;
-    const { bottle, packingCategory, packingAllocations, palletPacking, palletPackingQty, requiredBottles, section, startTime, productionHours } = payload;
+    const { bottle, packingCategory, packingAllocations, palletPacking, palletPackingQty, requiredBottles, section, startTime } = payload;
     const cut = bottle.speeds > 0 ? bottle.speeds : 0;
     const qty = calcQty(cut, editModal.mIdx + 1);
     const requiredQtyValue = requiredBottles && requiredBottles > 0 ? requiredBottles : qty;
@@ -1041,93 +1118,7 @@ export const ProductionPlanningPage: React.FC = () => {
       requiredBottles: requiredBottles ?? null,
       section,
       startTime: startTime || undefined,
-      productionHours: productionHours ?? null,
     };
-
-    // Capture the old start time before in-memory update (for DB upsert key)
-    const mIdx = editModal.mIdx;
-    const rowIdx = editModal.rowIdx;
-    const existingEntry = editModal.completedIndex !== undefined
-      ? (completedJobMap[`${mIdx}-${rowIdx}`] ?? [])[editModal.completedIndex]
-      : machineLists[mIdx][rowIdx];
-    const oldStartTime = existingEntry?.startTime || '07:00';
-    const newStartTime = startTime || '07:00';
-
-    // Build the merged entry for payload construction
-    const mergedEntry: MachineEntry = { ...existingEntry, ...updatedFields } as MachineEntry;
-
-    // ── Immediate DB persistence ────────────────────────────────────
-    try {
-      const planDate = dateRows[rowIdx]?.isoDate;
-      const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-
-      const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-      const bottleRow = bottles.find(b => normalize(b.name) === normalize(mergedEntry.product));
-
-      if (planDate && bottleRow && mergedEntry.product !== 'None') {
-        const metrics = calcProductionMetrics(mergedEntry.cut, mergedEntry.wt, mIdx + 1);
-        const hourlyQty = metrics.totalQuantity / 24;
-        const segHours = productionHours != null && productionHours > 0
-          ? productionHours
-          : (hourlyQty > 0 ? mergedEntry.qty / hourlyQty : 0);
-
-        const startParts = newStartTime.split(':').map(Number);
-        const startMins = startParts[0] * 60 + startParts[1];
-        const totalMins = startMins + (segHours * 60);
-        const estH = Math.floor(totalMins / 60) % 24;
-        const estM = Math.round(totalMins % 60);
-        const estCompletion = `${String(estH).padStart(2, '0')}:${String(estM).padStart(2, '0')}`;
-
-        // Build packaging rows
-        const packagingRows: any[] = [];
-        if (mergedEntry.packingAllocations && Object.keys(mergedEntry.packingAllocations).length > 0) {
-          for (const [type, q] of Object.entries(mergedEntry.packingAllocations)) {
-            packagingRows.push({
-              packaging_type: type,
-              quantity: q,
-              pallet_packing: mergedEntry.palletPacking || false,
-              pallet_quantity: mergedEntry.palletPackingQty || null,
-            });
-          }
-        } else if (mergedEntry.packingCategory) {
-          packagingRows.push({
-            packaging_type: mergedEntry.packingCategory,
-            quantity: mergedEntry.qty,
-            pallet_packing: mergedEntry.palletPacking || false,
-            pallet_quantity: mergedEntry.palletPackingQty || null,
-          });
-        }
-
-        const payload: ProductionJobRow = {
-          plan_date: planDate,
-          machine_no: machineNo,
-          bottle_id: bottleRow.id,
-          section: mergedEntry.section || (mIdx === 0 || mIdx === 3 ? 8 : 10),
-          weight: mergedEntry.wt,
-          speeds: mergedEntry.cut,
-          draw: mergedEntry.draw,
-          quantity: mergedEntry.qty,
-          requiredBottles: mergedEntry.requiredBottles ?? undefined,
-          production_hours: Number(segHours.toFixed(2)),
-          start_time: newStartTime,
-          estimated_completion: estCompletion,
-          completion_time: mergedEntry.status === 'completed' ? (mergedEntry.endTime || estCompletion) : undefined,
-          changeover_minutes: 0,
-          status: mergedEntry.status === 'completed' ? 'Completed' : 'Planned',
-          packaging: packagingRows,
-        } as any;
-
-        // If start time changed, delete the old record first (upsert key includes start_time)
-        if (oldStartTime !== newStartTime) {
-          await planningRepository.deleteProductionJob(planDate, machineNo, oldStartTime).catch(() => {});
-        }
-        await planningRepository._postJob(payload);
-        reloadJobsForWindow(appliedFromDate, appliedToDate);
-      }
-    } catch (e) {
-      console.error('Immediate persist failed:', e);
-      toast.error('Failed to save changes to database.');
-    }
 
     if (editModal.completedIndex !== undefined) {
       // Editing a COMPLETED job entry — write back to the completed map
@@ -1593,13 +1584,12 @@ export const ProductionPlanningPage: React.FC = () => {
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                   <span className={txt}>{completedJob.speeds || '—'}</span>
                                 </td>
-                                {/* Qty — Good Bottles (90%) */}
+                                {/* Qty */}
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                   <span className="text-sm font-medium text-[#111827]">
                                     {(() => {
                                       const cQty = getDailyProducedQty(rowIdx, completedJob, mIdx);
-                                      const gb = calcGoodBottles(cQty);
-                                      return gb > 0 ? `${(gb / 100000).toFixed(2)}L` : '—';
+                                      return formatLakh(cQty);
                                     })()}
                                   </span>
                                 </td>
@@ -1741,14 +1731,13 @@ export const ProductionPlanningPage: React.FC = () => {
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 <span className="text-sm text-[#6B7280]">{hasProduct ? (entry.speeds || '—') : ''}</span>
                               </td>
-                              {/* Qty — Good Bottles (90%) */}
+                              {/* Qty */}
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 <span className="text-sm font-medium text-[#111827]">
                                   {hasProduct
                                     ? (() => {
                                       const rQty = getDailyProducedQty(rowIdx, entry, mIdx);
-                                      const gb = calcGoodBottles(rQty);
-                                      return gb > 0 ? `${(gb / 100000).toFixed(2)}L` : '—';
+                                      return formatLakh(rQty);
                                     })()
                                     : ''}
                                 </span>
@@ -1838,17 +1827,40 @@ export const ProductionPlanningPage: React.FC = () => {
         cancelLabel="Cancel"
         isDanger={true}
         requireWord={deleteModal?.isCompleted ? "DELETE" : undefined}
-        onConfirm={async () => {
+        onConfirm={() => {
           if (!deleteModal) return;
-          const { planDate, machineNo, startTime } = deleteModal;
-          const res = await planningRepository.deleteProductionJob(planDate, machineNo, startTime);
-          if (res.ok) {
-            // Re-fetch scoped to the active window after delete
-            reloadJobsForWindow(appliedFromDate, appliedToDate);
-            toast.success("Job deleted successfully.");
-          } else {
-            toast.error(res.error || "Failed to delete job");
+          const { planDate, machineNo, startTime, isCompleted } = deleteModal;
+
+          // Derive mIdx from machineNo (same convention used elsewhere)
+          const mIdx = parseInt(machineNo.replace('MAC-', ''), 10) - 1;
+          const rowIdx = dateRows.findIndex(r => r.isoDate === planDate);
+          if (mIdx < 0 || mIdx > 3 || rowIdx === -1) {
+            toast.error('Could not locate the job in the grid.');
+            setDeleteModal(null);
+            return;
           }
+
+          if (isCompleted) {
+            // Remove the completed entry from completedJobMap
+            const key = `${mIdx}-${rowIdx}`;
+            setCompletedJobMap(prev => {
+              const list = prev[key] ?? [];
+              const nextList = list.filter(e => e.startTime !== startTime);
+              return { ...prev, [key]: nextList };
+            });
+          } else {
+            // Replace the running job with a blank entry
+            updateMachineLists(prev => {
+              const next = [...prev] as MachineLists;
+              const list = [...next[mIdx]];
+              list[rowIdx] = makeNoneEntry(mIdx);
+              next[mIdx] = list;
+              return next;
+            });
+          }
+
+          setIsDirty(true);
+          toast.success('Job removed from schedule.');
           setDeleteModal(null);
         }}
         onCancel={() => setDeleteModal(null)}
@@ -1893,9 +1905,13 @@ export const ProductionPlanningPage: React.FC = () => {
         );
 
 
-        // Packing allocation
-        const packing = entry.packingAllocations
-          ? Object.entries(entry.packingAllocations)
+        // Packing allocation data preparation
+        const packingAllocationsData = typeof entry?.packingAllocations === 'string'
+          ? JSON.parse(entry.packingAllocations)
+          : entry?.packingAllocations;
+
+        const packing = packingAllocationsData && typeof packingAllocationsData === 'object'
+          ? Object.entries(packingAllocationsData)
           : [];
 
         const packingNames: Record<string, string> = {
@@ -1904,7 +1920,6 @@ export const ProductionPlanningPage: React.FC = () => {
           SB: 'Shrink Box',
           BT: 'Bottom Tray'
         };
-
         return (
           <div
             className="pointer-events-none fixed z-9999"

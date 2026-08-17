@@ -319,6 +319,8 @@ def delete_job(
 ):
     """
     Delete a production job and its associated packaging rows.
+    All subsequent jobs on the same machine are shifted backward to
+    close the gap so the schedule stays continuous.
     """
     existing_job = db.query(ProductionJob).filter_by(
         plan_date=plan_date,
@@ -329,14 +331,80 @@ def delete_job(
     if not existing_job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Clear packaging for this job
+    # Snapshot the deleted job's timing before removal
+    deleted_start = existing_job.start_time
+    deleted_plan = existing_job.plan_date
+
+    # ── 1. Delete the job to vacate its slot ──────────────────────────────────
     db.query(JobPackaging).filter_by(
         plan_date=plan_date,
         machine_no=machine_no,
         start_time=start_time
     ).delete()
-    db.flush()  # Force DELETE to execute before job deletion
+    db.flush()
 
-    # Delete the job
     db.delete(existing_job)
+    db.flush()
+
+    # ── 2. Shift every subsequent job on this machine backward ────────────────
+    # Fresh query so we read from the DB state that already excludes the
+    # deleted row.
+    subsequent = (
+        db.query(ProductionJob)
+        .filter(
+            ProductionJob.machine_no == machine_no,
+            or_(
+                ProductionJob.plan_date > deleted_plan,
+                and_(
+                    ProductionJob.plan_date == deleted_plan,
+                    ProductionJob.start_time > deleted_start,
+                ),
+            ),
+        )
+        .order_by(ProductionJob.plan_date, ProductionJob.start_time)
+        .all()
+    )
+
+    if subsequent:
+        # The gap to close is the time between the deleted job's start
+        # and the next job's start.  Shifting every subsequent job backward
+        # by this amount makes the first remaining job start exactly where
+        # the deleted job used to start.
+        delta = subsequent[0].start_time - deleted_start
+
+        for job in subsequent:
+            new_start = job.start_time - delta
+            new_plan = new_start.date()
+
+            db.query(JobPackaging).filter_by(
+                plan_date=job.plan_date,
+                machine_no=machine_no,
+                start_time=job.start_time,
+            ).update(
+                {"plan_date": new_plan, "start_time": new_start},
+                synchronize_session=False,
+            )
+            db.flush()
+
+            db.query(ProductionJob).filter_by(
+                plan_date=job.plan_date,
+                machine_no=machine_no,
+                start_time=job.start_time,
+            ).update(
+                {
+                    "plan_date": new_plan,
+                    "start_time": new_start,
+                    "estimated_completion": (
+                        (job.estimated_completion - delta)
+                        if job.estimated_completion else None
+                    ),
+                    "completion_time": (
+                        (job.completion_time - delta)
+                        if job.completion_time else None
+                    ),
+                },
+                synchronize_session=False,
+            )
+            db.flush()
+
     db.commit()
