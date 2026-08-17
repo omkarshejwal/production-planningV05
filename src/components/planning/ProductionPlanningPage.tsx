@@ -274,6 +274,16 @@ export const ProductionPlanningPage: React.FC = () => {
     });
   }, [selectedMonth, appliedFromDate, appliedToDate]);
 
+  // Set of row indices whose date falls on a Sunday (day 0)
+  const sundayRowIndices = useMemo(() => {
+    const s = new Set<number>();
+    dateRows.forEach((dr, idx) => {
+      const [y, m, d] = dr.isoDate.split('-').map(Number);
+      if (new Date(y, m - 1, d).getDay() === 0) s.add(idx);
+    });
+    return s;
+  }, [dateRows]);
+
   const [machineLists, setMachineLists] = useState<MachineLists>(INITIAL_MACHINE_LISTS);
   const [completedJobMap, setCompletedJobMap] = useState<CompletedJobMap>({});
 
@@ -1427,7 +1437,12 @@ export const ProductionPlanningPage: React.FC = () => {
               <tbody>
                 {filteredRowIndices.flatMap((rowIdx, displayIdx) => {
                   const dateRow = dateRows[rowIdx];
-                  const baseBg = displayIdx % 2 === 0 ? 'bg-white' : 'bg-[#F8FAFC]';
+                  const isSunday = sundayRowIndices.has(rowIdx);
+                  const baseBg = isSunday
+                    ? 'bg-[#fcfc05]'
+                    : displayIdx % 2 === 0
+                      ? 'bg-white'
+                      : 'bg-[#F8FAFC]';
 
                   const fmtTime = (t?: string) => {
                     if (!t) return '—';
