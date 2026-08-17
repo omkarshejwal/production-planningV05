@@ -91,6 +91,7 @@ export interface ProductionJob {
   sequenceNumber?: number; // Vertical stack order inside machine-day cell
   lifecycleStatus?: PlanningLifecycleStatus;
   locked?: boolean;
+  packaging?: { packaging_type: string; quantity: number; pallet_packing: string; pallet_quantity: number; }[];
 }
 
 export interface DailyPlanningEntry {

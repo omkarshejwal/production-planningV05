@@ -279,7 +279,7 @@ export function makeBlankEntry(mIdx = 0): MachineEntry {
 }
 
 export function makeNoneEntry(mIdx = 0): MachineEntry {
-  return { eid: nextEid(), product: "None", wt: 0, speeds: 0, cut: 0, draw: 0, qty: 0, salesExec: "", packingCategory: "", palletPacking: null, section: MAX_SECTIONS(mIdx) };
+  return { eid: nextEid(), product: "None", wt: 0, speeds: 0, cut: 0, draw: 0, qty: 0, salesExec: "", packingCategory: "", palletPacking: null, section: MAX_SECTIONS(mIdx), startTime: '07:00' };
 }
 
 // ─── Initial Data ─────────────────────────────────────────────────────────────

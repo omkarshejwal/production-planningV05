@@ -353,6 +353,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         lifecycleStatus: row.status === 'Completed' ? 'COMPLETED' : 'ACTIVE',
         locked: row.status === 'Completed',
         changeoverHours: (row.changeover_minutes || 0) / 60,
+        packaging: row.packaging,
       };
     });
   }, [plannerVersion]);

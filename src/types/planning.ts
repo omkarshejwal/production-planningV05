@@ -26,6 +26,7 @@ export interface MachineEntry {
   section?: number;
   startTime?: string; // "HH:MM" 24-h
   endTime?: string; // set when job is completed
+  productionHours?: number | null; // user-overridden production duration in hours
   status?: "running" | "completed";
 }
 
@@ -51,4 +52,5 @@ export interface EditSavePayload {
   requiredBottles: number | null;
   section: number;
   startTime: string;
+  productionHours: number | null;
 }
