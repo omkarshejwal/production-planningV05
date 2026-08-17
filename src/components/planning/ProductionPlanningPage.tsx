@@ -1439,7 +1439,7 @@ export const ProductionPlanningPage: React.FC = () => {
                   const dateRow = dateRows[rowIdx];
                   const isSunday = sundayRowIndices.has(rowIdx);
                   const baseBg = isSunday
-                    ? 'bg-[#fcfc05]'
+                    ? 'bg-[#ffe4b7]'
                     : displayIdx % 2 === 0
                       ? 'bg-white'
                       : 'bg-[#F8FAFC]';
