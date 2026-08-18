@@ -73,8 +73,10 @@ def seed_schedule(db):
     b2 = make_job(db, "2026-08-11", "07:00")
     c1 = make_job(db, "2026-08-12", "07:00")
     c2 = make_job(db, "2026-08-13", "07:00")
+    db.flush()  # Populate job_ids
     # Packaging on a subsequent job must shift along with it.
     db.add(JobPackaging(
+        job_id=b1.job_id,
         plan_date=date(2026, 8, 10),
         machine_no=1,
         bottle_id=111,
