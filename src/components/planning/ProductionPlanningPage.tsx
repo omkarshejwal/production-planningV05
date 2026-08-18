@@ -40,6 +40,7 @@ import {
   calcQty,
   calculateDailyDrawForEntries,
   calculateDrawForProductionDay,
+  calculateQuantityForProductionDay,
   lookupSpeed,
   makeNoneEntry,
 } from '../../utils/planningCalculations';
@@ -1196,10 +1197,17 @@ export const ProductionPlanningPage: React.FC = () => {
   // Produced quantity for a job on a given day — derived from the same
   // production-hours model as the Draw column (draw = wt × qty / 1e6).
   const getDailyProducedQty = (rowIdx: number, entry: MachineEntry | null | undefined, mIdx: number) => {
-    const draw = getDrawForDateRow(rowIdx, entry, mIdx);
-    const wt = Number(entry?.wt) || 0;
-    if (draw <= 0 || wt <= 0) return 0;
-    return (draw * 1_000_000) / wt;
+    if (!entry || entry.isBlank || !entry.product || entry.product === 'None') return 0;
+    const rowDate = dateRows[rowIdx]?.date;
+    if (!rowDate) return 0;
+    const rowDateValue = parseDisplayDate(rowDate);
+    const dayValue = rowDateValue || new Date();
+    const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
+    return calculateQuantityForProductionDay(
+      dayValue,
+      { ...entry, qty: requiredQty, requiredBottles: entry.requiredBottles },
+      `MAC-${String(mIdx + 1).padStart(2, '0')}`
+    );
   };
 
   // Format a bottle count in lakhs, e.g. 341000 → "3.41L".

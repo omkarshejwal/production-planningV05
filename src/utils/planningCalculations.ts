@@ -1,6 +1,6 @@
 import { BottleEntry, DateRow, MachineEntry, MachineLists } from '../types/planning';
 import { BOTTLE_SPEEDS, MACHINE_BOTTLES, NONE_ENTRY } from '../data/bottleReference';
-import { calculateDraw, calculateProductionMetrics } from './calculations';
+import { calculateDraw, calculateProductionMetrics, resolveMachineGob } from './calculations';
 
 export const PRODUCTION_DAY_START_HOUR = 7;
 export const PRODUCTION_DAY_DURATION_HOURS = 24;
@@ -116,6 +116,34 @@ export function calculateDrawForProductionDay(
   const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
   const effectiveHours = Math.min(productionHours, idleHours + hoursNeededToMeetQty);
   return calculateDrawForProductionHours(entry.cut, entry.wt, effectiveHours, machineNo);
+}
+
+export function calculateQuantityForProductionDay(
+  dayValue: Date | string,
+  entry: Pick<MachineEntry, 'cut' | 'wt' | 'qty' | 'requiredBottles' | 'startTime' | 'endTime'>,
+  machineNo?: string | number
+): number {
+  const { windowEnd } = getProductionDayWindow(dayValue);
+  const jobStartTime = buildDateTime(dayValue, entry.startTime || '07:00');
+  const productionEnd = entry.endTime
+    ? buildDateTime(dayValue, entry.endTime)
+    : new Date(windowEnd);
+
+  while (productionEnd <= jobStartTime) {
+    productionEnd.setDate(productionEnd.getDate() + 1);
+  }
+
+  const quantityProductionHours = clampIntervalToWindow(jobStartTime, productionEnd, jobStartTime, windowEnd);
+  if (quantityProductionHours <= 0) return 0;
+
+  const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
+  const metrics = calculateProductionMetrics(entry.cut, entry.wt, machineNo);
+  const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
+  const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
+  const effectiveHours = Math.min(quantityProductionHours, hoursNeededToMeetQty);
+  return (entry.cut > 0 && entry.wt > 0 && effectiveHours > 0)
+    ? Number(((entry.cut * resolveMachineGob(machineNo) * 60 * effectiveHours)).toFixed(0))
+    : 0;
 }
 
 export function calculateDailyDrawForEntries(
