@@ -109,11 +109,12 @@ export function calculateDrawForProductionDay(
   const productionHours = clampIntervalToWindow(productionStart, productionEnd, windowStart, windowEnd);
   if (productionHours <= 0) return 0;
 
+  const idleHours = Math.max(0, (productionStart.getTime() - windowStart.getTime()) / (1000 * 60 * 60));
   const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
   const metrics = calculateProductionMetrics(entry.cut, entry.wt, machineNo);
   const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
   const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
-  const effectiveHours = Math.min(productionHours, hoursNeededToMeetQty);
+  const effectiveHours = Math.min(productionHours, idleHours + hoursNeededToMeetQty);
   return calculateDrawForProductionHours(entry.cut, entry.wt, effectiveHours, machineNo);
 }
 
@@ -149,11 +150,12 @@ export function calculateDailyDrawForEntries(
 
     if (segmentEnd > segmentStart) {
       const productionHours = (segmentEnd.getTime() - segmentStart.getTime()) / (1000 * 60 * 60);
+      const idleHours = Math.max(0, (productionStart.getTime() - windowStart.getTime()) / (1000 * 60 * 60));
       const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
       const metrics = calculateProductionMetrics(entry.cut, entry.wt, entry.machineNo);
       const hourlyQuantity = metrics.totalQuantity > 0 ? metrics.totalQuantity / PRODUCTION_DAY_DURATION_HOURS : 0;
       const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
-      const effectiveHours = Math.min(productionHours, hoursNeededToMeetQty);
+      const effectiveHours = Math.min(productionHours, idleHours + hoursNeededToMeetQty);
       totalDraw += calculateDrawForProductionHours(entry.cut, entry.wt, effectiveHours, entry.machineNo);
     }
 
