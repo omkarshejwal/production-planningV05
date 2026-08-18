@@ -1440,10 +1440,11 @@ export const ProductionPlanningPage: React.FC = () => {
                   const dateRow = dateRows[rowIdx];
                   const isSunday = sundayRowIndices.has(rowIdx);
                   const baseBg = isSunday
-                    ? 'bg-[#ffe4b7]'
+                    ? 'bg-[#ffe4b7]/40'
                     : displayIdx % 2 === 0
                       ? 'bg-white'
                       : 'bg-[#F8FAFC]';
+                  const dateBg = isSunday ? 'bg-[#fafa05]' : baseBg;
 
                   const fmtTime = (t?: string) => {
                     if (!t) return '—';
@@ -1476,7 +1477,7 @@ export const ProductionPlanningPage: React.FC = () => {
                         {/* Date — rowSpan across all sub-rows for this date */}
                         {isFirstSlot && (
                           <td rowSpan={maxSlots}
-                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${baseBg}`}>
+                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}>
                             <div>{dateRow?.date ?? ''}</div>
                             <div className="text-[10px] font-normal text-[#6B7280]">{dateRow?.weekday ?? ''}</div>
                           </td>
@@ -1524,7 +1525,7 @@ export const ProductionPlanningPage: React.FC = () => {
                               valid.includes(completedJob.section) &&
                               completedJob.section < defaultSec;
                             const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                            const cellBg = 'bg-white';
+                            const cellBg = isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
                             const txt = 'text-sm text-[#6B7280]';
                             return (
                               <React.Fragment key={mIdx}>
@@ -1637,7 +1638,7 @@ export const ProductionPlanningPage: React.FC = () => {
                           const canExtend = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                          const cellBg = 'bg-white';
+                          const cellBg = isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
 
                           return (
                             <React.Fragment key={mIdx}>
