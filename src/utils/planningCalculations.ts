@@ -296,6 +296,7 @@ export const INITIAL_DATE_ROWS: DateRow[] = Array.from({ length: NUM_ROWS }, (_,
     id: i + 1,
     date: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }),
     isoDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+    weekday: d.toLocaleDateString("en-GB", { weekday: "long" }),
   };
 });
 

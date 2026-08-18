@@ -270,6 +270,7 @@ export const ProductionPlanningPage: React.FC = () => {
         id: i + 1,
         date: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
         isoDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+        weekday: d.toLocaleDateString('en-GB', { weekday: 'long' }),
       };
     });
   }, [selectedMonth, appliedFromDate, appliedToDate]);
@@ -1476,7 +1477,8 @@ export const ProductionPlanningPage: React.FC = () => {
                         {isFirstSlot && (
                           <td rowSpan={maxSlots}
                             className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${baseBg}`}>
-                            {dateRow?.date ?? ''}
+                            <div>{dateRow?.date ?? ''}</div>
+                            <div className="text-[10px] font-normal text-[#6B7280]">{dateRow?.weekday ?? ''}</div>
                           </td>
                         )}
 

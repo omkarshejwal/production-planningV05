@@ -39,6 +39,7 @@ export interface DateRow {
   id: number;
   date: string;
   isoDate: string;
+  weekday: string;
 }
 
 export type MachineLists = [MachineEntry[], MachineEntry[], MachineEntry[], MachineEntry[]];
