@@ -1,6 +1,6 @@
 import { BottleEntry, DateRow, MachineEntry, MachineLists } from '../types/planning';
-import { BOTTLE_SPEEDS, MACHINE_BOTTLES, NONE_ENTRY } from '../data/bottleReference';
 import { calculateDraw, calculateProductionMetrics, resolveMachineGob } from './calculations';
+import { planningRepository } from '../services/planningRepository';
 
 export const PRODUCTION_DAY_START_HOUR = 7;
 export const PRODUCTION_DAY_DURATION_HOURS = 24;
@@ -206,25 +206,99 @@ export function calculateDailyDrawForEntries(
   return Number(totalDraw.toFixed(2));
 }
 
-// Machine 1 & 4 → max 8 sections, Machine 2 & 3 → max 10 sections (mIdx is 0-based)
-export const MAX_SECTIONS = (mIdx: number) => (mIdx === 0 || mIdx === 3) ? 8 : 10;
+// ─── Dynamic lookups from machine_master (DB is source of truth) ──────────────
+
+const FALLBACK_MAX_SECTIONS = (mIdx: number) => (mIdx === 0 || mIdx === 3) ? 8 : 10;
+const FALLBACK_VALID_SECTIONS = (mIdx: number): number[] =>
+  (mIdx === 0 || mIdx === 3) ? [6, 7, 8] : [8, 9, 10];
+
+/**
+ * Max sections for a 0-based machine index — reads from machine_master.max_section.
+ */
+export const MAX_SECTIONS = (mIdx: number): number => {
+  const machines = planningRepository.getMachines();
+  if (machines.length > 0) {
+    const machineId = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+    const machine = machines.find((m) => m.machine_no === machineId);
+    if (machine && machine.max_section > 0) return machine.max_section;
+  }
+  return FALLBACK_MAX_SECTIONS(mIdx);
+};
+
+/**
+ * Valid section options for a 0-based machine index — derived from machine_master.max_section.
+ */
+export const VALID_SECTIONS = (mIdx: number): number[] => {
+  const max = MAX_SECTIONS(mIdx);
+  const count = Math.min(3, max);
+  return Array.from({ length: count }, (_, i) => max - count + 1 + i);
+};
 
 // Cut per Section = speeds (shown as "Cut" in the table) ÷ number of sections
 export const calcCutPerSection = (speeds: number, sections: number): number =>
   sections > 0 ? Math.round((speeds / sections) * 100) / 100 : 0;
 
-// Valid section options per machine (mIdx 0-based)
-export const VALID_SECTIONS = (mIdx: number): number[] =>
-  (mIdx === 0 || mIdx === 3) ? [6, 7, 8] : [8, 9, 10];
+// ─── Bottle lookup helpers (DB is source of truth) ────────────────────────────
 
-// Exact cut speed from master sheet; falls back to MACHINE_BOTTLES speed
+export const NONE_ENTRY: BottleEntry = { name: "None", wt: 0, speeds: 0 };
+
+/**
+ * Looks up the configured cut speed for a bottle on a specific machine and section.
+ * Reads from bottle_configuration table (via planningRepository cache).
+ */
 export const lookupSpeed = (machineNo: number, bottleName: string, section: number): number => {
-  return BOTTLE_SPEEDS[machineNo]?.[bottleName]?.[section] ?? 0;
+  const machines = planningRepository.getMachines();
+  if (machines.length === 0) return 0;
+  const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
+  const bottles = planningRepository.getBottles();
+  const bottle = bottles.find((b) => b.bottle_name === bottleName);
+  if (!bottle) return 0;
+  const config = planningRepository.getBottleConfiguration(machineId, bottle.bottle_id, section);
+  return config?.speeds ?? 0;
 };
 
+/**
+ * Looks up a bottle entry (name, weight, speeds) for a given machine and bottle name.
+ * Reads from bottle_configuration + bottle_master tables.
+ */
 export function lookupBottle(machineNo: number, name: string): BottleEntry {
-  if (name === "None") return NONE_ENTRY;
-  return MACHINE_BOTTLES[machineNo]?.find(b => b.name === name) ?? NONE_ENTRY;
+  if (name === "None" || !name) return NONE_ENTRY;
+  const machines = planningRepository.getMachines();
+  if (machines.length === 0) return NONE_ENTRY;
+  const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
+  const bottles = planningRepository.getBottles();
+  const bottle = bottles.find((b) => b.bottle_name === name);
+  if (!bottle) return NONE_ENTRY;
+  const configs = planningRepository.getBottleConfigurations(machineId, bottle.bottle_id);
+  if (configs.length === 0) return NONE_ENTRY;
+  const defaultSection = configs[configs.length - 1].section;
+  const config = configs.find((c) => c.section === defaultSection) ?? configs[0];
+  return { name: bottle.bottle_name, wt: config.weight, speeds: config.speeds };
+}
+
+/**
+ * Returns all bottles available for a specific machine (with at least one configuration).
+ * Reads from bottle_master + bottle_configuration tables.
+ */
+export function getMachineBottles(machineNo: number): BottleEntry[] {
+  const machines = planningRepository.getMachines();
+  if (machines.length === 0) return [];
+  const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
+  const allConfigs = planningRepository.getAllConfigurations();
+  const machineConfigs = allConfigs.filter((c) => c.machine_no === machineId);
+  const bottleIds = new Set(machineConfigs.map((c) => c.bottle_id));
+  const bottles = planningRepository.getBottles();
+  return bottles
+    .filter((b) => bottleIds.has(b.bottle_id))
+    .map((b) => {
+      const configs = machineConfigs.filter((c) => c.bottle_id === b.bottle_id);
+      const defaultConfig = configs[configs.length - 1] ?? configs[0];
+      return {
+        name: b.bottle_name,
+        wt: defaultConfig?.weight ?? 0,
+        speeds: defaultConfig?.speeds ?? 0,
+      };
+    });
 }
 
 // Module-level entry ID counter

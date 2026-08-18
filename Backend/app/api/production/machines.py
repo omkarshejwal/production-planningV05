@@ -68,18 +68,8 @@ def update_machine(
     if not existing:
         raise HTTPException(status_code=404, detail="Machine not found.")
 
-    if machine_no in [1, 4]:
-        if machine_in.gob_type != 3 or machine_in.max_section != 8:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Machine {machine_no} must have exactly 3 gobs and 8 sections."
-            )
-    elif machine_no in [2, 3]:
-        if machine_in.gob_type != 2 or machine_in.max_section != 10:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Machine {machine_no} must have exactly 2 gobs and 10 sections."
-            )
+    if machine_no not in [1, 2, 3, 4]:
+        raise HTTPException(status_code=400, detail="Only Machines 1, 2, 3, and 4 are supported in this factory.")
 
     existing.gob_type = machine_in.gob_type
     existing.max_section = machine_in.max_section

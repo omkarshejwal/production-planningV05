@@ -15,15 +15,6 @@ interface MachineMasterPanelProps {
   onRefresh: () => void;
 }
 
-const GOB_TYPES = ['Single Gob', 'Double Gob', 'Triple Gob', 'Quad Gob'];
-
-const GOB_TYPE_TO_INT: Record<string, number> = {
-  'Single Gob': 1,
-  'Double Gob': 2,
-  'Triple Gob': 3,
-  'Quad Gob': 4,
-};
-
 export const MachineMasterPanel: React.FC<MachineMasterPanelProps> = ({ machines, onRefresh }) => {
   const [saved, setSaved] = useState(false);
   const [localMachines, setLocalMachines] = useState<MachineMasterRow[]>(machines);
@@ -40,7 +31,7 @@ export const MachineMasterPanel: React.FC<MachineMasterPanelProps> = ({ machines
   const handleSave = async () => {
     for (const m of localMachines) {
       const machineInt = parseInt(m.machine_no.replace(/\D/g, ''), 10);
-      const gobInt = GOB_TYPE_TO_INT[m.gob_type] || m.gob_count;
+      const gobInt = m.gob_count;
       try {
         await apiFetch(`/api/production/machines/${machineInt}`, {
           method: 'PUT',
@@ -63,7 +54,7 @@ export const MachineMasterPanel: React.FC<MachineMasterPanelProps> = ({ machines
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 flex flex-col shadow-sm min-h-0">
-      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100 flex-shrink-0">
+      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100 shrink-0">
         <span className="text-blue-600"><Cpu className="w-4 h-4" /></span>
         <h2 className="text-sm font-semibold text-gray-800">Machine Master</h2>
       </div>
@@ -81,15 +72,9 @@ export const MachineMasterPanel: React.FC<MachineMasterPanelProps> = ({ machines
                 <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider block mb-1">
                   Gob Type
                 </label>
-                <select
-                  value={m.gob_type}
-                  onChange={(e) => update(m.machine_no, { gob_type: e.target.value })}
-                  className="w-full h-7 px-2 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer"
-                >
-                  {GOB_TYPES.map((g) => (
-                    <option key={g} value={g}>{g}</option>
-                  ))}
-                </select>
+                <div className="w-full h-7 px-2 text-sm border border-gray-200 rounded-md bg-gray-100 text-gray-600 flex items-center">
+                  {m.gob_type} ({m.gob_count} gobs)
+                </div>
               </div>
               <div>
                 <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider block mb-1">

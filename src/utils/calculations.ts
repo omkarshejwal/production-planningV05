@@ -1,4 +1,5 @@
 import { DailyPlanningEntry, ISMachine, ProductionJob } from '../types';
+import { planningRepository } from '../services/planningRepository';
 
 export interface ProductionMetrics {
   totalQuantity: number;
@@ -10,11 +11,32 @@ export interface ProductionMetrics {
   machineGob: number;
 }
 
-export const MACHINE_GOB_COUNTS: Record<number, number> = {
+/**
+ * Fallback gob counts — used only when planningRepository cache is not yet
+ * populated (e.g. during very early boot).  Once the cache is live, the
+ * dynamic lookup below always wins.
+ */
+const FALLBACK_GOB_COUNTS: Record<number, number> = {
   1: 3,
   2: 2,
   3: 2,
   4: 3,
+};
+
+/**
+ * Dynamic gob count lookup from the machine_master table.
+ * Falls back to FALLBACK_GOB_COUNTS when the cache is empty.
+ */
+const getGobCountFromDB = (machineNumber: number): number => {
+  const machines = planningRepository.getMachines();
+  if (machines.length > 0) {
+    const machineId = `MAC-${String(machineNumber).padStart(2, '0')}`;
+    const machine = machines.find((m) => m.machine_no === machineId);
+    if (machine && Number.isFinite(machine.gob_count) && machine.gob_count > 0) {
+      return machine.gob_count;
+    }
+  }
+  return FALLBACK_GOB_COUNTS[machineNumber] ?? 1;
 };
 
 export function calculateDraw(quantity: number, weightGrams: number): number {
@@ -48,15 +70,15 @@ export const resolveMachineGob = (
       return explicitGob;
     }
     const fromId = resolveMachineNumber(machine.id);
-    if (fromId !== null && MACHINE_GOB_COUNTS[fromId]) {
-      return MACHINE_GOB_COUNTS[fromId];
+    if (fromId !== null) {
+      return getGobCountFromDB(fromId);
     }
     return 1;
   }
 
   const machineNumber = resolveMachineNumber(machine as string | number);
   if (machineNumber === null) return 1;
-  return MACHINE_GOB_COUNTS[machineNumber] ?? 1;
+  return getGobCountFromDB(machineNumber);
 };
 
 export function calculateProductionMetrics(

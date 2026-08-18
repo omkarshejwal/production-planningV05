@@ -30,6 +30,7 @@ import {
 } from '../../types/planning';
 import {
   INITIAL_MACHINE_LISTS,
+  MAX_SECTIONS,
   VALID_SECTIONS,
   _month,
   _year,
@@ -547,7 +548,7 @@ export const ProductionPlanningPage: React.FC = () => {
               plan_date,
               machine_no,
               bottle_id: bottle.id,
-              section: entry.section || (mIdx === 0 || mIdx === 3 ? 8 : 10),
+              section: entry.section || MAX_SECTIONS(mIdx),
               weight: entry.wt,
               speeds: entry.cut,
               draw: entry.draw,

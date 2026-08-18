@@ -281,7 +281,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   key={r.section}
                   className={`flex items-center gap-2 px-3 py-2 ${i > 0 ? 'border-t border-gray-100' : ''}`}
                 >
-                  <div className="w-5 h-5 rounded bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                  <div className="w-5 h-5 rounded bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
                     {r.section}
                   </div>
                   <input

@@ -27,6 +27,14 @@ let _bottles: BottleMasterRow[] = [];
 let _configs: BottleConfigurationRow[] = [];
 let _jobs: ProductionJobRow[] = [];
 let _initialized = false;
+let _cacheVersion = 0;
+
+/**
+ * Monotonically-increasing counter bumped on every successful cache refresh.
+ * ERPContext compares this on each render to detect external cache updates
+ * (e.g. after Machine Master or Bottle Master saves).
+ */
+export const getCacheVersion = () => _cacheVersion;
 
 // ─── Type Guards ───────────────────────────────────────────────────────────────
 const toStr = (v: unknown): string => String(v ?? '');
@@ -173,6 +181,7 @@ export const planningRepository = {
       _configs = (rawConfigs as Record<string, unknown>[]).map(mapConfigRow);
       _jobs = (rawJobs as Record<string, unknown>[]).map(mapJobRow);
       _initialized = true;
+      _cacheVersion++;
     } catch (err) {
       console.error('planningRepository.init() failed:', err);
       // Keep existing cache on error — don't wipe good data

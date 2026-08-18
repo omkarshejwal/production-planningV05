@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, X } from 'lucide-react';
 import { BottleEntry, EditSavePayload, MachineEntry, PackCatKey } from '../../types/planning';
-import { MACHINE_BOTTLES, NONE_ENTRY } from '../../data/bottleReference';
-import { MAX_SECTIONS, calcQty, lookupSpeed } from '../../utils/planningCalculations';
+import { MAX_SECTIONS, calcQty, lookupSpeed, getMachineBottles, NONE_ENTRY } from '../../utils/planningCalculations';
 import { TimePicker } from './TimePicker';
 
 export const PACKING_OPTIONS: { key: 'ST' | 'SN' | 'SB' | 'BT'; label: string; desc: string }[] = [
@@ -26,7 +25,7 @@ export function EditMachineModal({
   newJobStartTime?: string;
 }) {
   const mIdx = machineNo - 1;
-  const bottles = MACHINE_BOTTLES[machineNo] ?? [];
+  const bottles = useMemo(() => getMachineBottles(machineNo), [machineNo]);
   
   const [selected, setSelected] = useState(currentEntry.product);
   const [bottleSearch, setBottleSearch] = useState('');

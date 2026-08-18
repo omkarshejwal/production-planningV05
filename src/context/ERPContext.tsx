@@ -30,7 +30,7 @@ import {
   calculateProductionMetrics,
   calculateEstimatedCompletionDays,
 } from '../utils/calculations';
-import { planningRepository } from '../services/planningRepository';
+import { planningRepository, getCacheVersion } from '../services/planningRepository';
 
 interface ERPContextType {
   activeModule: ActiveModule;
@@ -212,6 +212,20 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setPlannerVersion((v) => v + 1);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Watch for external cache refreshes (e.g. after Machine Master or Bottle
+  // Master saves) so the Planning Table picks up the new data automatically.
+  useEffect(() => {
+    let lastVersion = getCacheVersion();
+    const interval = setInterval(() => {
+      const currentVersion = getCacheVersion();
+      if (currentVersion !== lastVersion) {
+        lastVersion = currentVersion;
+        setPlannerVersion((v) => v + 1);
+      }
+    }, 500);
+    return () => clearInterval(interval);
   }, []);
 
   const machines = useMemo<ISMachine[]>(() => {

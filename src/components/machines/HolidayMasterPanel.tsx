@@ -93,7 +93,7 @@ export const HolidayMasterPanel: React.FC = () => {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 flex flex-col shadow-sm min-h-0">
-      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100 flex-shrink-0">
+      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100 shrink-0">
         <span className="text-blue-600"><CalendarDays className="w-4 h-4" /></span>
         <h2 className="text-sm font-semibold text-gray-800">Holiday Master</h2>
       </div>
@@ -183,7 +183,7 @@ export const HolidayMasterPanel: React.FC = () => {
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
                     <CalendarDays className="w-3.5 h-3.5 text-white" />
                   </div>
                   <div>
