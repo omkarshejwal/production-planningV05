@@ -570,6 +570,12 @@ export const ProductionPlanningPage: React.FC = () => {
       const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
       console.log("[SAVE] createProductionJobsBatch result:", batchResult);
 
+      if (!batchResult.ok) {
+        toast.error(batchResult.error || 'Save failed. Please try again.', { duration: 5000 });
+        setIsSaving(false);
+        return;
+      }
+
       // Clean up stale DB rows: jobs that exist in the DB but are no longer
       // in the current grid state (e.g. user deleted a job, or extend shifted
       // a job to a new position).  Without this step, deleted jobs would

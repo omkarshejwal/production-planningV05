@@ -34,6 +34,7 @@ class ExtendJobRequest(BaseModel):
     days: int = 1
 
 class ProductionJobResponse(BaseModel):
+    job_id: int
     plan_date: date
     machine_no: int
     start_time: datetime

@@ -108,12 +108,10 @@ def create_job(
             existing_job.changeover_minutes = job_in.changeover_minutes
             if job_in.status:
                 existing_job.status = job_in.status
-            
+
             # Clear old packaging for this job
             db.query(JobPackaging).filter_by(
-                plan_date=job_in.plan_date,
-                machine_no=job_in.machine_no,
-                start_time=job_in.start_time
+                job_id=existing_job.job_id
             ).delete()
             db.flush()  # Force DELETE to execute before INSERTS
             new_job = existing_job
@@ -135,10 +133,13 @@ def create_job(
                 status=job_in.status or "Planned"
             )
             db.add(new_job)
+            db.flush()
+            db.refresh(new_job)  # Populate the auto-generated job_id
 
         # 4. Handle Packaging (if provided)
         for pack in job_in.packaging:
             db.add(JobPackaging(
+                job_id=new_job.job_id,
                 plan_date=job_in.plan_date,
                 machine_no=job_in.machine_no,
                 bottle_id=job_in.bottle_id,
@@ -233,9 +234,7 @@ def extend_job(
         new_start = job.start_time + timedelta(days=days)
 
         db.query(JobPackaging).filter_by(
-            plan_date=job.plan_date,
-            machine_no=req.machine_no,
-            start_time=job.start_time,
+            job_id=job.job_id
         ).update(
             {"plan_date": new_plan, "start_time": new_start},
             synchronize_session=False,
@@ -243,9 +242,7 @@ def extend_job(
         db.flush()
 
         db.query(ProductionJob).filter_by(
-            plan_date=job.plan_date,
-            machine_no=req.machine_no,
-            start_time=job.start_time,
+            job_id=job.job_id
         ).update(
             {
                 "plan_date": new_plan,
@@ -344,9 +341,7 @@ def delete_job(
 
     # ── 1. Delete the job to vacate its slot ──────────────────────────────────
     db.query(JobPackaging).filter_by(
-        plan_date=plan_date,
-        machine_no=machine_no,
-        start_time=start_time
+        job_id=existing_job.job_id
     ).delete()
     db.flush()
 
@@ -384,9 +379,7 @@ def delete_job(
             new_plan = new_start.date()
 
             db.query(JobPackaging).filter_by(
-                plan_date=job.plan_date,
-                machine_no=machine_no,
-                start_time=job.start_time,
+                job_id=job.job_id
             ).update(
                 {"plan_date": new_plan, "start_time": new_start},
                 synchronize_session=False,
@@ -394,9 +387,7 @@ def delete_job(
             db.flush()
 
             db.query(ProductionJob).filter_by(
-                plan_date=job.plan_date,
-                machine_no=machine_no,
-                start_time=job.start_time,
+                job_id=job.job_id
             ).update(
                 {
                     "plan_date": new_plan,
