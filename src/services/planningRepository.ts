@@ -194,16 +194,24 @@ export const planningRepository = {
   },
 
   getBottleConfigurations(machine_no: string, bottle_id: string): BottleConfigurationRow[] {
+    if (bottle_id === '*') {
+      return _configs
+        .filter((row) => row.machine_no === machine_no)
+        .sort((a, b) => a.section - b.section);
+    }
     const specific = _configs
       .filter((row) => row.machine_no === machine_no && row.bottle_id === bottle_id)
       .sort((a, b) => a.section - b.section);
       
     if (specific.length > 0) return specific;
 
-    // Fallback: if no config exists for this specific machine, use any available config for this bottle
     return _configs
       .filter((row) => row.bottle_id === bottle_id)
       .sort((a, b) => a.section - b.section);
+  },
+
+  getAllConfigurations(): BottleConfigurationRow[] {
+    return [..._configs];
   },
 
   getBottleConfiguration(machine_no: string, bottle_id: string, section: number): BottleConfigurationRow | undefined {
@@ -355,8 +363,144 @@ export const planningRepository = {
   },
 
   upsertJobPackaging(_payload: JobPackagingRow): { ok: boolean; error?: string } {
-    // Packaging is now handled directly in the POST job payload
     return { ok: true };
+  },
+
+  // ── Bottle Master CRUD ──────────────────────────────────────────────────────
+
+  async createBottle(bottle_name: string): Promise<{ ok: boolean; id?: number; error?: string }> {
+    try {
+      const result = await apiFetch('/api/production/products/bottles/', {
+        method: 'POST',
+        body: JSON.stringify({ bottle_name }),
+      });
+      return { ok: true, id: result.bottle_id };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to create bottle' };
+    }
+  },
+
+  async updateBottle(bottle_id: number, bottle_name: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await apiFetch(`/api/production/products/bottles/${bottle_id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ bottle_name }),
+      });
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to update bottle' };
+    }
+  },
+
+  // ── Bottle Configuration CRUD ───────────────────────────────────────────────
+
+  async upsertBottleConfiguration(config: {
+    machine_no: number;
+    bottle_id: number;
+    section: number;
+    weight: number;
+    speeds: number;
+  }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const existing = _configs.find(
+        (c) =>
+          c.machine_no === `MAC-${String(config.machine_no).padStart(2, '0')}` &&
+          c.bottle_id === String(config.bottle_id) &&
+          c.section === config.section
+      );
+      if (existing) {
+        await apiFetch(
+          `/api/production/products/configurations/${config.machine_no}/${config.bottle_id}/${config.section}`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              machine_no: config.machine_no,
+              bottle_id: config.bottle_id,
+              section: config.section,
+              weight: config.weight,
+              speeds: config.speeds,
+            }),
+          }
+        );
+      } else {
+        await apiFetch('/api/production/products/configurations/', {
+          method: 'POST',
+          body: JSON.stringify({
+            machine_no: config.machine_no,
+            bottle_id: config.bottle_id,
+            section: config.section,
+            weight: config.weight,
+            speeds: config.speeds,
+          }),
+        });
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to save configuration' };
+    }
+  },
+
+  async deleteBottleConfiguration(
+    machine_no: number,
+    bottle_id: number,
+    section: number
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await apiFetch(
+        `/api/production/products/configurations/${machine_no}/${bottle_id}/${section}`,
+        { method: 'DELETE' }
+      );
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to delete configuration' };
+    }
+  },
+
+  // ── Holiday Master CRUD ─────────────────────────────────────────────────────
+
+  async getHolidays(): Promise<{ holiday_date: string; holiday_name: string }[]> {
+    try {
+      const raw = await apiFetch('/api/production/holidays/');
+      return (raw as any[]).map((h: any) => ({
+        holiday_date: h.holiday_date,
+        holiday_name: h.holiday_name,
+      }));
+    } catch {
+      return [];
+    }
+  },
+
+  async createHoliday(holiday_date: string, holiday_name: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await apiFetch('/api/production/holidays/', {
+        method: 'POST',
+        body: JSON.stringify({ holiday_date, holiday_name }),
+      });
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to create holiday' };
+    }
+  },
+
+  async updateHoliday(original_date: string, holiday_date: string, holiday_name: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await apiFetch(`/api/production/holidays/${original_date}`, {
+        method: 'PUT',
+        body: JSON.stringify({ holiday_date, holiday_name }),
+      });
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to update holiday' };
+    }
+  },
+
+  async deleteHoliday(holiday_date: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await apiFetch(`/api/production/holidays/${holiday_date}`, { method: 'DELETE' });
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to delete holiday' };
+    }
   },
 
   // ── Internal helpers ────────────────────────────────────────────────────────

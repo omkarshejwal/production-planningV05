@@ -17,21 +17,15 @@ router = APIRouter(prefix="/products", tags=["Production Products"])
 
 @router.get("/bottles/", response_model=List[BottleMasterResponse])
 def get_all_bottles(db: Session = Depends(get_db)):
-    """
-    Fetch all base bottles from the master table.
-    """
     return db.query(BottleMaster).all()
 
 @router.post("/bottles/", response_model=BottleMasterResponse)
 def create_bottle(
-    bottle_in: BottleMasterCreate, 
+    bottle_in: BottleMasterCreate,
     db: Session = Depends(get_db),
     user_role: str = Depends(require_manager_role),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Add a new base bottle to the database.
-    """
     new_bottle = BottleMaster(bottle_name=bottle_in.bottle_name)
     db.add(new_bottle)
     db.commit()
@@ -46,23 +40,51 @@ def create_bottle(
 
     return new_bottle
 
-@router.get("/configurations/", response_model=List[BottleConfigurationResponse])
-def get_all_configurations(db: Session = Depends(get_db)):
-    """
-    Fetch all bottle configurations (speeds/weights mapped to machines).
-    """
-    return db.query(BottleConfiguration).all()
-
-@router.post("/configurations/", response_model=BottleConfigurationResponse)
-def create_configuration(
-    config_in: BottleConfigurationCreate, 
+@router.put("/bottles/{bottle_id}", response_model=BottleMasterResponse)
+def update_bottle(
+    bottle_id: int,
+    bottle_in: BottleMasterCreate,
     db: Session = Depends(get_db),
     user_role: str = Depends(require_manager_role),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Configure a bottle's speed and weight for a specific machine and section.
-    """
+    existing = db.query(BottleMaster).filter(BottleMaster.bottle_id == bottle_id).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Bottle not found.")
+
+    existing.bottle_name = bottle_in.bottle_name
+
+    db.add(AuditLog(
+        user_id=current_user.employee_id,
+        action="UPDATED_BOTTLE",
+        details=f"User ({user_role}) updated Bottle {bottle_id} to '{bottle_in.bottle_name}'"
+    ))
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+@router.get("/configurations/", response_model=List[BottleConfigurationResponse])
+def get_all_configurations(db: Session = Depends(get_db)):
+    return db.query(BottleConfiguration).all()
+
+@router.post("/configurations/", response_model=BottleConfigurationResponse)
+def create_configuration(
+    config_in: BottleConfigurationCreate,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
+):
+    existing = db.query(BottleConfiguration).filter(
+        BottleConfiguration.machine_no == config_in.machine_no,
+        BottleConfiguration.bottle_id == config_in.bottle_id,
+        BottleConfiguration.section == config_in.section,
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Configuration already exists for Machine {config_in.machine_no}, Bottle {config_in.bottle_id}, Section {config_in.section}."
+        )
+
     new_config = BottleConfiguration(
         machine_no=config_in.machine_no,
         bottle_id=config_in.bottle_id,
@@ -82,3 +104,59 @@ def create_configuration(
     db.commit()
 
     return new_config
+
+@router.put("/configurations/{machine_no}/{bottle_id}/{section}", response_model=BottleConfigurationResponse)
+def update_configuration(
+    machine_no: int,
+    bottle_id: int,
+    section: int,
+    config_in: BottleConfigurationCreate,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
+):
+    existing = db.query(BottleConfiguration).filter(
+        BottleConfiguration.machine_no == machine_no,
+        BottleConfiguration.bottle_id == bottle_id,
+        BottleConfiguration.section == section,
+    ).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Bottle configuration not found.")
+
+    existing.weight = config_in.weight
+    existing.speeds = config_in.speeds
+
+    db.add(AuditLog(
+        user_id=current_user.employee_id,
+        action="UPDATED_BOTTLE_CONFIG",
+        details=f"User ({user_role}) updated config for Bottle {bottle_id} on Machine {machine_no} Section {section}"
+    ))
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+@router.delete("/configurations/{machine_no}/{bottle_id}/{section}")
+def delete_configuration(
+    machine_no: int,
+    bottle_id: int,
+    section: int,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
+):
+    existing = db.query(BottleConfiguration).filter(
+        BottleConfiguration.machine_no == machine_no,
+        BottleConfiguration.bottle_id == bottle_id,
+        BottleConfiguration.section == section,
+    ).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Bottle configuration not found.")
+
+    db.delete(existing)
+    db.add(AuditLog(
+        user_id=current_user.employee_id,
+        action="DELETED_BOTTLE_CONFIG",
+        details=f"User ({user_role}) deleted config for Bottle {bottle_id} on Machine {machine_no} Section {section}"
+    ))
+    db.commit()
+    return {"ok": True}

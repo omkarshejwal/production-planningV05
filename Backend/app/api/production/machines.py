@@ -14,33 +14,26 @@ router = APIRouter(prefix="/machines", tags=["Production Machines"])
 
 @router.get("/", response_model=List[MachineMasterResponse])
 def get_all_machines(db: Session = Depends(get_db)):
-    """
-    Fetch all machines from the master table.
-    """
     machines = db.query(MachineMaster).all()
     return machines
 
 @router.post("/", response_model=MachineMasterResponse)
 def create_machine(
-    machine_in: MachineMasterCreate, 
+    machine_in: MachineMasterCreate,
     db: Session = Depends(get_db),
     user_role: str = Depends(require_manager_role),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Add a new machine to the database, enforcing factory hardware constraints.
-    """
-    # 1. Enforce Factory Hardware Logic
     if machine_in.machine_no in [1, 4]:
         if machine_in.gob_type != 3 or machine_in.max_section != 8:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Machine {machine_in.machine_no} must have exactly 3 gobs and 8 sections."
             )
     elif machine_in.machine_no in [2, 3]:
         if machine_in.gob_type != 2 or machine_in.max_section != 10:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Machine {machine_in.machine_no} must have exactly 2 gobs and 10 sections."
             )
     else:
@@ -53,7 +46,6 @@ def create_machine(
     )
     db.add(new_machine)
 
-    # Automatically create an Audit Log
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="CREATED_MACHINE",
@@ -63,3 +55,41 @@ def create_machine(
     db.commit()
     db.refresh(new_machine)
     return new_machine
+
+@router.put("/{machine_no}", response_model=MachineMasterResponse)
+def update_machine(
+    machine_no: int,
+    machine_in: MachineMasterCreate,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
+):
+    existing = db.query(MachineMaster).filter(MachineMaster.machine_no == machine_no).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Machine not found.")
+
+    if machine_no in [1, 4]:
+        if machine_in.gob_type != 3 or machine_in.max_section != 8:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Machine {machine_no} must have exactly 3 gobs and 8 sections."
+            )
+    elif machine_no in [2, 3]:
+        if machine_in.gob_type != 2 or machine_in.max_section != 10:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Machine {machine_no} must have exactly 2 gobs and 10 sections."
+            )
+
+    existing.gob_type = machine_in.gob_type
+    existing.max_section = machine_in.max_section
+
+    db.add(AuditLog(
+        user_id=current_user.employee_id,
+        action="UPDATED_MACHINE",
+        details=f"User ({user_role}) updated Machine {machine_no}"
+    ))
+
+    db.commit()
+    db.refresh(existing)
+    return existing
