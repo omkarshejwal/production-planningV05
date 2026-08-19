@@ -690,6 +690,156 @@ export const INITIAL_JOBS: ProductionJob[] = [
   // Production planner starts with an empty schedule by default.
 ];
 
+export const INITIAL_SHIFT_REPORTS: ShiftProductionReport[] = [
+  {
+    id: 'SR-001',
+    date: '2026-08-19',
+    shift: 'Shift A (06:00 - 14:00)',
+    machineId: 'MAC-01',
+    grossPcs: 182400,
+    packedPcs: 176800,
+    rejectedPcs: 520,
+    packRate: 96.9,
+    topDefect: 'Minor surface scratch',
+    gobTempC: 1188,
+    lehrTempC: 612,
+    operatorName: 'R. Kulkarni',
+  },
+  {
+    id: 'SR-002',
+    date: '2026-08-19',
+    shift: 'Shift B (14:00 - 22:00)',
+    machineId: 'MAC-02',
+    grossPcs: 194200,
+    packedPcs: 188900,
+    rejectedPcs: 620,
+    packRate: 97.2,
+    topDefect: 'Low pressure variance',
+    gobTempC: 1193,
+    lehrTempC: 618,
+    operatorName: 'A. Patil',
+  },
+];
+
+export const INITIAL_INVENTORY: InventoryItem[] = [
+  {
+    id: 'INV-001',
+    code: 'RAW-SAND',
+    name: 'Glass Batch Silica',
+    category: 'Raw Material',
+    stockQuantity: 86,
+    unit: 'Tons',
+    minReorderLevel: 30,
+    location: 'Raw Yard A',
+    status: 'In Stock',
+  },
+  {
+    id: 'INV-002',
+    code: 'PACK-STD',
+    name: 'Standard Carton Packs',
+    category: 'Packing Material',
+    stockQuantity: 4200,
+    unit: 'Pallets',
+    minReorderLevel: 1200,
+    location: 'Packing Store',
+    status: 'In Stock',
+  },
+  {
+    id: 'INV-003',
+    code: 'CUL-01',
+    name: 'Recovered Cullet',
+    category: 'Cullet',
+    stockQuantity: 18,
+    unit: 'Tons',
+    minReorderLevel: 25,
+    location: 'Cullet Silo',
+    status: 'Low Stock',
+  },
+];
+
+export const INITIAL_QUALITY_INSPECTIONS: QualityInspection[] = [
+  {
+    id: 'QI-001',
+    inspectionTime: '2026-08-19T08:15:00',
+    machineId: 'MAC-01',
+    bottleName: '750ml Bordeaux Wine Heavy',
+    checkDefectCount: 3,
+    blisterCount: 1,
+    stoneCount: 2,
+    moldMarkCount: 0,
+    dimensionPassRate: 98.4,
+    thermalShockPassed: true,
+    pressureTestBar: 12.5,
+    inspectorName: 'S. Dev',
+    status: 'PASSED',
+  },
+  {
+    id: 'QI-002',
+    inspectionTime: '2026-08-19T09:40:00',
+    machineId: 'MAC-02',
+    bottleName: '330ml Amber Beer Longneck',
+    checkDefectCount: 8,
+    blisterCount: 3,
+    stoneCount: 2,
+    moldMarkCount: 1,
+    dimensionPassRate: 94.2,
+    thermalShockPassed: true,
+    pressureTestBar: 10.8,
+    inspectorName: 'M. Desai',
+    status: 'WARNING',
+  },
+];
+
+export const INITIAL_DISPATCH: DispatchOrder[] = [
+  {
+    id: 'DO-001',
+    dispatchNo: 'DSP-2026-118',
+    customerName: 'Apex Craft Breweries',
+    bottleName: '330ml Amber Beer Longneck',
+    bottleColor: 'Amber',
+    palletsCount: 18,
+    totalQuantityPcs: 42000,
+    truckNumber: 'MH12AB3321',
+    driverName: 'Ramesh Jadhav',
+    gatePassNo: 'GP-8891',
+    dispatchDate: '2026-08-20',
+    status: 'Scheduled',
+  },
+  {
+    id: 'DO-002',
+    dispatchNo: 'DSP-2026-119',
+    customerName: 'Chateau Reserve Wineries',
+    bottleName: '750ml Bordeaux Wine Heavy',
+    bottleColor: 'Flint',
+    palletsCount: 12,
+    totalQuantityPcs: 26000,
+    truckNumber: 'TN08XY9103',
+    driverName: 'Nitin Rao',
+    gatePassNo: 'GP-8892',
+    dispatchDate: '2026-08-21',
+    status: 'Loading',
+  },
+];
+
+export const INITIAL_NOTIFICATIONS: NotificationItem[] = [
+  {
+    id: 'NT-001',
+    title: 'Line clearance approved',
+    message: 'Machine No 1 has completed pre-start quality checks and is ready for shift A.',
+    time: '10 mins ago',
+    type: 'success',
+    read: false,
+  },
+  {
+    id: 'NT-002',
+    title: 'Cullet level alert',
+    message: 'Recovered cullet stock has dropped below minimum reorder level.',
+    time: '35 mins ago',
+    type: 'warning',
+    read: false,
+  },
+];
+
 /**
  * Generate full August 2026 Planning Entries for 4 machines
  */
