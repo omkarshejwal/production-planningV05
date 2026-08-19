@@ -287,6 +287,23 @@ export const ProductionPlanningPage: React.FC = () => {
     return s;
   }, [dateRows]);
 
+  // Holiday lookup: isoDate → holiday_name, and set of row indices that are holidays
+  const holidayMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const h of planningRepository.getCachedHolidays()) {
+      m.set(h.holiday_date, h.holiday_name);
+    }
+    return m;
+  }, []);
+
+  const holidayRowIndices = useMemo(() => {
+    const s = new Set<number>();
+    dateRows.forEach((dr, idx) => {
+      if (holidayMap.has(dr.isoDate)) s.add(idx);
+    });
+    return s;
+  }, [dateRows, holidayMap]);
+
   const [machineLists, setMachineLists] = useState<MachineLists>(INITIAL_MACHINE_LISTS);
   const [completedJobMap, setCompletedJobMap] = useState<CompletedJobMap>({});
 
@@ -1454,12 +1471,16 @@ export const ProductionPlanningPage: React.FC = () => {
                 {filteredRowIndices.flatMap((rowIdx, displayIdx) => {
                   const dateRow = dateRows[rowIdx];
                   const isSunday = sundayRowIndices.has(rowIdx);
-                  const baseBg = isSunday
-                    ? 'bg-[#ffe4b7]/40'
-                    : displayIdx % 2 === 0
-                      ? 'bg-white'
-                      : 'bg-[#F8FAFC]';
-                  const dateBg = isSunday ? 'bg-[#fafa05]' : baseBg;
+                  const isHoliday = holidayRowIndices.has(rowIdx);
+                  const holidayName = isHoliday ? holidayMap.get(dateRow?.isoDate) ?? '' : '';
+                  const baseBg = isHoliday
+                    ? 'bg-red-100'
+                    : isSunday
+                      ? 'bg-[#ffe4b7]/40'
+                      : displayIdx % 2 === 0
+                        ? 'bg-white'
+                        : 'bg-[#F8FAFC]';
+                  const dateBg = isHoliday ? 'bg-red-200' : isSunday ? 'bg-[#fafa05]' : baseBg;
 
                   const fmtTime = (t?: string) => {
                     if (!t) return '—';
@@ -1495,6 +1516,9 @@ export const ProductionPlanningPage: React.FC = () => {
                             className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}>
                             <div>{dateRow?.date ?? ''}</div>
                             <div className="text-[10px] font-normal text-[#6B7280]">{dateRow?.weekday ?? ''}</div>
+                            {isHoliday && holidayName && (
+                              <div className="text-[9px] font-medium text-red-600 mt-0.5">{holidayName}</div>
+                            )}
                           </td>
                         )}
 
@@ -1540,7 +1564,7 @@ export const ProductionPlanningPage: React.FC = () => {
                               valid.includes(completedJob.section) &&
                               completedJob.section < defaultSec;
                             const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                            const cellBg = isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
+                            const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
                             const txt = 'text-sm text-[#6B7280]';
                             return (
                               <React.Fragment key={mIdx}>
@@ -1653,7 +1677,7 @@ export const ProductionPlanningPage: React.FC = () => {
                           const canExtend = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                          const cellBg = isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
+                          const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
 
                           return (
                             <React.Fragment key={mIdx}>

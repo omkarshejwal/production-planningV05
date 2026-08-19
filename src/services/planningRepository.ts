@@ -26,6 +26,7 @@ let _machines: MachineMasterRow[] = [];
 let _bottles: BottleMasterRow[] = [];
 let _configs: BottleConfigurationRow[] = [];
 let _jobs: ProductionJobRow[] = [];
+let _holidays: { holiday_date: string; holiday_name: string }[] = [];
 let _initialized = false;
 let _cacheVersion = 0;
 
@@ -166,11 +167,12 @@ export const planningRepository = {
           ? `/api/production/jobs/?from_date=${fromDate}&to_date=${toDate}`
           : '/api/production/jobs/';
 
-      const [rawMachines, rawBottles, rawConfigs, rawJobs] = await Promise.all([
+      const [rawMachines, rawBottles, rawConfigs, rawJobs, rawHolidays] = await Promise.all([
         apiFetch('/api/production/machines/'),
         apiFetch('/api/production/products/bottles/'),
         apiFetch('/api/production/products/configurations/'),
         apiFetch(jobsUrl),
+        apiFetch('/api/production/holidays/'),
       ]);
 
       _machines = (rawMachines as Record<string, unknown>[]).map(mapMachineRow);
@@ -180,6 +182,10 @@ export const planningRepository = {
       }));
       _configs = (rawConfigs as Record<string, unknown>[]).map(mapConfigRow);
       _jobs = (rawJobs as Record<string, unknown>[]).map(mapJobRow);
+      _holidays = (rawHolidays as Record<string, unknown>[]).map((h) => ({
+        holiday_date: toStr(h.holiday_date),
+        holiday_name: toStr(h.holiday_name),
+      }));
       _initialized = true;
       _cacheVersion++;
     } catch (err) {
@@ -233,6 +239,10 @@ export const planningRepository = {
       if (a.machine_no !== b.machine_no) return a.machine_no.localeCompare(b.machine_no);
       return a.start_time.localeCompare(b.start_time);
     });
+  },
+
+  getCachedHolidays(): { holiday_date: string; holiday_name: string }[] {
+    return _holidays;
   },
 
   getJobPackaging(): JobPackagingRow[] {
