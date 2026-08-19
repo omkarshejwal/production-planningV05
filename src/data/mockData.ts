@@ -690,6 +690,16 @@ export const INITIAL_JOBS: ProductionJob[] = [
   // Production planner starts with an empty schedule by default.
 ];
 
+export const INITIAL_SHIFT_REPORTS: ShiftProductionReport[] = [];
+
+export const INITIAL_INVENTORY: InventoryItem[] = [];
+
+export const INITIAL_QUALITY_INSPECTIONS: QualityInspection[] = [];
+
+export const INITIAL_DISPATCH: DispatchOrder[] = [];
+
+export const INITIAL_NOTIFICATIONS: NotificationItem[] = [];
+
 /**
  * Generate full August 2026 Planning Entries for 4 machines
  */
