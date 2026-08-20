@@ -50,7 +50,13 @@ export const MachineMasterPanel: React.FC<MachineMasterPanelProps> = ({ machines
     onRefresh();
   };
 
-  const validMachines = localMachines.filter((m) => m.machine_no && m.max_section > 0);
+  const validMachines = localMachines
+    .filter((m) => m.machine_no && m.max_section > 0)
+    .sort((a, b) => {
+      const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
+      const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
+      return numA - numB;
+    });
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 flex flex-col shadow-sm min-h-0">
@@ -70,10 +76,31 @@ export const MachineMasterPanel: React.FC<MachineMasterPanelProps> = ({ machines
               </div>
               <div className="mb-2">
                 <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider block mb-1">
-                  Gob Type
+                  GOB
                 </label>
-                <div className="w-full h-7 px-2 text-sm border border-gray-200 rounded-md bg-gray-100 text-gray-600 flex items-center">
-                  {m.gob_type} ({m.gob_count} gobs)
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => update(m.machine_no, { gob_count: Math.max(1, m.gob_count - 1) })}
+                    className="w-7 h-7 rounded-md border border-gray-200 bg-white flex items-center justify-center text-gray-600 hover:bg-gray-100 transition font-bold text-base leading-none"
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    min={1}
+                    value={m.gob_count}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value);
+                      if (!isNaN(n) && n > 0) update(m.machine_no, { gob_count: n });
+                    }}
+                    className="w-12 h-7 text-center text-sm font-semibold border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <button
+                    onClick={() => update(m.machine_no, { gob_count: m.gob_count + 1 })}
+                    className="w-7 h-7 rounded-md border border-gray-200 bg-white flex items-center justify-center text-gray-600 hover:bg-gray-100 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
               <div>

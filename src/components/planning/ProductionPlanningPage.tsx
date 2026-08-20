@@ -32,6 +32,7 @@ import {
   INITIAL_MACHINE_LISTS,
   MAX_SECTIONS,
   VALID_SECTIONS,
+  VALID_SECTIONS_FOR_BOTTLE,
   _month,
   _year,
   addMinutesToTime,
@@ -75,6 +76,29 @@ const asNumber = (value: string): number | null => {
   if (!normalized) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const calculateTimeDeltaMinutes = (
+  date1: string, time1: string,
+  date2: string, time2: string
+): number => {
+  const [y1, m1, d1] = date1.split('-').map(Number);
+  const [h1, min1] = time1.split(':').map(Number);
+  const dt1 = new Date(y1, m1 - 1, d1, h1, min1);
+
+  const [y2, m2, d2] = date2.split('-').map(Number);
+  const [h2, min2] = time2.split(':').map(Number);
+  const dt2 = new Date(y2, m2 - 1, d2, h2, min2);
+
+  return Math.round((dt2.getTime() - dt1.getTime()) / (1000 * 60));
+};
+
+const subtractMinutesFromTime = (time: string, minutes: number): string => {
+  const [h, m] = time.split(':').map(Number);
+  const totalMinutes = ((h * 60 + m - minutes) % (24 * 60) + 24 * 60) % (24 * 60);
+  const newH = Math.floor(totalMinutes / 60);
+  const newM = totalMinutes % 60;
+  return `${String(newH).padStart(2, '0')}:${String(newM).padStart(2, '0')}`;
 };
 
 const parseDisplayDate = (value: string): Date | null => {
@@ -1527,8 +1551,7 @@ export const ProductionPlanningPage: React.FC = () => {
                           const numCompleted = completed.length;
                           const hasRunning = running !== null;
 
-                          const valid = VALID_SECTIONS(mIdx);
-                          const defaultSec = valid[valid.length - 1];
+                          const validMachine = VALID_SECTIONS(mIdx);
 
                           // Running job is always pinned to the LAST slot so all machines' active
                           // jobs land on the same horizontal row regardless of completed count.
@@ -1561,8 +1584,8 @@ export const ProductionPlanningPage: React.FC = () => {
                           if (completedJob) {
                             const completedDraw = getDrawForDateRow(rowIdx, completedJob, mIdx);
                             const isLowSec = completedJob.section !== undefined &&
-                              valid.includes(completedJob.section) &&
-                              completedJob.section < defaultSec;
+                              validMachine.includes(completedJob.section) &&
+                              completedJob.section < validMachine[validMachine.length - 1];
                             const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                             const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
                             const txt = 'text-sm text-[#6B7280]';
@@ -1666,6 +1689,16 @@ export const ProductionPlanningPage: React.FC = () => {
                           const entry = running!;
                           const isBlank = !!entry.isBlank;
                           const hasProduct = !isBlank && !!entry.product && entry.product !== 'None';
+                          // Dynamic sections from bottle_configuration for this bottle+machine
+                          const bottleForSec = hasProduct
+                            ? bottles.find(b => b.name.toLowerCase() === entry.product.toLowerCase())
+                            : null;
+                          const bidForSec = bottleForSec?.id;
+                          const validForEntry = bidForSec
+                            ? VALID_SECTIONS_FOR_BOTTLE(mIdx, bidForSec)
+                            : validMachine;
+                          const valid = [...validForEntry].sort((a, b) => a - b);
+                          const defaultSec = valid[valid.length - 1];
                           const secVal = entry.section && valid.includes(entry.section) ? entry.section : defaultSec;
                           const isLowSec = secVal < defaultSec;
 
@@ -1773,7 +1806,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                       <select value={secVal}
                                         onChange={e => updateSection(mIdx, rowIdx, Number(e.target.value))}
                                         className={`text-xs font-semibold appearance-none bg-transparent focus:outline-none cursor-pointer pr-3 ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`}>
-                                        {valid.map(n => <option key={n} value={n}>{n}</option>)}
+                                        {[...valid].sort((a, b) => b - a).map(n => <option key={n} value={n}>{n}</option>)}
                                       </select>
                                       <ChevronDown size={8} className={`absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`} />
                                     </div>
@@ -1906,18 +1939,90 @@ export const ProductionPlanningPage: React.FC = () => {
               return { ...prev, [key]: nextList };
             });
           } else {
-            // Replace the running job with a blank entry
+            // Remove the running job and shift all subsequent jobs
+            // backward to close the gap, preserving schedule continuity.
             updateMachineLists(prev => {
               const next = [...prev] as MachineLists;
               const list = [...next[mIdx]];
-              list[rowIdx] = makeNoneEntry(mIdx);
+
+              const deletedEntry = list[rowIdx];
+              const deletedStartTime = deletedEntry.startTime || '07:00';
+
+              // Find the first subsequent entry that actually has a product
+              let firstSubsequentRowIdx = -1;
+              for (let i = rowIdx + 1; i < list.length; i++) {
+                if (list[i].product !== 'None' && !list[i].isBlank) {
+                  firstSubsequentRowIdx = i;
+                  break;
+                }
+              }
+
+              if (firstSubsequentRowIdx === -1) {
+                // No subsequent jobs – just blank the slot
+                list[rowIdx] = makeNoneEntry(mIdx);
+                next[mIdx] = list;
+                return next;
+              }
+
+              // Time delta (minutes) between the deleted job and the next job
+              const subsequentStartTime = list[firstSubsequentRowIdx].startTime || '07:00';
+              const deltaMinutes = calculateTimeDeltaMinutes(
+                dateRows[rowIdx].isoDate, deletedStartTime,
+                dateRows[firstSubsequentRowIdx].isoDate, subsequentStartTime
+              );
+
+              // Shift every entry after the deleted one backward by one slot
+              for (let i = rowIdx; i < list.length - 1; i++) {
+                list[i] = { ...list[i + 1] };
+              }
+              list[list.length - 1] = makeNoneEntry(mIdx);
+
+              // Recalculate start time and estimated completion for every
+              // shifted entry that carries a real product
+              for (let i = rowIdx; i < list.length - 1; i++) {
+                const entry = list[i];
+                if (entry.product === 'None' || entry.isBlank) continue;
+
+                const newStartTime = subtractMinutesFromTime(entry.startTime || '07:00', deltaMinutes);
+                const newEstComp = calculateEstimatedCompletion(
+                  dateRows[i].isoDate,
+                  newStartTime,
+                  entry.requiredBottles || 0,
+                  entry.cut,
+                  entry.wt,
+                  mIdx + 1
+                );
+                list[i] = { ...entry, startTime: newStartTime, estimatedCompletion: newEstComp };
+              }
+
               next[mIdx] = list;
               return next;
+            });
+
+            // Also shift completed-job records so they stay aligned
+            // with the rows they belong to after the shift.
+            setCompletedJobMap(prev => {
+              const nextMap: CompletedJobMap = {};
+              for (const [key, entries] of Object.entries(prev)) {
+                const [kMIdx, kRowIdx] = key.split('-').map(Number);
+                if (kMIdx !== mIdx || kRowIdx < rowIdx) {
+                  nextMap[key] = entries;          // unchanged
+                } else if (kRowIdx === rowIdx) {
+                  nextMap[key] = entries;          // keep on the same row
+                } else {
+                  const newRow = kRowIdx - 1;
+                  if (newRow >= 0) {
+                    const target = `${mIdx}-${newRow}`;
+                    nextMap[target] = [...(nextMap[target] ?? []), ...entries];
+                  }
+                }
+              }
+              return nextMap;
             });
           }
 
           setIsDirty(true);
-          toast.success('Job removed from schedule.');
+          toast.success('Job removed. Subsequent jobs shifted to fill the gap.');
           setDeleteModal(null);
         }}
         onCancel={() => setDeleteModal(null)}

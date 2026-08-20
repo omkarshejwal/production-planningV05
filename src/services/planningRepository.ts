@@ -522,6 +522,173 @@ export const planningRepository = {
     }
   },
 
+  // ── Machine Section Management ──────────────────────────────────────────────
+
+  /**
+   * Returns the base (non-removable) sections for a machine.
+   * Machine 1 & 4: [5, 6, 7, 8]
+   * Machine 2 & 3: [7, 8, 9, 10]
+   */
+  getBaseSections(machineNo: string): number[] {
+    const num = parseInt(machineNo.replace(/\D/g, ''), 10);
+    if (num === 1 || num === 4) return [5, 6, 7, 8];
+    return [7, 8, 9, 10];
+  },
+
+  /**
+   * Returns all unique sections for a machine, sorted ascending.
+   * Always includes base sections + any contiguous user-added sections from DB.
+   * Non-contiguous DB entries (e.g. stray section 9 on Machine 1) are excluded.
+   */
+  getMachineSections(machineNo: string): number[] {
+    const base = this.getBaseSections(machineNo);
+    const machine = _machines.find((m) => m.machine_no === machineNo);
+    const maxSection = machine && machine.max_section > 0 ? machine.max_section : 12;
+    const fromDb = _configs
+      .filter((c) => c.machine_no === machineNo)
+      .map((c) => c.section);
+    const all = [...new Set([...base, ...fromDb])].filter((s) => s <= maxSection).sort((a, b) => a - b);
+    // Only keep contiguous sections starting from the base minimum
+    const minBase = Math.min(...base);
+    const contiguous: number[] = [];
+    let expected = minBase;
+    for (const s of all) {
+      if (s === expected) {
+        contiguous.push(s);
+        expected++;
+      } else if (s > expected) {
+        break;
+      }
+    }
+    return contiguous;
+  },
+
+  /**
+   * Returns the next section available to add for a machine.
+   * Each click adds exactly one new higher section: current highest + 1.
+   * Max section number is 12.
+   */
+  getAvailableSectionsToAdd(machineNo: string): number[] {
+    const current = this.getMachineSections(machineNo);
+    const highest = current[current.length - 1];
+    if (highest >= 12) return [];
+    return [highest + 1];
+  },
+
+  /**
+   * Returns removable sections for a machine (non-base sections present in config).
+   */
+  getRemovableSections(machineNo: string): number[] {
+    const base = this.getBaseSections(machineNo);
+    const current = this.getMachineSections(machineNo);
+    return current.filter((s) => !base.includes(s)).sort((a, b) => b - a);
+  },
+
+  /**
+   * Adds a section to ALL bottles configured on a machine.
+   * - Creates bottle_configuration rows for every bottle on that machine.
+   * - Weight is copied from the first existing config for that bottle on this machine.
+   * - New section speed = highest section speed + 10 (auto-calculated step).
+   * Returns { ok, section } where section is the number that was added.
+   */
+  async addMachineSection(machineNo: string, section: number): Promise<{ ok: boolean; section?: number; error?: string }> {
+    const machineInt = parseInt(machineNo.replace(/\D/g, ''), 10);
+    const machineConfigs = _configs.filter((c) => c.machine_no === machineNo);
+
+    if (machineConfigs.length === 0) {
+      return { ok: false, error: 'No bottle configurations exist for this machine.' };
+    }
+
+    const bottleIds: string[] = [...new Set(machineConfigs.map((c) => c.bottle_id))];
+
+    const currentSections = this.getMachineSections(machineNo);
+    const highestSection = currentSections[currentSections.length - 1];
+    const highestConfig = machineConfigs.find((c) => c.section === highestSection);
+    const highestSpeed = highestConfig ? highestConfig.speeds : 0;
+    const newSpeed = highestSpeed + 10;
+
+    let allOk = true;
+    for (const bottleId of bottleIds) {
+      const existingConfig = machineConfigs.find((c) => c.bottle_id === bottleId);
+      const weight = existingConfig ? existingConfig.weight : 0;
+
+      const upsertResult = await this.upsertBottleConfiguration({
+        machine_no: machineInt,
+        bottle_id: parseInt(bottleId, 10),
+        section,
+        weight,
+        speeds: newSpeed,
+      });
+      if (!upsertResult.ok) allOk = false;
+    }
+
+    if (allOk) {
+      const macStr = `MAC-${String(machineInt).padStart(2, '0')}`;
+      for (const bottleId of bottleIds) {
+        const existingConfig = machineConfigs.find((c) => c.bottle_id === bottleId);
+        const weight = existingConfig ? existingConfig.weight : 0;
+        const idx = _configs.findIndex(
+          (c) => c.machine_no === macStr && c.bottle_id === bottleId && c.section === section
+        );
+        if (idx >= 0) {
+          _configs[idx] = { machine_no: macStr, bottle_id: bottleId, section, weight, speeds: newSpeed };
+        } else {
+          _configs.push({ machine_no: macStr, bottle_id: bottleId, section, weight, speeds: newSpeed });
+        }
+      }
+      return { ok: true, section };
+    }
+    return { ok: false, error: 'Failed to add section to all bottles.' };
+  },
+
+  /**
+   * Removes a section from ALL bottles on a machine.
+   * Cannot remove base sections.
+   */
+  async removeMachineSection(machineNo: string, section: number): Promise<{ ok: boolean; error?: string }> {
+    const base = this.getBaseSections(machineNo);
+    if (base.includes(section)) {
+      return { ok: false, error: 'Cannot remove a base section.' };
+    }
+
+    const machineInt = parseInt(machineNo.replace(/\D/g, ''), 10);
+    const machineConfigs = _configs.filter(
+      (c) => c.machine_no === machineNo && c.section === section
+    );
+
+    if (machineConfigs.length === 0) {
+      return { ok: false, error: 'Section not found on this machine.' };
+    }
+
+    let allOk = true;
+    for (const config of machineConfigs) {
+      const bottleIdInt = parseInt(config.bottle_id, 10);
+      const delResult = await this.deleteBottleConfiguration(machineInt, bottleIdInt, section);
+      if (!delResult.ok) allOk = false;
+    }
+
+    if (allOk) {
+      for (const config of machineConfigs) {
+        const idx = _configs.findIndex(
+          (c) => c.machine_no === machineNo && c.bottle_id === config.bottle_id && c.section === section
+        );
+        if (idx >= 0) _configs.splice(idx, 1);
+      }
+      return { ok: true };
+    }
+    return { ok: false, error: 'Failed to remove section from all bottles.' };
+  },
+
+  /**
+   * Returns the highest section for a given machine + bottle, or null if none.
+   * Uses getMachineSections which always includes base sections.
+   */
+  getHighestSection(machineNo: string): number | null {
+    const sections = this.getMachineSections(machineNo);
+    if (sections.length === 0) return null;
+    return sections[sections.length - 1];
+  },
+
   // ── Internal helpers ────────────────────────────────────────────────────────
 
   /**

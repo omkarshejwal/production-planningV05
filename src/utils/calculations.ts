@@ -27,7 +27,7 @@ const FALLBACK_GOB_COUNTS: Record<number, number> = {
  * Dynamic gob count lookup from the machine_master table.
  * Falls back to FALLBACK_GOB_COUNTS when the cache is empty.
  */
-const getGobCountFromDB = (machineNumber: number): number => {
+export const getGobCountFromDB = (machineNumber: number): number => {
   const machines = planningRepository.getMachines();
   if (machines.length > 0) {
     const machineId = `MAC-${String(machineNumber).padStart(2, '0')}`;
@@ -52,7 +52,7 @@ const normalizePositive = (value: number): number => {
   return value;
 };
 
-const resolveMachineNumber = (machineNo?: string | number): number | null => {
+export const resolveMachineNumber = (machineNo?: string | number): number | null => {
   if (machineNo === undefined || machineNo === null) return null;
   if (typeof machineNo === 'number') return Number.isFinite(machineNo) ? machineNo : null;
   const digits = machineNo.match(/\d+/g);
@@ -61,14 +61,18 @@ const resolveMachineNumber = (machineNo?: string | number): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const extractMachineNumber = (machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>): number | null => {
+  if (machineNo === undefined || machineNo === null) return null;
+  if (typeof machineNo === 'object') {
+    return resolveMachineNumber(machineNo.id);
+  }
+  return resolveMachineNumber(machineNo);
+};
+
 export const resolveMachineGob = (
   machine?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
 ): number => {
   if (machine && typeof machine === 'object') {
-    const explicitGob = Number(machine.gobCount);
-    if (Number.isFinite(explicitGob) && explicitGob > 0) {
-      return explicitGob;
-    }
     const fromId = resolveMachineNumber(machine.id);
     if (fromId !== null) {
       return getGobCountFromDB(fromId);
@@ -89,7 +93,8 @@ export function calculateProductionMetrics(
 ): ProductionMetrics {
   const safeCut = normalizePositive(cutPerMin);
   const safeWeight = normalizePositive(weightGrams);
-  const machineGob = resolveMachineGob(machineNo);
+  const machineNumber = extractMachineNumber(machineNo);
+  const machineGob = machineNumber !== null ? getGobCountFromDB(machineNumber) : 1;
 
   const totalQuantity = safeCut > 0
     ? Math.round(safeCut * machineGob * 60 * 24)
@@ -186,7 +191,8 @@ export function calculateBottlesPerMin(
   machineNo?: string | number | Pick<ISMachine, 'gobCount' | 'id'>
 ): number {
   if (!speed) return 0;
-  const gob = machineNo !== undefined ? resolveMachineGob(machineNo) : 0;
+  const machineNumber = extractMachineNumber(machineNo);
+  const gob = machineNumber !== null ? getGobCountFromDB(machineNumber) : 0;
   if (gob > 0) return speed * gob;
   if (!sections) return 0;
   return speed * sections;

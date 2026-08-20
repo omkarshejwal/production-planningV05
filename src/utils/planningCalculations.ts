@@ -1,5 +1,5 @@
 import { BottleEntry, DateRow, MachineEntry, MachineLists } from '../types/planning';
-import { calculateDraw, calculateProductionMetrics, resolveMachineGob } from './calculations';
+import { calculateDraw, calculateProductionMetrics, resolveMachineNumber, getGobCountFromDB } from './calculations';
 import { planningRepository } from '../services/planningRepository';
 
 export const PRODUCTION_DAY_START_HOUR = 7;
@@ -142,7 +142,7 @@ export function calculateQuantityForProductionDay(
   const hoursNeededToMeetQty = hourlyQuantity > 0 && requiredQty > 0 ? requiredQty / hourlyQuantity : 0;
   const effectiveHours = Math.min(quantityProductionHours, hoursNeededToMeetQty);
   return (entry.cut > 0 && entry.wt > 0 && effectiveHours > 0)
-    ? Number(((entry.cut * resolveMachineGob(machineNo) * 60 * effectiveHours)).toFixed(0))
+    ? Number(((entry.cut * (machineNo !== undefined ? getGobCountFromDB(resolveMachineNumber(machineNo) ?? 1) : 1) * 60 * effectiveHours)).toFixed(0))
     : 0;
 }
 
@@ -206,32 +206,43 @@ export function calculateDailyDrawForEntries(
   return Number(totalDraw.toFixed(2));
 }
 
-// ─── Dynamic lookups from machine_master (DB is source of truth) ──────────────
+// ─── Dynamic lookups from machine_master + bottle_configuration (DB is source of truth) ──
 
 const FALLBACK_MAX_SECTIONS = (mIdx: number) => (mIdx === 0 || mIdx === 3) ? 8 : 10;
-const FALLBACK_VALID_SECTIONS = (mIdx: number): number[] =>
-  (mIdx === 0 || mIdx === 3) ? [6, 7, 8] : [8, 9, 10];
 
 /**
- * Max sections for a 0-based machine index — reads from machine_master.max_section.
+ * Max sections for a machine — reads the highest section from getMachineSections.
  */
 export const MAX_SECTIONS = (mIdx: number): number => {
-  const machines = planningRepository.getMachines();
-  if (machines.length > 0) {
-    const machineId = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-    const machine = machines.find((m) => m.machine_no === machineId);
-    if (machine && machine.max_section > 0) return machine.max_section;
-  }
+  const sections = VALID_SECTIONS(mIdx);
+  if (sections.length > 0) return sections[sections.length - 1];
   return FALLBACK_MAX_SECTIONS(mIdx);
 };
 
 /**
- * Valid section options for a 0-based machine index — derived from machine_master.max_section.
+ * Valid section options for a machine.
+ * Uses planningRepository.getMachineSections which always includes base sections
+ * plus any user-added sections from the database.
  */
 export const VALID_SECTIONS = (mIdx: number): number[] => {
-  const max = MAX_SECTIONS(mIdx);
-  const count = Math.min(3, max);
-  return Array.from({ length: count }, (_, i) => max - count + 1 + i);
+  const machineId = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+  return planningRepository.getMachineSections(machineId);
+};
+
+/**
+ * Returns valid sections for a specific bottle on a specific machine.
+ * Sections are machine-level, so this delegates to getMachineSections.
+ */
+export const VALID_SECTIONS_FOR_BOTTLE = (mIdx: number, _bottleId: string): number[] => {
+  return VALID_SECTIONS(mIdx);
+};
+
+/**
+ * Returns sections sorted descending (highest first) for display/dropdowns.
+ */
+export const VALID_SECTIONS_DESC = (mIdx: number, bottleId?: string): number[] => {
+  const secs = bottleId ? VALID_SECTIONS_FOR_BOTTLE(mIdx, bottleId) : VALID_SECTIONS(mIdx);
+  return [...secs].sort((a, b) => b - a);
 };
 
 // Cut per Section = speeds (shown as "Cut" in the table) ÷ number of sections

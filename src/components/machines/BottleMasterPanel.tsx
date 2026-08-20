@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { FlaskConical, Search, Check, ChevronDown } from 'lucide-react';
 import { planningRepository } from '../../services/planningRepository';
 import { MachineMasterRow, BottleMasterRow, BottleConfigurationRow } from '../../data/planningSchema';
@@ -14,6 +14,7 @@ interface SectionFormRow {
   section: number;
   weight: string;
   speeds: string;
+  isBase: boolean;
 }
 
 export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
@@ -33,18 +34,23 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   const [query, setQuery] = useState('');
   const [dropOpen, setDropOpen] = useState(false);
   const [selectedBase, setSelectedBase] = useState<BottleMasterRow | null>(null);
+  const [overriddenSections, setOverriddenSections] = useState<Set<number>>(new Set());
   const dropRef = useRef<HTMLDivElement>(null);
 
   const selectedMachine = machines.find((m) => m.machine_no === machineNo) ?? null;
 
-  // Only show sections that have configuration records in the database for this machine
-  const allSections = selectedMachine
-    ? [...new Set(
-        configs
-          .filter((c) => c.machine_no === machineNo)
-          .map((c) => c.section)
-      )].sort((a, b) => a - b)
-    : [];
+  // Machine-level sections from DB (unique sections across ALL bottles on this machine)
+  const machineSections = useMemo(() => {
+    if (!machineNo) return [];
+    return planningRepository.getMachineSections(machineNo).sort((a, b) => b - a); // descending
+  }, [machineNo, machines]);
+
+  const baseSections = useMemo(() => {
+    if (!machineNo) return [];
+    return planningRepository.getBaseSections(machineNo);
+  }, [machineNo]);
+
+
 
   // In edit mode, only show bottles that have configurations for the selected machine
   const filteredBases = tab === 'edit' && machineNo
@@ -64,6 +70,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           b.bottle_id.toLowerCase().includes(query.toLowerCase())
       );
 
+  // Rebuild form rows when machine, tab, or selected bottle changes
   useEffect(() => {
     if (!selectedMachine) {
       setFormRows([]);
@@ -73,20 +80,23 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
     const bottleId = tab === 'edit' ? selectedBase?.bottle_id ?? null : null;
 
-    const rows: SectionFormRow[] = allSections.map((sec) => {
+    const rows: SectionFormRow[] = machineSections.map((sec) => {
       const existing = bottleId
         ? configs.find(
             (c) => c.bottle_id === bottleId && c.machine_no === machineNo && c.section === sec
           )
         : undefined;
+      const isBase = baseSections.includes(sec);
       return {
         section: sec,
         weight: '',
         speeds: existing ? String(existing.speeds) : '',
+        isBase,
       };
     });
 
     setFormRows(rows);
+    setOverriddenSections(new Set());
 
     // Pre-populate the shared weight from the first existing config (edit mode)
     if (bottleId) {
@@ -107,7 +117,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     }
 
     setSaved(false);
-  }, [machineNo, tab, selectedBase, configs, allSections, selectedMachine]);
+  }, [machineNo, tab, selectedBase, configs, machineSections, selectedMachine, baseSections]);
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -125,6 +135,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setFormRows([]);
     setQuery('');
     setSelectedBase(null);
+    setOverriddenSections(new Set());
     setSaved(false);
   }
 
@@ -132,13 +143,97 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setSelectedBase(b);
     setQuery(b.bottle_name);
     setDropOpen(false);
+    setOverriddenSections(new Set());
     setSaved(false);
   }
 
-  function updateSpeed(section: number, value: string) {
-    setFormRows((prev) => prev.map((r) => (r.section === section ? { ...r, speeds: value } : r)));
+  function updateWeight(value: string) {
+    setFormWeight(value);
     setSaved(false);
   }
+
+  // BPM auto-calculation: user enters BPM for the highest section.
+  // Lower sections: BPM = highest_BPM - ((highest_section - current_section) × 10)
+  // Preserves overridden section values — only recalculates non-overridden sections.
+  function updateHighestBpm(value: string) {
+    const numValue = parseFloat(value);
+    setFormRows((prev) => {
+      if (prev.length === 0) return prev;
+      const highestSection = prev[0].section; // rows are descending
+      return prev.map((r) => {
+        if (r.section === highestSection) {
+          return { ...r, speeds: value };
+        }
+        if (overriddenSections.has(r.section)) {
+          return r; // preserve user override
+        }
+        if (!isNaN(numValue) && numValue > 0) {
+          const calculated = Math.max(0, numValue - (highestSection - r.section) * 10);
+          const rounded = Math.round(calculated * 100) / 100;
+          return { ...r, speeds: String(rounded) };
+        }
+        return { ...r, speeds: '' };
+      });
+    });
+    setSaved(false);
+  }
+
+  // Update a specific section's speed manually — marks it as overridden
+  function updateSectionSpeed(section: number, value: string) {
+    setFormRows((prev) => {
+      if (prev.length === 0) return prev;
+      const highestSection = prev[0].section;
+      const highestSpeed = parseFloat(prev[0].speeds) || 0;
+
+      return prev.map((r) => {
+        if (r.section === section) {
+          return { ...r, speeds: value };
+        }
+        // If highest changed, recalc non-overridden sections
+        if (section === highestSection) {
+          const numValue = parseFloat(value);
+          if (overriddenSections.has(r.section)) {
+            return r; // preserve override
+          }
+          if (!isNaN(numValue) && numValue > 0) {
+            const calculated = Math.max(0, numValue - (highestSection - r.section) * 10);
+            const rounded = Math.round(calculated * 100) / 100;
+            return { ...r, speeds: String(rounded) };
+          }
+          return { ...r, speeds: '' };
+        }
+        return r;
+      });
+    });
+
+    // Track override: only mark as overridden if it's NOT the highest section being edited
+    // (editing highest is the normal recalc path)
+    const highestSection = formRows.length > 0 ? formRows[0].section : null;
+    if (section !== highestSection) {
+      setOverriddenSections((prev) => {
+        const next = new Set(prev);
+        const numVal = parseFloat(value);
+        if (!isNaN(numVal) && numVal > 0) {
+          next.add(section); // manual entry → mark as overridden
+        } else {
+          next.delete(section); // cleared → no longer overridden, will recalc on next highest change
+        }
+        return next;
+      });
+    } else {
+      // Highest section changed — recalc non-overridden, but override tracking for highest
+      // is not needed since it's the input itself
+      setOverriddenSections((prev) => {
+        const next = new Set(prev);
+        // Remove override for highest — it's always the user-set value
+        next.delete(section);
+        return next;
+      });
+    }
+    setSaved(false);
+  }
+
+
 
   async function handleSave() {
     if (!selectedMachine || saving) return;
@@ -172,7 +267,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     let allOk = true;
     for (const row of formRows) {
       const speeds = parseFloat(row.speeds);
-      if (isNaN(speeds)) continue;
+      if (isNaN(speeds) || speeds <= 0) continue;
 
       const result = await planningRepository.upsertBottleConfiguration({
         machine_no: machineInt,
@@ -249,7 +344,11 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
                 >
                   <option value="">Select machine...</option>
-                  {machines.map((m) => (
+                  {[...machines].sort((a, b) => {
+                    const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
+                    const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
+                    return numA - numB;
+                  }).map((m) => (
                     <option key={m.machine_no} value={m.machine_no}>
                       Machine {m.machine_no.replace(/\D/g, '')} — {m.gob_type}
                     </option>
@@ -259,9 +358,9 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   <ChevronDown className="w-4 h-4" />
                 </span>
               </div>
-              {selectedMachine && allSections.length > 0 && (
+              {selectedMachine && machineSections.length > 0 && (
                 <p className="text-[10px] text-gray-400">
-                  {allSections.length} sections ({allSections[0]}–{allSections[allSections.length - 1]})
+                  {machineSections.length} sections ({machineSections[machineSections.length - 1]}–{machineSections[0]})
                 </p>
               )}
             </div>
@@ -326,12 +425,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
               <div className="relative">
                 <input
                   type="number"
+                  step="0.01"
                   placeholder="e.g. 450"
                   value={formWeight}
-                  onChange={(e) => {
-                    setFormWeight(e.target.value);
-                    setSaved(false);
-                  }}
+                  onChange={(e) => updateWeight(e.target.value)}
                   className="w-full h-10 px-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
                 <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-medium">g</span>
@@ -355,7 +452,11 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
                 >
                   <option value="">Select machine...</option>
-                  {machines.map((m) => (
+                  {[...machines].sort((a, b) => {
+                    const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
+                    const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
+                    return numA - numB;
+                  }).map((m) => (
                     <option key={m.machine_no} value={m.machine_no}>
                       Machine {m.machine_no.replace(/\D/g, '')} — {m.gob_type}
                     </option>
@@ -365,9 +466,9 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   <ChevronDown className="w-4 h-4" />
                 </span>
               </div>
-              {selectedMachine && allSections.length > 0 && (
+              {selectedMachine && machineSections.length > 0 && (
                 <p className="text-[10px] text-gray-400">
-                  {allSections.length} sections ({allSections[0]}–{allSections[allSections.length - 1]})
+                  {machineSections.length} sections ({machineSections[machineSections.length - 1]}–{machineSections[0]})
                 </p>
               )}
             </div>
@@ -431,34 +532,47 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Section Speeds
+                Section Speeds (CUT/MIN)
               </label>
               <span className="text-[10px] text-gray-400 font-mono">
-                {allSections[0]}–{allSections[allSections.length - 1]}
+                {machineSections[machineSections.length - 1]}–{machineSections[0]} (descending)
               </span>
             </div>
+
             <div className="rounded-lg border border-gray-100 bg-gray-50 overflow-hidden">
-              {formRows.map((r, i) => (
-                <div
-                  key={r.section}
-                  className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
-                >
-                  <div className="w-7 h-7 rounded bg-blue-600 text-white text-xs font-bold flex items-center justify-center shrink-0">
-                    {r.section}
+              {formRows.map((r, i) => {
+                const isHighest = i === 0;
+                const isOverridden = overriddenSections.has(r.section);
+                return (
+                  <div
+                    key={r.section}
+                    className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
+                  >
+                    <div className="w-7 h-7 rounded bg-blue-600 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                      {r.section}
+                    </div>
+                    <span className="text-sm text-gray-600 font-medium min-w-17.5">
+                      Section {r.section}
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder={isHighest ? "Enter highest CUT/MIN" : "Auto-calculated"}
+                      value={r.speeds}
+                      onChange={(e) => updateSectionSpeed(r.section, e.target.value)}
+                      className={`flex-1 h-9 px-3 text-sm border rounded-md transition ${
+                        isOverridden
+                          ? 'bg-amber-50 text-amber-800 border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent'
+                          : isHighest
+                          ? 'bg-white text-gray-800 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                          : 'bg-gray-50 text-gray-700 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                      }`}
+                    />
+                    <span className="text-xs text-gray-400 font-medium shrink-0">CUT/MIN</span>
+                    <div className="w-6 h-6 shrink-0" />
                   </div>
-                  <span className="text-sm text-gray-600 font-medium min-w-[70px]">
-                    Section {r.section}
-                  </span>
-                  <input
-                    type="number"
-                    placeholder="0 BPM"
-                    value={r.speeds}
-                    onChange={(e) => updateSpeed(r.section, e.target.value)}
-                    className="flex-1 h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  />
-                  <span className="text-xs text-gray-400 font-medium shrink-0">BPM</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
