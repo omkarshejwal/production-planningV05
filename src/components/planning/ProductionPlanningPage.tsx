@@ -580,8 +580,9 @@ export const ProductionPlanningPage: React.FC = () => {
             if (entry.endTime) {
               estCompletion = entry.endTime;
             } else {
-              const ch = Math.floor(totalMins / 60) % 24;
-              const cm = Math.round(totalMins % 60);
+              const roundedTotalMins = Math.round(totalMins);
+              const ch = Math.floor(roundedTotalMins / 60) % 24;
+              const cm = roundedTotalMins % 60;
               estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
             }
 

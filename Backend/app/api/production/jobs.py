@@ -6,7 +6,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 from decimal import Decimal
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from app.db.session import get_db
 from app.models.job import ProductionJob, JobPackaging
@@ -326,10 +326,17 @@ def delete_job(
     All subsequent jobs on the same machine are shifted backward to
     close the gap so the schedule stays continuous.
     """
+    try:
+        parsed_date = datetime.strptime(plan_date, "%Y-%m-%d").date()
+        parsed_time = datetime.strptime(start_time, "%H:%M").time()
+        parsed_start_time = datetime.combine(parsed_date, parsed_time)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid plan_date or start_time format")
+
     existing_job = db.query(ProductionJob).filter_by(
         plan_date=plan_date,
         machine_no=machine_no,
-        start_time=start_time
+        start_time=parsed_start_time
     ).first()
 
     if not existing_job:

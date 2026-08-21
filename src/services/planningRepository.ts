@@ -356,8 +356,7 @@ export const planningRepository = {
   ): Promise<{ ok: boolean; error?: string }> {
     try {
       const machineInt = this._machineIdToInt(machine_no);
-      const startTimeIso = this._buildStartTime(plan_date, start_time);
-      await apiFetch(`/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(startTimeIso)}`, {
+      await apiFetch(`/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(start_time)}`, {
         method: 'DELETE',
       });
       return { ok: true };

@@ -252,6 +252,7 @@ Source: `Backend/app/main.py`, routers under `Backend/app/api/*`.
 - Response: array of `{ id, user_id, action, details, timestamp }`.
 - Auth: authenticated.
 
+
 ### Holidays router (`/api/production/holidays`)
 #### `GET /api/production/holidays/`
 - Response: ordered array `{ holiday_date, holiday_name }`.
@@ -393,3 +394,8 @@ This starts:
 - `GEMINI_API_KEY` (root `.env.example`; appears unrelated to core planning module flows).
 - `APP_URL` (root `.env.example`; app URL reference).
 
+## Changelog
+### 2026-08-20 — Fix 500 Error on Job Deletion
+- **What changed:** Parsed the `plan_date` and `start_time` string parameters into a proper Python `datetime` object before querying the database, fixing a Postgres type mismatch error when deleting jobs.
+- **Files changed:** `Backend/app/api/production/jobs.py`
+- **Why:** To resolve an `InvalidDatetimeFormat` error preventing job deletions.
