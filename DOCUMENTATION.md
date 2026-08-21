@@ -399,3 +399,24 @@ This starts:
 - **What changed:** Parsed the `plan_date` and `start_time` string parameters into a proper Python `datetime` object before querying the database, fixing a Postgres type mismatch error when deleting jobs.
 - **Files changed:** `Backend/app/api/production/jobs.py`
 - **Why:** To resolve an `InvalidDatetimeFormat` error preventing job deletions.
+
+## 7. Deployment to GitHub Pages
+
+### Deploying the Frontend
+The frontend application is configured for continuous deployment to GitHub Pages via GitHub Actions (`.github/workflows/deploy.yml`).
+
+To configure and access the live application:
+1. Ensure your code is pushed to the `main` branch. This automatically triggers the deployment workflow.
+2. In your repository on GitHub, go to **Settings** → **Pages** (under the "Code and automation" section).
+3. Under **Build and deployment**, set the **Source** to **Deploy from a branch**.
+4. Set the **Branch** to `gh-pages` and the folder to `/(root)`, then click **Save**.
+5. GitHub will now serve your application. Note the generated URL displayed at the top of the settings page (e.g., `https://<username>.github.io/<repo-name>/`).
+
+### Backend/API Configuration
+Because GitHub Pages only hosts static files, the FastAPI backend must be deployed separately (e.g., using Render, Railway, or AWS).
+
+To connect the live frontend to a live backend:
+1. In your GitHub repository, go to **Settings** → **Secrets and variables** → **Actions**.
+2. Click on the **Variables** tab and add a new repository variable.
+3. Name it `VITE_API_URL` and set its value to your live backend's URL (e.g., `https://my-backend.onrender.com`).
+4. Re-run the deployment workflow (or push a new commit) so the frontend rebuilds with the new backend API URL injected.
