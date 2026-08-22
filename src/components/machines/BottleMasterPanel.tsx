@@ -305,6 +305,11 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
   const showForm = selectedMachine && formRows.length > 0;
 
+  React.useEffect(() => {
+    (window as any).bottleDebugState = { formRows, selectedMachine, formBottleName, canSave, tab, saving };
+    console.log("DEBUG_BOTTLE_STATE", { formRows, selectedMachine, formBottleName, canSave });
+  });
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 flex flex-col shadow-sm w-full">
       <div className="flex items-center gap-2.5 px-6 py-4 border-b border-gray-100">
