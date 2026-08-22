@@ -389,12 +389,212 @@ This starts:
 - frontend on `:3000`.
 
 ### Environment variables present in repo/config
+- Body: `{ bottle_name }`.
+- Response: created bottle `{ bottle_id, bottle_name }`.
+- Auth: authenticated + `Editor`.
+
+#### `PUT /api/production/products/bottles/{bottle_id}`
+- Body: `{ bottle_name }`.
+- Response: updated bottle.
+- Auth: authenticated + `Editor`.
+
+#### `GET /api/production/products/configurations/`
+- Response: array `{ machine_no, bottle_id, section, weight, speeds }`.
+- Auth: authenticated.
+
+#### `POST /api/production/products/configurations/`
+- Body: `{ machine_no, bottle_id, section, weight, speeds }`.
+- Response: created configuration row.
+- Auth: authenticated + `Editor`.
+
+#### `PUT /api/production/products/configurations/{machine_no}/{bottle_id}/{section}`
+- Body: `{ machine_no, bottle_id, section, weight, speeds }`.
+- Response: updated configuration row.
+- Auth: authenticated + `Editor`.
+
+#### `DELETE /api/production/products/configurations/{machine_no}/{bottle_id}/{section}`
+- Response: `{ ok: true }`.
+- Auth: authenticated + `Editor`.
+
+### Jobs router (`/api/production/jobs`)
+#### `GET /api/production/jobs/`
+- Query params (all optional): `from_date`, `to_date`, `machine_no`, `limit`, `order_by`.
+- Purpose: list jobs with `packaging` relation loaded.
+- Response: array of job objects including packaging collection:
+  - `job_id, plan_date, machine_no, start_time, bottle_id, section, weight, speeds, draw, quantity, required_bottles, estimated_completion, completion_time, changeover_minutes, status, packaging[]`.
+- Auth: authenticated.
+
+#### `POST /api/production/jobs/`
+- Purpose: create or upsert by (`plan_date`,`machine_no`,`start_time`), compute quantity/draw from machine/config.
+- Body (accepted schema): `plan_date, machine_no, start_time, bottle_id, section?, draw?, required_bottles?, estimated_completion?, completion_time?, changeover_minutes?, status?, packaging[]`.
+- Response: saved job object (with packaging relation).
+- Auth: authenticated + `Editor`.
+
+#### `POST /api/production/jobs/extend/`
+- Purpose: extend one job by `days`, shift subsequent same-machine jobs forward.
+- Body: `{ plan_date, machine_no, start_time, days }`.
+- Response: array of affected jobs for same machine from source date onward.
+- Auth: authenticated + `Editor`.
+
+#### `DELETE /api/production/jobs/{plan_date}/{machine_no}/{start_time}`
+- Purpose: delete job, delete linked packaging, shift subsequent jobs backward to close gap.
+- Response: HTTP 204 no body.
+- Auth: authenticated + `Editor`.
+
+### Audit logs router (`/api/production/audit-logs`)
+#### `GET /api/production/audit-logs/`
+- Purpose: latest 50 audit entries for notification panel.
+- Response: array of `{ id, user_id, action, details, timestamp }`.
+- Auth: authenticated.
+
+
+### Holidays router (`/api/production/holidays`)
+#### `GET /api/production/holidays/`
+- Response: ordered array `{ holiday_date, holiday_name }`.
+- Auth: authenticated.
+
+#### `POST /api/production/holidays/`
+- Body: `{ holiday_date, holiday_name }`.
+- Response: created holiday.
+- Auth: authenticated + `Editor`.
+
+#### `PUT /api/production/holidays/{holiday_date}`
+- Body: `{ holiday_date, holiday_name }`.
+- Response: updated holiday.
+- Auth: authenticated + `Editor`.
+
+#### `DELETE /api/production/holidays/{holiday_date}`
+- Response: `{ ok: true }`.
+- Auth: authenticated + `Editor`.
+
+### Frontend/backend API alignment notes
+- Frontend calls found for auth, jobs, machines, bottles, configurations, holidays.
+- Endpoint currently present but **not called by frontend code found in this pass**: `GET /api/production/audit-logs/`.
+- Frontend sends `production_hours` in some job payloads, but backend `ProductionJobCreate` schema has no `production_hours` field. **Needs verification**.
+- `AuditLogResponse.user_id` schema is typed `int`, while model stores `String` FK to `users.employee_id`. **Needs verification**.
+
+## 4. Frontend Structure
+Source: `src/*`.
+
+### Top-level structure
+- `App.tsx`: wraps app with `AuthProvider`; renders `LoginPage` if unauthenticated, else `ERPProvider` + main layout.
+- `context/AuthContext.tsx`: login/signup/me/change-password/logout and token persistence via `localStorage`.
+- `context/ERPContext.tsx`: main module state and orchestration around repository cache + planning actions.
+- `services/planningRepository.ts`: API-backed data layer and in-memory cache for machines/bottles/configs/jobs.
+- `components/layout/*`: header/sidebar module navigation.
+
+### Major modules/components
+- `components/planning/PlanningModule.tsx`: hosts `ProductionPlanningPage` and `PlanningDrawer`.
+- `components/planning/ProductionPlanningPage.tsx`: grid/register UI, date filtering, month navigation, local editing state (`machineLists`, `completedJobMap`), save-to-DB batch flow, extend/delete/end-job flows, export/print.
+- `components/planning/PlanningDrawer.tsx`: modal form for creating/editing jobs with machine+bottle+section selection, metrics preview, packaging allocation, pallet options; submits to `saveJob` in context.
+- `components/planning/EditMachineModal.tsx`: grid cell edit modal for bottle/start-time/packing/required quantity.
+- `components/planning/EndJobModal.tsx`: marks job completed and schedules next start with changeover delay.
+- `components/machines/MachinesModule.tsx`: machine, bottle/config, and holiday master panels.
+- `components/machines/BottleMasterPanel.tsx`: create bottle + upsert bottle configurations by machine sections.
+- `components/machines/MachineMasterPanel.tsx`: update machine max sections.
+- `components/machines/HolidayMasterPanel.tsx`: CRUD for holiday dates.
+- `components/profile/ProfileModule.tsx`: view user and change password.
+- `components/dashboard`, `components/settings`: minimal/placeholder.
+- `components/reports`, `components/quality`: explicit “Not Developed Yet” placeholders.
+
+### End-to-end core data flows
+#### A) Create/edit a production job (drawer/context/repository/backend)
+1. User opens `PlanningDrawer` (new or edit context from `ERPContext`).
+2. Drawer resolves machine/bottle/section and computes metrics (`calculateProductionMetrics`, estimated completion, draw, good bottles).
+3. On submit, drawer builds packaging rows and calls `saveJob` from `ERPContext`.
+4. `ERPContext.saveJob` validates machine/config; creates one or more segment rows (for non-edit path) and calls repository methods (`createProductionJobsBatch` or `updateProductionJob`).
+5. `planningRepository._postJob` maps frontend IDs/times to backend payload and posts to `POST /api/production/jobs/`.
+6. Backend upserts by unique (`plan_date`,`machine_no`,`start_time`), computes qty/draw, replaces packaging rows, and commits.
+7. Context re-initializes repository data for active date window and triggers planner refresh.
+
+#### B) Save grid changes from planning register
+1. User edits entries directly in `ProductionPlanningPage` local machine grid (`machineLists` + `completedJobMap`).
+2. `handleSaveToDb` flattens rows into `ProductionJobRow` payload list, computing changeover/segment timings and packaging payloads.
+3. Calls `planningRepository.createProductionJobsBatch` (parallel upserts).
+4. Compares current grid keys to cached DB keys and deletes stale jobs with `deleteProductionJob`.
+5. Reloads scoped jobs via `reloadJobsForWindow`; clears dirty flag.
+
+#### C) Extend job workflow
+1. UI action in planning grid triggers extend handler.
+2. Current implementation in `ProductionPlanningPage` adjusts local rows (`handleExtendJob`) and marks dirty.
+3. Persisting happens when user clicks save (batch upsert + stale deletion).
+4. Backend also has dedicated `POST /jobs/extend/` and repository method `extendProductionJob`; this path is used from `ERPContext.extendJob` (drawer/context APIs), but not the main planning page flow in current code. **Needs verification** for intended canonical path.
+
+### Key service/repository responsibilities
+- `utils/api.ts`: shared fetch wrapper, auth header injection, error normalization.
+- `services/planningRepository.ts`:
+  - fetch/cache machines/bottles/configs/jobs (`init`),
+  - normalize API ↔ UI row formats,
+  - perform job CRUD/extend and master-data CRUD,
+  - utility conversions for machine IDs and datetime formatting.
+- `utils/planningCalculations.ts` and `utils/calculations.ts`: draw, quantity, good bottle, completion/date math.
+- `utils/exportData.ts`: fetches jobs in selected range + previous day context and builds flattened export rows.
+
+## 5. Known Issues and History
+Primary source here: git history (`git log`/`git show`).
+
+### Significant historical changes (Module 1)
+1. **Authentication introduced** (`89dd41b`): added backend auth router + frontend auth context/login UI.
+2. **Password handling changed** (`5a86e37`): commit message indicates hash function removed; current code comments show plain-text comparison/storage.
+3. **Extend-job capability added** (`bb90936`): introduced backend `POST /jobs/extend/` and corresponding scheduling-shift logic.
+4. **Revert of earlier job_id/continuation change** (`3785f01`): commit message says previous PR behavior was rolled back to “single row” direction.
+5. **Schema/key model changed to surrogate job key** (`813a1bb`): `production_job` switched to `job_id` PK + unique (`plan_date`,`machine_no`,`start_time`), and `job_packaging` moved to `job_id` FK linkage.
+6. **Later fixes aligned API operations to `job_id` linkage** (`813a1bb` diff): job update/delete/extend packaging operations moved from date/machine/start filters to `job_id` filters.
+7. **Frontend data source changed to DB-backed repository** (`8c7ee2b`, plus earlier integration commits): bottle master/config and planning flows moved to API-backed reads/writes.
+
+Where rationale was unclear from commit messages, interpretation above is from the changed diffs.
+
+### Current open issues / ambiguity markers found in code
+- `src/data/planningSchema.ts` includes `production_hours`, but backend create schema does not accept it explicitly. **Needs verification**.
+- `Backend/app/schemas/audit_log.py` defines `user_id: int`, while model FK is string employee ID. **Needs verification**.
+- `ProductionPlanningPage` local extend flow differs from repository/backend extend endpoint usage. **Needs verification** of intended single source of truth.
+- Auth/session implementation uses in-memory session map (`SESSIONS`) in backend process; behavior across multi-instance deployment is **unclear from code**.
+- One line in viewed `auth.py` response was masked by tooling during this pass; comments indicate plain-text password storage/comparison, but exact assignment statement display was partially redacted. **Needs verification**.
+
+### TODO/FIXME/HACK scan result
+- No explicit `TODO`/`FIXME`/`HACK` markers were found in application source files during this pass.
+- Matches appeared in lockfiles due package names like `debug` (not actionable TODO markers).
+
+## 6. Setup and Run
+Derived from `package.json`, `Backend/requirements.txt`, Docker files, `.env.example`, and CI workflow.
+
+### Option A: Local (separate backend + frontend)
+1. **Backend setup**
+   - `cd /home/runner/work/production-planningV05/production-planningV05/Backend`
+   - Install dependencies: `pip install -r requirements.txt`
+   - Configure env (optional): set `DATABASE_URL` (defaults to `sqlite:///./vitrumglass.db`).
+   - Run backend: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+
+2. **Frontend setup**
+   - `cd /home/runner/work/production-planningV05/production-planningV05`
+   - Install dependencies: `bun install` (CI path) or `npm install` (lockfile/scripts also present).
+   - Set `VITE_API_URL` if needed (defaults to `http://127.0.0.1:8000` in code).
+   - Run dev server: `bun run dev` or `npm run dev`.
+
+3. **Build/lint commands (from scripts/CI)**
+   - Lint/type-check: `bun run lint` / `npm run lint`
+   - Build: `bun run build` / `npm run build`
+
+### Option B: Docker Compose
+From repo root:
+- `docker compose up --build`
+
+This starts:
+- backend on `:8000` (with `DATABASE_URL` defaulting to sqlite file under `/app/data/vitrumglass.db` in volume `backend-data`),
+- frontend on `:3000`.
+
+### Environment variables present in repo/config
 - `DATABASE_URL` (backend DB connection string).
 - `VITE_API_URL` (frontend API base URL).
 - `GEMINI_API_KEY` (root `.env.example`; appears unrelated to core planning module flows).
 - `APP_URL` (root `.env.example`; app URL reference).
 
 ## Changelog
+### 2026-08-22 — Fix holiday highlighting logic on production grid
+- **What changed:** Added a useEffect hook to fetch holiday data on component mount and stored it in state, resolving an issue where the holiday cache was empty and dates weren't highlighted on initial load.
+- **Files changed:** `src/components/planning/ProductionPlanningPage.tsx`
+- **Why:** The holiday highlight existed but the fetching function was never invoked when loading the planning grid, so the cache was always empty.
+
 ### 2026-08-20 — Fix 500 Error on Job Deletion
 - **What changed:** Parsed the `plan_date` and `start_time` string parameters into a proper Python `datetime` object before querying the database, fixing a Postgres type mismatch error when deleting jobs.
 - **Files changed:** `Backend/app/api/production/jobs.py`
