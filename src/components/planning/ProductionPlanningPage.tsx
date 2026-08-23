@@ -312,13 +312,23 @@ export const ProductionPlanningPage: React.FC = () => {
   }, [dateRows]);
 
   // Holiday lookup: isoDate → holiday_name, and set of row indices that are holidays
+  const [holidays, setHolidays] = useState<{ holiday_date: string; holiday_name: string }[]>([]);
+
+  useEffect(() => {
+    const fetchHolidays = async () => {
+      const data = await planningRepository.getHolidays();
+      setHolidays(data);
+    };
+    fetchHolidays();
+  }, []);
+
   const holidayMap = useMemo(() => {
     const m = new Map<string, string>();
-    for (const h of planningRepository.getCachedHolidays()) {
+    for (const h of holidays) {
       m.set(h.holiday_date, h.holiday_name);
     }
     return m;
-  }, []);
+  }, [holidays]);
 
   const holidayRowIndices = useMemo(() => {
     const s = new Set<number>();
@@ -580,8 +590,9 @@ export const ProductionPlanningPage: React.FC = () => {
             if (entry.endTime) {
               estCompletion = entry.endTime;
             } else {
-              const ch = Math.floor(totalMins / 60) % 24;
-              const cm = Math.round(totalMins % 60);
+              const roundedTotalMins = Math.round(totalMins);
+              const ch = Math.floor(roundedTotalMins / 60) % 24;
+              const cm = roundedTotalMins % 60;
               estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
             }
 
