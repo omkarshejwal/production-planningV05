@@ -55,20 +55,20 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   // In edit mode, only show bottles that have configurations for the selected machine
   const filteredBases = tab === 'edit' && machineNo
     ? bottles.filter((b) => {
-        const hasConfig = configs.some(
-          (c) => c.bottle_id === b.bottle_id && c.machine_no === machineNo
-        );
-        if (!hasConfig) return false;
-        return (
-          b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
-          b.bottle_id.toLowerCase().includes(query.toLowerCase())
-        );
-      })
-    : bottles.filter(
-        (b) =>
-          b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
-          b.bottle_id.toLowerCase().includes(query.toLowerCase())
+      const hasConfig = configs.some(
+        (c) => c.bottle_id === b.bottle_id && c.machine_no === machineNo
       );
+      if (!hasConfig) return false;
+      return (
+        b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
+        b.bottle_id.toLowerCase().includes(query.toLowerCase())
+      );
+    })
+    : bottles.filter(
+      (b) =>
+        b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
+        b.bottle_id.toLowerCase().includes(query.toLowerCase())
+    );
 
   // Rebuild form rows when machine, tab, or selected bottle changes
   useEffect(() => {
@@ -83,8 +83,8 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     const rows: SectionFormRow[] = machineSections.map((sec) => {
       const existing = bottleId
         ? configs.find(
-            (c) => c.bottle_id === bottleId && c.machine_no === machineNo && c.section === sec
-          )
+          (c) => c.bottle_id === bottleId && c.machine_no === machineNo && c.section === sec
+        )
         : undefined;
       const isBase = baseSections.includes(sec);
       return {
@@ -155,81 +155,122 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   // BPM auto-calculation: user enters BPM for the highest section.
   // Lower sections: BPM = highest_BPM - ((highest_section - current_section) × 10)
   // Preserves overridden section values — only recalculates non-overridden sections.
+  // BPM auto-calculation:
+  // User enters BPM for the highest section.
+  // Base speed = highest BPM / highest section.
+  // Lower sections = base speed × section number.
+  // Preserves manually overridden section values.
   function updateHighestBpm(value: string) {
     const numValue = parseFloat(value);
+
     setFormRows((prev) => {
       if (prev.length === 0) return prev;
-      const highestSection = prev[0].section; // rows are descending
+
+      const highestSection = prev[0].section;
+
       return prev.map((r) => {
+        // Highest section keeps the value entered by the user
         if (r.section === highestSection) {
           return { ...r, speeds: value };
         }
+
+        // Preserve manually overridden sections
         if (overriddenSections.has(r.section)) {
-          return r; // preserve user override
+          return r;
         }
-        if (!isNaN(numValue) && numValue > 0) {
-          const calculated = Math.max(0, numValue - (highestSection - r.section) * 10);
+
+        if (!isNaN(numValue) && numValue > 0 && highestSection > 0) {
+          const speedPerSection = numValue / highestSection;
+          const calculated = speedPerSection * r.section;
           const rounded = Math.round(calculated * 100) / 100;
-          return { ...r, speeds: String(rounded) };
+
+          return {
+            ...r,
+            speeds: String(rounded),
+          };
         }
-        return { ...r, speeds: '' };
+
+        return {
+          ...r,
+          speeds: '',
+        };
       });
     });
+
     setSaved(false);
   }
 
   // Update a specific section's speed manually — marks it as overridden
+  // Update a specific section's speed manually — marks it as overridden
   function updateSectionSpeed(section: number, value: string) {
     setFormRows((prev) => {
       if (prev.length === 0) return prev;
+
       const highestSection = prev[0].section;
-      const highestSpeed = parseFloat(prev[0].speeds) || 0;
 
       return prev.map((r) => {
+        // User is manually editing this section
         if (r.section === section) {
           return { ...r, speeds: value };
         }
-        // If highest changed, recalc non-overridden sections
+
+        // If highest section is edited, recalculate
+        // all non-overridden sections.
         if (section === highestSection) {
           const numValue = parseFloat(value);
+
+          // Preserve manually overridden sections
           if (overriddenSections.has(r.section)) {
-            return r; // preserve override
+            return r;
           }
-          if (!isNaN(numValue) && numValue > 0) {
-            const calculated = Math.max(0, numValue - (highestSection - r.section) * 10);
+
+          if (!isNaN(numValue) && numValue > 0 && highestSection > 0) {
+            const speedPerSection = numValue / highestSection;
+            const calculated = speedPerSection * r.section;
             const rounded = Math.round(calculated * 100) / 100;
-            return { ...r, speeds: String(rounded) };
+
+            return {
+              ...r,
+              speeds: String(rounded),
+            };
           }
-          return { ...r, speeds: '' };
+
+          return {
+            ...r,
+            speeds: '',
+          };
         }
+
         return r;
       });
     });
 
-    // Track override: only mark as overridden if it's NOT the highest section being edited
-    // (editing highest is the normal recalc path)
-    const highestSection = formRows.length > 0 ? formRows[0].section : null;
+    // Track manual overrides
+    const highestSection =
+      formRows.length > 0 ? formRows[0].section : null;
+
     if (section !== highestSection) {
       setOverriddenSections((prev) => {
         const next = new Set(prev);
         const numVal = parseFloat(value);
+
         if (!isNaN(numVal) && numVal > 0) {
-          next.add(section); // manual entry → mark as overridden
+          next.add(section);
         } else {
-          next.delete(section); // cleared → no longer overridden, will recalc on next highest change
+          next.delete(section);
         }
+
         return next;
       });
     } else {
-      // Highest section changed — recalc non-overridden, but override tracking for highest
-      // is not needed since it's the input itself
+      // Highest section is the base value, not an override
       setOverriddenSections((prev) => {
         const next = new Set(prev);
-        // Remove override for highest — it's always the user-set value
         next.delete(section);
         return next;
       });
     }
+
     setSaved(false);
   }
 
@@ -317,9 +358,8 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           <button
             key={t}
             onClick={() => switchTab(t)}
-            className={`py-3 px-0 mr-6 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-              tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'
-            }`}
+            className={`py-3 px-0 mr-6 text-sm font-semibold border-b-2 -mb-px transition-colors ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'
+              }`}
           >
             {t === 'new' ? 'Add New' : 'Edit Existing'}
           </button>
@@ -560,13 +600,12 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                       placeholder={isHighest ? "Enter highest CUT/MIN" : "Auto-calculated"}
                       value={r.speeds}
                       onChange={(e) => updateSectionSpeed(r.section, e.target.value)}
-                      className={`flex-1 h-9 px-3 text-sm border rounded-md transition ${
-                        isOverridden
+                      className={`flex-1 h-9 px-3 text-sm border rounded-md transition ${isOverridden
                           ? 'bg-amber-50 text-amber-800 border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent'
                           : isHighest
-                          ? 'bg-white text-gray-800 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
-                          : 'bg-gray-50 text-gray-700 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
-                      }`}
+                            ? 'bg-white text-gray-800 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                            : 'bg-gray-50 text-gray-700 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                        }`}
                     />
                     <span className="text-xs text-gray-400 font-medium shrink-0">CUT/MIN</span>
                     <div className="w-6 h-6 shrink-0" />
@@ -581,13 +620,12 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           <button
             onClick={handleSave}
             disabled={!canSave}
-            className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${
-              saved
+            className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${saved
                 ? 'bg-green-50 text-green-600 border border-green-200'
                 : !canSave
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
-            }`}
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
           >
             {saved ? (
               <>
