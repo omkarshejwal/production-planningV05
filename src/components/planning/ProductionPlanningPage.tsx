@@ -1262,11 +1262,12 @@ export const ProductionPlanningPage: React.FC = () => {
     const rowDateValue = parseDisplayDate(rowDate);
     const dayValue = rowDateValue || new Date();
     const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
-    return calculateQuantityForProductionDay(
+    const rawQty = calculateQuantityForProductionDay(
       dayValue,
       { ...entry, qty: requiredQty, requiredBottles: entry.requiredBottles },
       `MAC-${String(mIdx + 1).padStart(2, '0')}`
     );
+    return calcGoodBottles(rawQty);
   };
 
   // Format a bottle count in lakhs, e.g. 341000 → "3.41L".

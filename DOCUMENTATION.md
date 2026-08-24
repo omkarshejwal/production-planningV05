@@ -590,6 +590,11 @@ This starts:
 - `APP_URL` (root `.env.example`; app URL reference).
 
 ## Changelog
+### 2026-08-24 — Show yield-adjusted Good Bottles in grid Qty column
+- **What changed:** Applied the `calcGoodBottles` (90% yield factor) to the raw quantity returned by `calculateQuantityForProductionDay` in `getDailyProducedQty`.
+- **Files changed:** `src/components/planning/ProductionPlanningPage.tsx`
+- **Why:** To make the main grid's Qty column match the yield-adjusted "Daily Good Bottles (90%)" shown in the tooltip for better readability.
+
 ### 2026-08-22 — Fix holiday highlighting logic on production grid
 - **What changed:** Added a useEffect hook to fetch holiday data on component mount and stored it in state, resolving an issue where the holiday cache was empty and dates weren't highlighted on initial load.
 - **Files changed:** `src/components/planning/ProductionPlanningPage.tsx`
