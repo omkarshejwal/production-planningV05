@@ -71,11 +71,11 @@ jobs:
           context: ./Backend
           push: true
           # Note: Docker tags must be entirely lowercase!
-          tags: ghcr.io/vlr-spec/vitrumappsv01-backend:latest
+          tags: ghcr.io/omkarshejwal/vitrumappsv01-backend:latest
 
       - name: Build and push Frontend Image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/vlr-spec/vitrumappsv01-frontend:latest
+          tags: ghcr.io/omkarshejwal/vitrumappsv01-frontend:latest
