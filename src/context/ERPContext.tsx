@@ -4,21 +4,9 @@ import {
   BottleMaster,
   BottleMasterRecord,
   DailyPlanningEntry,
-  DispatchOrder,
-  InventoryItem,
   ISMachine,
-  NotificationItem,
   ProductionJob,
-  QualityInspection,
-  ShiftProductionReport,
 } from '../types';
-import {
-  INITIAL_DISPATCH,
-  INITIAL_INVENTORY,
-  INITIAL_NOTIFICATIONS,
-  INITIAL_QUALITY_INSPECTIONS,
-  INITIAL_SHIFT_REPORTS,
-} from '../data/mockData';
 import {
   BottleConfigurationRow,
   JobStatusSchema,
@@ -41,11 +29,6 @@ interface ERPContextType {
   jobs: ProductionJob[];
   planningEntries: DailyPlanningEntry[];
   totalRawMaterialConsumptionTons: number;
-  shiftReports: ShiftProductionReport[];
-  inventory: InventoryItem[];
-  qualityInspections: QualityInspection[];
-  dispatchOrders: DispatchOrder[];
-  notifications: NotificationItem[];
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   selectedMonth: string;
@@ -85,8 +68,6 @@ interface ERPContextType {
   updateMachineSectionsCount: (machineId: string, sectionsCount: number) => void;
   importBottleMasterData: (records: BottleMasterRecord[]) => void;
   resetBottleMasterData: () => void;
-  markNotificationRead: (id: string) => void;
-  clearAllNotifications: () => void;
   user: {
     name: string;
     email: string;
@@ -174,12 +155,6 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [machineSectionOverrides, setMachineSectionOverrides] = useState<Record<string, number>>({});
   const [plannerVersion, setPlannerVersion] = useState(0);
-
-  const [shiftReports] = useState<ShiftProductionReport[]>(INITIAL_SHIFT_REPORTS);
-  const [inventory] = useState<InventoryItem[]>(INITIAL_INVENTORY);
-  const [qualityInspections] = useState<QualityInspection[]>(INITIAL_QUALITY_INSPECTIONS);
-  const [dispatchOrders] = useState<DispatchOrder[]>(INITIAL_DISPATCH);
-  const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
 
   const [user] = useState({
     name: 'Omkar S.',
@@ -380,7 +355,6 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         machineId: job.machineId,
         jobId: job.id,
         bottleName: bottle?.name || job.bottleId,
-        bottleColor: bottle?.color || 'Flint',
         drawingNumber: bottle?.drawingNumber || job.bottleId,
         section: job.sectionCount,
         weightGrams: job.weightGrams,
@@ -680,14 +654,6 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     refreshPlanner();
   };
 
-  const markNotificationRead = (id: string) => {
-    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-  };
-
-  const clearAllNotifications = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-  };
-
   return (
     <ERPContext.Provider
       value={{
@@ -699,11 +665,6 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         jobs,
         planningEntries,
         totalRawMaterialConsumptionTons,
-        shiftReports,
-        inventory,
-        qualityInspections,
-        dispatchOrders,
-        notifications,
         searchQuery,
         setSearchQuery,
         selectedMonth,
@@ -732,8 +693,6 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateMachineSectionsCount,
         importBottleMasterData,
         resetBottleMasterData,
-        markNotificationRead,
-        clearAllNotifications,
         user,
       }}
     >

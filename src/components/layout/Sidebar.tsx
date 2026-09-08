@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   CalendarDays,
   Cpu,
+  ClipboardCheck,
   Sliders,
   User,
   LogOut,
@@ -24,16 +25,15 @@ const NAV_ITEMS: MenuNavItem[] = [
   { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, badge: 'Excel' },
   { id: 'Machines', label: 'Machines', icon: Cpu },
+  { id: 'Quality Control', label: 'Quality Control', icon: ClipboardCheck },
   { id: 'Settings', label: 'Settings', icon: Sliders },
   { id: 'Profile', label: 'Profile', icon: User },
 ];
 
 export const Sidebar: React.FC = () => {
-  const { activeModule, setActiveModule, notifications } = useERP();
+  const { activeModule, setActiveModule } = useERP();
   const { logout } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(true);
-
-  const unreadCount = notifications.filter((n) => !n.read).length;
 
   return (
     <aside

@@ -10,6 +10,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { DashboardModule } from './components/dashboard/DashboardModule';
 import { PlanningModule } from './components/planning/PlanningModule';
 import { MachinesModule } from './components/machines/MachinesModule';
+import { QualityControlModule } from './components/quality/ProductionQualityMonitor';
 import { SettingsModule } from './components/settings/SettingsModule';
 import { ProfileModule } from './components/profile/ProfileModule';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
@@ -33,6 +34,7 @@ const MainLayout: React.FC = () => {
             {activeModule === 'Dashboard' && <DashboardModule />}
             {activeModule === 'Production Planning' && <PlanningModule />}
             {activeModule === 'Machines' && <MachinesModule />}
+            {activeModule === 'Quality Control' && <QualityControlModule />}
             {activeModule === 'Settings' && <SettingsModule />}
             {activeModule === 'Profile' && <ProfileModule />}
           </ErrorBoundary>
