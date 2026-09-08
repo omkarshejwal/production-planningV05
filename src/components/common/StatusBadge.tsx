@@ -1,5 +1,5 @@
 import React from 'react';
-import { BottleColor, JobPriority, JobStatus } from '../../types';
+import {JobPriority, JobStatus } from '../../types';
 
 interface StatusBadgeProps {
   status?: JobStatus | 'Running' | 'Stopped' | 'Maintenance' | 'Changeover' | 'PASSED' | 'WARNING' | 'REJECTED' | 'Loading' | 'Scheduled' | 'Dispatched' | 'Delivered' | 'In Stock' | 'Low Stock' | 'Critical';
@@ -72,35 +72,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'sm', c
   );
 };
 
-export const ColorBadge: React.FC<{ color: BottleColor; className?: string }> = ({ color, className = '' }) => {
-  let colorStyle = 'bg-slate-100 text-slate-800 border-slate-300';
-
-  switch (color) {
-    case 'Flint':
-      colorStyle = 'bg-slate-50 text-slate-800 border-slate-300 font-semibold';
-      break;
-    case 'Amber':
-      colorStyle = 'bg-amber-100 text-amber-900 border-amber-300';
-      break;
-    case 'Emerald Green':
-      colorStyle = 'bg-emerald-100 text-emerald-900 border-emerald-300';
-      break;
-    case 'Cobalt Blue':
-      colorStyle = 'bg-indigo-100 text-indigo-900 border-indigo-300';
-      break;
-    case 'Olive Green':
-      colorStyle = 'bg-lime-100 text-lime-900 border-lime-400';
-      break;
-  }
-
-  return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded border ${colorStyle} ${className}`}
-    >
-      {color}
-    </span>
-  );
-};
+// 
 
 export const PriorityBadge: React.FC<{ priority: JobPriority }> = ({ priority }) => {
   let style = 'bg-slate-100 text-slate-600 border-slate-200';
