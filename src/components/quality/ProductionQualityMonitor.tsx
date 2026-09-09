@@ -655,6 +655,26 @@ export const QualityControlModule: React.FC = () => {
     }
   };
 
+  const removeBottle = (time: string) => {
+    patchEntry(time, {
+      bottle_id: '',
+      section: '',
+      weight_front: '',
+      weight_middle: '',
+      weight_rear: '',
+      speed_per_min: '',
+      packing_category: [],
+      packing_size: '',
+      cartons: '',
+      bottles_in_nos: '',
+      sqc: '',
+      qc_hold: '',
+      num: '',
+      defect_ids: [],
+      remarks: '',
+    });
+  };
+
   // ── Derived calculations ────────────────────────────────────────────────
   const calcEff = (time: string): string => {
     const e = getEntry(activeMachine, time);
@@ -731,51 +751,49 @@ export const QualityControlModule: React.FC = () => {
       'Efficiency %', 'SQC', 'QC Hold', 'NUM', 'Defects', 'Remarks',
     ];
     rows.push(header.join(','));
-    for (const machineNo of DB_MACHINE_MASTER) {
-      for (const pt of PRODUCTION_TIMES) {
-        const e = productionStore[dateKey]?.[String(machineNo.machine_no)]?.[pt.time];
-        if (!e) {
-          rows.push([SHIFT_LABELS[pt.shift_id - 1], pt.time, `Machine ${machineNo.machine_no}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''].join(','));
-          continue;
-        }
-        const bottleName = bottles.find((b) => b.id === e.bottle_id)?.name ?? e.bottle_id;
-        const defectNames = DB_DEFECT_MASTER.flatMap((g) => g.items)
-          .filter((d) => e.defect_ids.includes(d));
-        const eff = calcEffFor(e, machineNo.machine_no);
-        rows.push(
-          [
-            SHIFT_LABELS[e.shift_id - 1] ?? SHIFT_LABELS[pt.shift_id - 1],
-            e.production_time,
-            `Machine ${machineNo.machine_no}`,
-            bottleName,
-            e.section,
-            e.weight_front,
-            e.weight_middle,
-            e.weight_rear,
-            calcRowAvgFor(e, machineNo.machine_no),
-            e.speed_per_min,
-            (e.packing_category ?? []).join(' / '),
-            e.packing_size,
-            e.cartons,
-            e.bottles_in_nos,
-            eff,
-            e.sqc,
-            e.qc_hold,
-            e.num,
-            defectNames.join(' / '),
-            e.remarks,
-          ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')
-        );
+    for (const pt of PRODUCTION_TIMES) {
+      const e = productionStore[dateKey]?.[String(activeMachine)]?.[pt.time];
+      if (!e) {
+        rows.push([SHIFT_LABELS[pt.shift_id - 1], pt.time, `Machine ${activeMachine}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''].join(','));
+        continue;
       }
+      const bottleName = bottles.find((b) => b.id === e.bottle_id)?.name ?? e.bottle_id;
+      const defectNames = DB_DEFECT_MASTER.flatMap((g) => g.items)
+        .filter((d) => e.defect_ids.includes(d));
+      const eff = calcEffFor(e, activeMachine);
+      rows.push(
+        [
+          SHIFT_LABELS[e.shift_id - 1] ?? SHIFT_LABELS[pt.shift_id - 1],
+          e.production_time,
+          `Machine ${activeMachine}`,
+          bottleName,
+          e.section,
+          e.weight_front,
+          e.weight_middle,
+          e.weight_rear,
+          calcRowAvgFor(e, activeMachine),
+          e.speed_per_min,
+          (e.packing_category ?? []).join(' / '),
+          e.packing_size,
+          e.cartons,
+          e.bottles_in_nos,
+          eff,
+          e.sqc,
+          e.qc_hold,
+          e.num,
+          defectNames.join(' / '),
+          e.remarks,
+        ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')
+      );
     }
     const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `production-quality-monitor-${dateKey}.csv`;
+    a.download = `production-quality-monitor-machine-${activeMachine}-${dateKey}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success(`Exported ${dateLabel} to CSV`);
+    toast.success(`Exported Machine ${activeMachine} — ${dateLabel} to CSV`);
   };
 
   const calcEffFor = (e: QualityHourlyEntry, _machineNo: number): string => {
@@ -841,9 +859,38 @@ export const QualityControlModule: React.FC = () => {
   };
 
   return (
-    <div className="p-4 md:p-5 max-w-[1920px] mx-auto animate-in fade-in duration-200">
+    <div className="print-container p-4 md:p-5 max-w-[1920px] mx-auto animate-in fade-in duration-200">
+      <style>{`
+        @media print {
+          @page { size: landscape; margin: 0.15in; }
+          body { margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .print-container { padding: 0 !important; max-width: none !important; animation: none !important; }
+          .no-print { display: none !important; }
+          .print-header { display: block !important; }
+          .print-header { margin-bottom: 3px !important; padding-bottom: 3px !important; }
+          .print-header h2 { font-size: 11px !important; margin: 0 !important; }
+          .print-header p { font-size: 9px !important; margin: 0 !important; }
+          table { font-size: 7px !important; width: 100% !important; min-width: 0 !important; table-layout: fixed !important; border-collapse: collapse !important; }
+          th, td { padding: 1px 2px !important; font-size: 7px !important; line-height: 1.1 !important; }
+          thead tr th { font-size: 6.5px !important; }
+          input, select, textarea { border: none !important; background: transparent !important; padding: 0 !important; font-size: 7px !important; color: #1e293b !important; -webkit-appearance: none !important; appearance: none !important; }
+          tbody button { display: none !important; }
+          tr { page-break-inside: avoid; page-break-after: auto; }
+          thead { display: table-header-group; }
+        }
+      `}</style>
+
+      {/* Print-only header */}
+      <div className="print-header" style={{ display: 'none', marginBottom: '6px', textAlign: 'center', borderBottom: '2px solid #1e293b', paddingBottom: '6px' }}>
+        <h2 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#1e293b' }}>
+          Machine {activeMachine} — Production Quality Report
+        </h2>
+        <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#64748b' }}>
+          Date: {dateLabel}
+        </p>
+      </div>
       {/* Page title row */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+      <div className="no-print" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#1e293b', letterSpacing: '-0.01em' }}>
             Production Quality Monitor
@@ -882,7 +929,7 @@ export const QualityControlModule: React.FC = () => {
       </div>
 
       {/* Shift Assignment cards */}
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+      <div className="no-print" style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
         {DB_SHIFT_MASTER.map((sh, i) => {
           const assignment = getShiftAssignment(sh.shift_id);
           return (
@@ -949,7 +996,7 @@ export const QualityControlModule: React.FC = () => {
       {/* White card */}
       <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: '10px', boxShadow: '0 1px 4px rgba(0,0,0,0.05)', overflow: 'hidden' }}>
         {/* Machine tabs + date navigation */}
-        <div style={{ display: 'flex', alignItems: 'center', borderBottom: `1px solid ${C.border}`, padding: '0 8px', backgroundColor: '#f8fafc', gap: '2px' }}>
+        <div className="no-print" style={{ display: 'flex', alignItems: 'center', borderBottom: `1px solid ${C.border}`, padding: '0 8px', backgroundColor: '#f8fafc', gap: '2px' }}>
           {DB_MACHINE_MASTER.map((m) => {
             const active = activeMachine === m.machine_no;
             return (
@@ -1128,7 +1175,9 @@ export const QualityControlModule: React.FC = () => {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                         <select
                           value={entry?.bottle_id ?? ''}
-                          onChange={(e) => selectBottle(time, e.target.value)}
+                          onChange={(e) => {
+                            selectBottle(time, e.target.value);
+                          }}
                           style={{
                             flex: 1,
                             minWidth: 0,
@@ -1166,6 +1215,37 @@ export const QualityControlModule: React.FC = () => {
                             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#eff6ff'; }}
                           >
                             +
+                          </button>
+                        )}
+                        {entry?.bottle_id ? (
+                          <button
+                            onClick={() => removeBottle(time)}
+                            title="Remove one bottle from this row"
+                            style={{
+                              width: '24px', height: '24px', borderRadius: '5px',
+                              border: '1px solid #fecdd3', backgroundColor: '#fff1f2', color: '#be123c',
+                              fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              padding: 0, flexShrink: 0, transition: 'background-color 0.15s',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#ffe4e6'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#fff1f2'; }}
+                          >
+                            −
+                          </button>
+                        ) : (
+                          <button
+                            disabled
+                            title="No bottle to remove"
+                            style={{
+                              width: '24px', height: '24px', borderRadius: '5px',
+                              border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', color: '#cbd5e1',
+                              fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'not-allowed',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              padding: 0, flexShrink: 0,
+                            }}
+                          >
+                            −
                           </button>
                         )}
                       </div>
@@ -1323,7 +1403,7 @@ export const QualityControlModule: React.FC = () => {
         </div>
 
         {/* Save button */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '12px', padding: '10px 14px', borderTop: `1px solid ${C.border}`, backgroundColor: '#fafafa' }}>
+        <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '12px', padding: '10px 14px', borderTop: `1px solid ${C.border}`, backgroundColor: '#fafafa' }}>
           {savedFlags[dateKey] && (
             <span style={{ fontSize: '11.5px', color: '#15803d', fontWeight: 600 }}>
               Saved for {dateLabel}
