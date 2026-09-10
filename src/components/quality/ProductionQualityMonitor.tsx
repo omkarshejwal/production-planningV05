@@ -546,9 +546,9 @@ export const QualityControlModule: React.FC = () => {
     packing_size: '',
     cartons: '',
     bottles_in_nos: '',
-    efficiency_percent: '',
+    efficiency_percentage: '',
     sqc: '',
-    qc_hold: '',
+    qc_hold: 0,
     num: '',
     remarks: '',
     defect_ids: [],
@@ -668,7 +668,7 @@ export const QualityControlModule: React.FC = () => {
       cartons: '',
       bottles_in_nos: '',
       sqc: '',
-      qc_hold: '',
+      qc_hold: 0,
       num: '',
       defect_ids: [],
       remarks: '',
@@ -1110,7 +1110,7 @@ export const QualityControlModule: React.FC = () => {
                 const shiftIdx = Math.floor(idx / 8);
                 const isFirstInShift = idx % 8 === 0;
                 const entry = getEntry(activeMachine, time);
-                const hasHold = entry?.qc_hold === 'HOLD';
+                const hasHold = Number(entry?.qc_hold ?? 0) > 0;
                 const rowBg = hasHold ? '#fff5f5' : SHIFT_ROW_BG[shiftIdx];
                 const rowAvg = calcRowAvg(time);
 
@@ -1316,7 +1316,7 @@ export const QualityControlModule: React.FC = () => {
                     </td>
 
                     <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.qc_hold ?? ''} onChange={(v) => patchEntry(time, { qc_hold: v })} />
+                      <NumInput value={entry?.qc_hold != null ? String(entry.qc_hold) : '0'} onChange={(v) => patchEntry(time, { qc_hold: v === '' ? 0 : Number(v) })} />
                     </td>
 
                     <td style={{ ...tdCenter, padding: '4px 4px' }}>

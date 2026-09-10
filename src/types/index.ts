@@ -108,7 +108,7 @@ export interface DailyPlanningEntry {
 export type ActiveModule =
   | 'Dashboard'
   | 'Production Planning'
-  | 'Machines'
+  | 'Master Management'
   | 'Quality Control'
   | 'Settings'
   | 'Profile';

@@ -1,12 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { FlaskConical, Cpu, CalendarDays } from 'lucide-react';
-import { MachineMasterPanel } from './MachineMasterPanel';
-import { BottleMasterPanel } from './BottleMasterPanel';
-import { HolidayMasterPanel } from './HolidayMasterPanel';
+import { FlaskConical, CalendarDays } from 'lucide-react';
 import { planningRepository } from '../../services/planningRepository';
 import { MachineMasterRow, BottleMasterRow, BottleConfigurationRow } from '../../data/planningSchema';
+import { BottleMasterPanel } from './BottleMasterPanel';
+import { HolidayMasterPanel } from './HolidayMasterPanel';
 
-type MasterTabId = 'bottle' | 'machine' | 'holiday';
+type MasterTabId = 'bottle' | 'holiday';
 
 interface MasterTab {
   id: MasterTabId;
@@ -16,7 +15,6 @@ interface MasterTab {
 
 const MASTER_TABS: MasterTab[] = [
   { id: 'bottle', label: 'Bottle Master', icon: <FlaskConical size={16} /> },
-  { id: 'machine', label: 'Machine Master', icon: <Cpu size={16} /> },
   { id: 'holiday', label: 'Holiday Master', icon: <CalendarDays size={16} /> },
 ];
 
@@ -64,12 +62,6 @@ export const MachinesModule: React.FC = () => {
           machines={machineRows}
           bottles={bottles}
           configs={configs}
-          onRefresh={refresh}
-        />
-      )}
-      {activeTab === 'machine' && (
-        <MachineMasterPanel
-          machines={machineRows}
           onRefresh={refresh}
         />
       )}

@@ -9,7 +9,7 @@ import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { DashboardModule } from './components/dashboard/DashboardModule';
 import { PlanningModule } from './components/planning/PlanningModule';
-import { MachinesModule } from './components/machines/MachinesModule';
+import { MachinesModule } from './components/master-management/MachinesModule';
 import { QualityControlModule } from './components/quality/ProductionQualityMonitor';
 import { SettingsModule } from './components/settings/SettingsModule';
 import { ProfileModule } from './components/profile/ProfileModule';
@@ -33,7 +33,7 @@ const MainLayout: React.FC = () => {
           <ErrorBoundary>
             {activeModule === 'Dashboard' && <DashboardModule />}
             {activeModule === 'Production Planning' && <PlanningModule />}
-            {activeModule === 'Machines' && <MachinesModule />}
+            {activeModule === 'Master Management' && <MachinesModule />}
             {activeModule === 'Quality Control' && <QualityControlModule />}
             {activeModule === 'Settings' && <SettingsModule />}
             {activeModule === 'Profile' && <ProfileModule />}

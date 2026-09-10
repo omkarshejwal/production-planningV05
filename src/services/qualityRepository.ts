@@ -9,6 +9,14 @@
  * Record structure (preserves data by date + machine + shift + hour):
  *   hourly:  { [dateISO]: { [machineNo]: { [time]: QualityHourlyEntry } } }
  *   shifts:  { [dateISO]: { [shiftId]: { supervisor, executive } } }
+ *
+ * The component works with a string-based form model (inputs are string
+ * driven). At the API boundary entries are mapped to `QualityEntryPayload`,
+ * which matches the database columns and their types exactly:
+ *   - numeric columns are sent as numbers (or null)
+ *   - qc_hold / sqc are integers, not booleans or strings
+ *   - defects stay attached to their entry (hourly_production_defect is a
+ *     join of entry_id + defect_id that the backend persists)
  */
 
 import { apiFetch } from '../utils/api';
@@ -30,11 +38,46 @@ export interface QualityHourlyEntry {
   packing_size: string;
   cartons: string;
   bottles_in_nos: string;
-  efficiency_percent: string;
+  efficiency_percentage: string;
   sqc: string;
-  qc_hold: string;
+  qc_hold: number;
   num: string;
   remarks: string;
+  defect_ids: string[];
+}
+
+/**
+ * Database-shaped hourly entry used for request payloads and API responses.
+ * Field names and types mirror the database schema exactly:
+ * hourly_production (entry_id, report_id, machine_no, shift_id,
+ * production_time, bottle_id, section, weight_front, weight_middle,
+ * weight_rear, weight_avg, speed_per_min, packing_category, packing_size,
+ * cartons, bottles_in_nos, efficiency_percentage, sqc, qc_hold, num, remarks)
+ * plus defect_ids (the per-entry defect names; hourly_production_defect is
+ * the entry_id + defect_id join created by the backend).
+ */
+export interface QualityEntryPayload {
+  entry_id: number | string | null;
+  report_id: number | string | null;
+  machine_no: number;
+  shift_id: number;
+  production_time: string;
+  bottle_id: number | null;
+  section: number | null;
+  weight_front: number | null;
+  weight_middle: number | null;
+  weight_rear: number | null;
+  weight_avg: number | null;
+  speed_per_min: number | null;
+  packing_category: string | null;
+  packing_size: number | null;
+  cartons: number | null;
+  bottles_in_nos: number | null;
+  efficiency_percentage: number | null;
+  sqc: number | null;
+  qc_hold: number;
+  num: number | null;
+  remarks: string | null;
   defect_ids: string[];
 }
 
@@ -68,6 +111,131 @@ const writeStore = (key: string, value: unknown) => {
   }
 };
 
+// ─── Mapping helpers (string-based UI form <-> database-typed payload) ───────
+
+const toNumOrNull = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const toIntOrZero = (v: unknown): number => {
+  if (v === null || v === undefined || v === '') return 0;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+};
+
+const toStrOrEmpty = (v: unknown): string => {
+  if (v === null || v === undefined) return '';
+  return String(v);
+};
+
+const toPackingArray = (v: unknown): string[] => {
+  if (Array.isArray(v)) return v.map((x) => toStrOrEmpty(x)).filter(Boolean);
+  if (typeof v === 'string' && v.trim()) {
+    return v.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+};
+
+const toPackingString = (v: unknown): string | null => {
+  const list = toPackingArray(v);
+  return list.length > 0 ? list.join(', ') : null;
+};
+
+const toDefectArray = (v: unknown): string[] => {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((d: unknown) =>
+      typeof d === 'string'
+        ? d
+        : toStrOrEmpty((d as { defect_name?: unknown; defect_id?: unknown })?.defect_name ??
+            (d as { defect_id?: unknown })?.defect_id)
+    )
+    .filter(Boolean);
+};
+
+/** Maps a string-based form entry to the database-shaped payload. */
+const toDbEntry = (entry: QualityHourlyEntry): QualityEntryPayload => ({
+  entry_id: entry.entry_id || null,
+  report_id: entry.report_id || null,
+  machine_no: entry.machine_no,
+  shift_id: entry.shift_id,
+  production_time: entry.production_time,
+  bottle_id: toNumOrNull(entry.bottle_id),
+  section: toNumOrNull(entry.section),
+  weight_front: toNumOrNull(entry.weight_front),
+  weight_middle: toNumOrNull(entry.weight_middle),
+  weight_rear: toNumOrNull(entry.weight_rear),
+  weight_avg: toNumOrNull(entry.weight_avg),
+  speed_per_min: toNumOrNull(entry.speed_per_min),
+  packing_category: toPackingString(entry.packing_category),
+  packing_size: toNumOrNull(entry.packing_size),
+  cartons: toNumOrNull(entry.cartons),
+  bottles_in_nos: toNumOrNull(entry.bottles_in_nos),
+  efficiency_percentage: toNumOrNull(entry.efficiency_percentage),
+  sqc: toNumOrNull(entry.sqc),
+  qc_hold: toIntOrZero(entry.qc_hold),
+  num: toNumOrNull(entry.num),
+  remarks: toStrOrEmpty(entry.remarks) || null,
+  defect_ids: toDefectArray(entry.defect_ids),
+});
+
+/** Maps a database-shaped entry (or already-normalised form entry) back to the form model. */
+const fromDbEntry = (raw: Record<string, unknown>): QualityHourlyEntry => ({
+  entry_id: toStrOrEmpty(raw.entry_id),
+  report_id: toStrOrEmpty(raw.report_id),
+  machine_no: toNumOrNull(raw.machine_no) ?? 0,
+  shift_id: toNumOrNull(raw.shift_id) ?? 1,
+  production_time: toStrOrEmpty(raw.production_time),
+  bottle_id: toStrOrEmpty(raw.bottle_id),
+  section: toStrOrEmpty(raw.section),
+  weight_front: toStrOrEmpty(raw.weight_front),
+  weight_middle: toStrOrEmpty(raw.weight_middle),
+  weight_rear: toStrOrEmpty(raw.weight_rear),
+  weight_avg: toStrOrEmpty(raw.weight_avg),
+  speed_per_min: toStrOrEmpty(raw.speed_per_min),
+  packing_category: toPackingArray(raw.packing_category),
+  packing_size: toStrOrEmpty(raw.packing_size),
+  cartons: toStrOrEmpty(raw.cartons),
+  bottles_in_nos: toStrOrEmpty(raw.bottles_in_nos),
+  efficiency_percentage: toStrOrEmpty(raw.efficiency_percentage),
+  sqc: toStrOrEmpty(raw.sqc),
+  qc_hold: toIntOrZero(raw.qc_hold),
+  num: toStrOrEmpty(raw.num),
+  remarks: toStrOrEmpty(raw.remarks),
+  defect_ids: toDefectArray(raw.defect_ids),
+});
+
+type NestedPayload =
+  Record<string, Record<string, QualityEntryPayload>>;
+type NestedForm =
+  Record<string, Record<string, QualityHourlyEntry>>;
+
+const buildDbHourly = (hourly: NestedForm): NestedPayload => {
+  const out: NestedPayload = {};
+  for (const machineKey of Object.keys(hourly ?? {})) {
+    out[machineKey] = {};
+    const byTime = hourly[machineKey] ?? {};
+    for (const timeKey of Object.keys(byTime)) {
+      out[machineKey][timeKey] = toDbEntry(byTime[timeKey]);
+    }
+  }
+  return out;
+};
+
+const normalizeDbHourly = (raw: Record<string, Record<string, Record<string, unknown>>>): NestedForm => {
+  const out: NestedForm = {};
+  for (const machineKey of Object.keys(raw ?? {})) {
+    out[machineKey] = {};
+    const byTime = raw[machineKey] ?? {};
+    for (const timeKey of Object.keys(byTime)) {
+      out[machineKey][timeKey] = fromDbEntry(byTime[timeKey] ?? {});
+    }
+  }
+  return out;
+};
+
 export const qualityRepository = {
   getHourlyForDate(dateKey: string): Record<string, Record<string, QualityHourlyEntry>> {
     return readStore<QualityHourlyStore>(HOURLY_KEY, {})[dateKey] ?? {};
@@ -88,13 +256,18 @@ export const qualityRepository = {
     try {
       const res = await apiFetch(`/api/production/quality/daily/?date=${dateKey}`);
       if (res && typeof res === 'object') {
-        const body = res as { hourly?: Record<string, Record<string, QualityHourlyEntry>>; shift_assignments?: QualityShiftMap };
-        if (body.hourly && body.shift_assignments) {
+        const body = res as {
+          hourly?: Record<string, Record<string, Record<string, unknown>>>;
+          shift_assignments?: QualityShiftMap;
+        };
+        if (body.hourly) {
+          const hourly = normalizeDbHourly(body.hourly);
+          const shifts = body.shift_assignments ?? {};
           const stores = readStore<QualityHourlyStore>(HOURLY_KEY, {});
           const shiftStores = readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {});
-          writeStore(HOURLY_KEY, { ...stores, [dateKey]: body.hourly });
-          writeStore(SHIFT_KEY, { ...shiftStores, [dateKey]: body.shift_assignments });
-          return { hourly: body.hourly, shifts: body.shift_assignments };
+          writeStore(HOURLY_KEY, { ...stores, [dateKey]: hourly });
+          writeStore(SHIFT_KEY, { ...shiftStores, [dateKey]: shifts });
+          return { hourly, shifts };
         }
       }
     } catch {
@@ -109,8 +282,8 @@ export const qualityRepository = {
   /**
    * Persists one day of hourly production + shift assignments.
    * Always writes the localStorage cache; best-effort POST to the backend
-   * mirrors the existing repository write flow. Callers may treat a resolved
-   * promise as a successful save.
+   * mirrors the existing repository write flow. The request body uses the
+   * exact database field names and numeric/null types defined by the schema.
    */
   async save(
     dateKey: string,
@@ -127,7 +300,7 @@ export const qualityRepository = {
         method: 'POST',
         body: JSON.stringify({
           production_date: dateKey,
-          hourly,
+          hourly: buildDbHourly(hourly),
           shift_assignments: shifts,
         }),
       });
