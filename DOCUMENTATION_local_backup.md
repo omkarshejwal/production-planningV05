@@ -1,0 +1,745 @@
+  ## Table of Contents
+  - [1. Overview](#1-overview)
+  - [2. Database Schema](#2-database-schema)
+  - [3. Backend API](#3-backend-api)
+  - [4. Frontend Structure](#4-frontend-structure)
+  - [5. Known Issues and History](#5-known-issues-and-history)
+  - [6. Setup and Run](#6-setup-and-run)
+
+  ## 1. Overview
+  The Vitrum Glass application is a production-planning ERP focused on glass bottle manufacturing schedules. The implemented core supports:
+  - user authentication,
+  - planning jobs by date/machine,
+  - bottle and machine master management,
+  - bottle configuration management,
+  - holiday master,
+  - job extension/deletion and draw/quantity calculations,
+  - export/print of planning data.
+
+  ### Users and roles (from code)
+  - `Editor`: required for all write operations on production resources (`require_manager_role` in `Backend/app/api/deps.py`).
+  - `Viewer`: allowed at signup, can authenticate and access authenticated reads, but blocked from write endpoints by role guard.
+  - `Admin`: mentioned in product/readme language, but signup only allows `Editor`/`Viewer`, and backend role checks explicitly require `Editor` for modifications. **Needs verification** for actual Admin behavior.
+
+  ### Tech stack (from config/code)
+  - **Frontend**: React 19 + TypeScript + Vite (`package.json`), UI with Tailwind-related packages and `lucide-react`, export via `exceljs` and `jspdf`.
+  - **Backend**: FastAPI + SQLAlchemy + Pydantic (`Backend/requirements.txt`), served by Uvicorn (`Backend/Dockerfile`, `Backend/app/main.py`).
+  - **Database**: SQLAlchemy models with SQLite default (`Backend/app/core/config.py`, `Backend/.env.example`) and optional PostgreSQL URL normalization.
+  - **Deployment/runtime**:
+    - Docker multi-service (`docker-compose.yml`) with frontend and backend containers.
+    - Frontend served via Nginx in production image (`Dockerfile`, `nginx.conf`).
+    - CI pipeline builds/tests frontend and backend and pushes container images to GHCR (`.github/workflows/ci.yml`).
+
+  ### Module 1 scope from actual structure
+  Primary implemented Module 1 surface appears to be:
+  - Frontend: `src/components/planning/*`, `src/components/master-management/*`, auth/profile/layout, `context/ERPContext.tsx`, `services/planningRepository.ts`.
+  - Backend: `Backend/app/api/production/*`, `Backend/app/api/auth.py`, models/schemas for jobs/machines/products/holidays/audit/users.
+
+  Code that appears to be future/other modules:
+  - `DashboardModule` and `SettingsModule` render empty containers.
+  - Reports/Quality modules currently route to `ModulePlaceholder` (“Not Developed Yet”).
+
+  ## 2. Database Schema
+  Source: SQLAlchemy models under `Backend/app/models/*.py`.
+
+  > Note: tables are optionally placed in schema `production` for non-SQLite via `production_table_args()`.
+
+  ### `users`
+  - `employee_id` `String` **PK**, indexed, non-null
+  - `employee_name` `String` non-null
+  - `department` `String` non-null
+  - `email` `String` unique, indexed, non-null
+  - `phone_number` `String` indexed, non-null
+  - `password` `String` non-null
+  - `role` `String` non-null
+  - `is_active` `Boolean` non-null, default `True`
+  - `created_at` `DateTime(timezone=True)` non-null, server default `now()`
+
+  ### `machine_master`
+  - `machine_no` `Integer` **PK**, indexed, non-null
+  - `gob_type` `Integer` non-null
+  - `max_section` `Integer` non-null
+
+  ### `bottle_master`
+  - `bottle_id` `Integer` **PK**, indexed, non-null
+  - `bottle_name` `String(150)` non-null
+
+  ### `bottle_configuration`
+  **Composite primary key**: (`machine_no`, `bottle_id`, `section`)
+  - `machine_no` `Integer` **PK**, **FK** → `machine_master.machine_no`
+  - `bottle_id` `Integer` **PK**, **FK** → `bottle_master.bottle_id`
+  - `section` `Integer` **PK`
+  - `weight` `Numeric(10,2)` non-null
+  - `speeds` `Numeric(10,2)` non-null
+
+  ### `production_job`
+  - `job_id` `Integer` **PK**, indexed, non-null
+  - `plan_date` `Date` non-null
+  - `machine_no` `Integer` non-null
+  - `start_time` `DateTime` non-null
+  - `bottle_id` `Integer` non-null
+  - `section` `Integer` non-null
+  - `weight` `Numeric(10,2)` non-null
+  - `speeds` `Numeric(10,2)` non-null
+  - `draw` `Numeric(10,2)` non-null
+  - `quantity` `Numeric(12,2)` non-null
+  - `required_bottles` `Numeric(14,2)` nullable
+  - `estimated_completion` `DateTime` nullable
+  - `completion_time` `DateTime` nullable
+  - `changeover_minutes` `Integer` default `0`
+  - `status` `String(20)` default `"Planned"`
+  - Unique constraint `uix_1` on (`plan_date`, `machine_no`, `start_time`)
+
+  ### `job_packaging`
+  **Composite primary key**: (`job_id`, `packaging_type`)
+  - `job_id` `Integer` **PK**, **FK** → `production_job.job_id`
+  - `packaging_type` `String(2)` **PK`
+  - `plan_date` `Date` nullable
+  - `machine_no` `Integer` nullable
+  - `bottle_id` `Integer` nullable
+  - `section` `Integer` nullable
+  - `start_time` `DateTime` nullable
+  - `quantity` `Numeric(12,2)` non-null
+  - `pallet_packing` `Boolean` default `False`
+  - `pallet_quantity` `Numeric(12,2)` nullable
+
+  ### `audit_logs`
+  - `id` `Integer` **PK**, indexed, non-null
+  - `user_id` `String` nullable, **FK** → `users.employee_id`
+  - `action` `String` non-null
+  - `details` `String` nullable
+  - `timestamp` `DateTime(timezone=True)` server default `now()`
+
+  ### `holiday_master`
+  - `holiday_date` `Date` **PK**, non-null
+  - `holiday_name` `String(150)` non-null
+
+  ### Foreign key enforcement in plain language
+  - `bottle_configuration.machine_no` must reference an existing machine.
+  - `bottle_configuration.bottle_id` must reference an existing bottle master row.
+  - `job_packaging.job_id` ties each packaging row to one production job.
+  - `audit_logs.user_id` (if present) must reference an existing user employee ID.
+
+  ### ER-style relationship summary
+  - A `production_job` has many `job_packaging` rows.
+  - A `job_packaging` row belongs to one `production_job`.
+  - A `bottle_configuration` row belongs to one machine and one bottle master record.
+  - A machine can have many bottle configurations.
+  - A bottle can have many bottle configurations across machines/sections.
+  - `audit_logs` belongs to users (optional user reference).
+
+  ## 3. Backend API
+  Source: `Backend/app/main.py`, routers under `Backend/app/api/*`.
+
+  ### Auth and global auth behavior
+  - All `/api/production/*` routers are mounted with `Depends(get_current_user)` in `main.py`.
+  - Write endpoints additionally enforce `Editor` role via `require_manager_role`.
+  - `/api/auth/*` endpoints handle login/session and account actions.
+
+  ### Health
+  #### `GET /health`
+  - Purpose: health probe.
+  - Auth: none.
+  - Response: `{ status, service, db_url }`.
+
+  ### Authentication router (`/api/auth`)
+  #### `POST /api/auth/login`
+  - Body: `{ user_id, password }`.
+  - Behavior: user lookup by email or phone, session token creation.
+  - Response: `{ token, user: { employee_id, employee_name, department, email, phone_number, role } }`.
+  - Auth: none.
+
+  #### `POST /api/auth/signup`
+  - Body: `{ employee_id, employee_name, department, email, phone_number, password, role }`.
+  - Role validation: only `Editor` or `Viewer`.
+  - Response: `{ message: "Account created successfully" }`.
+  - Auth: none.
+
+  #### `GET /api/auth/me`
+  - Purpose: current authenticated user profile.
+  - Response: same user object shape as login.
+  - Auth: bearer token required.
+
+  #### `POST /api/auth/change-password`
+  - Body: `{ current_password, new_password }`.
+  - Response: `{ message: "Password updated successfully" }`.
+  - Auth: bearer token required.
+
+  #### `POST /api/auth/logout`
+  - Purpose: invalidate current in-memory session token.
+  - Response: HTTP 204 no body.
+  - Auth: optional bearer token (if present, token removed).
+
+  ### Machines router (`/api/production/machines`)
+  #### `GET /api/production/machines/`
+  - Purpose: list machine master rows.
+  - Response: array of `{ machine_no, gob_type, max_section }`.
+  - Auth: authenticated user.
+
+  #### `POST /api/production/machines/`
+  - Purpose: create machine row with hard validation for machines 1..4.
+  - Body: `{ machine_no, gob_type, max_section }`.
+  - Response: created machine row.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/machines/{machine_no}`
+  - Purpose: update machine gob/section config.
+  - Body: `{ machine_no, gob_type, max_section }`.
+  - Response: updated machine row.
+  - Auth: authenticated + `Editor`.
+
+  ### Products router (`/api/production/products`)
+  #### `GET /api/production/products/bottles/`
+  - Response: array `{ bottle_id, bottle_name }`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/products/bottles/`
+  - Body: `{ bottle_name }`.
+  - Response: created bottle `{ bottle_id, bottle_name }`.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/products/bottles/{bottle_id}`
+  - Body: `{ bottle_name }`.
+  - Response: updated bottle.
+  - Auth: authenticated + `Editor`.
+
+  #### `GET /api/production/products/configurations/`
+  - Response: array `{ machine_no, bottle_id, section, weight, speeds }`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/products/configurations/`
+  - Body: `{ machine_no, bottle_id, section, weight, speeds }`.
+  - Response: created configuration row.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/products/configurations/{machine_no}/{bottle_id}/{section}`
+  - Body: `{ machine_no, bottle_id, section, weight, speeds }`.
+  - Response: updated configuration row.
+  - Auth: authenticated + `Editor`.
+
+  #### `DELETE /api/production/products/configurations/{machine_no}/{bottle_id}/{section}`
+  - Response: `{ ok: true }`.
+  - Auth: authenticated + `Editor`.
+
+  ### Jobs router (`/api/production/jobs`)
+  #### `GET /api/production/jobs/`
+  - Query params (all optional): `from_date`, `to_date`, `machine_no`, `limit`, `order_by`.
+  - Purpose: list jobs with `packaging` relation loaded.
+  - Response: array of job objects including packaging collection:
+    - `job_id, plan_date, machine_no, start_time, bottle_id, section, weight, speeds, draw, quantity, required_bottles, estimated_completion, completion_time, changeover_minutes, status, packaging[]`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/jobs/`
+  - Purpose: create or upsert by (`plan_date`,`machine_no`,`start_time`), compute quantity/draw from machine/config.
+  - Body (accepted schema): `plan_date, machine_no, start_time, bottle_id, section?, draw?, required_bottles?, estimated_completion?, completion_time?, changeover_minutes?, status?, packaging[]`.
+  - Response: saved job object (with packaging relation).
+  - Auth: authenticated + `Editor`.
+
+  #### `POST /api/production/jobs/extend/`
+  - Purpose: extend one job by `days`, shift subsequent same-machine jobs forward.
+  - Body: `{ plan_date, machine_no, start_time, days }`.
+  - Response: array of affected jobs for same machine from source date onward.
+  - Auth: authenticated + `Editor`.
+
+  #### `DELETE /api/production/jobs/{plan_date}/{machine_no}/{start_time}`
+  - Purpose: delete job, delete linked packaging, shift subsequent jobs backward to close gap.
+  - Response: HTTP 204 no body.
+  - Auth: authenticated + `Editor`.
+
+  ### Audit logs router (`/api/production/audit-logs`)
+  #### `GET /api/production/audit-logs/`
+  - Purpose: latest 50 audit entries for notification panel.
+  - Response: array of `{ id, user_id, action, details, timestamp }`.
+  - Auth: authenticated.
+
+
+  ### Holidays router (`/api/production/holidays`)
+  #### `GET /api/production/holidays/`
+  - Response: ordered array `{ holiday_date, holiday_name }`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/holidays/`
+  - Body: `{ holiday_date, holiday_name }`.
+  - Response: created holiday.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/holidays/{holiday_date}`
+  - Body: `{ holiday_date, holiday_name }`.
+  - Response: updated holiday.
+  - Auth: authenticated + `Editor`.
+
+  #### `DELETE /api/production/holidays/{holiday_date}`
+  - Response: `{ ok: true }`.
+  - Auth: authenticated + `Editor`.
+
+  ### Frontend/backend API alignment notes
+  - Frontend calls found for auth, jobs, machines, bottles, configurations, holidays.
+  - Endpoint currently present but **not called by frontend code found in this pass**: `GET /api/production/audit-logs/`.
+  - Frontend sends `production_hours` in some job payloads, but backend `ProductionJobCreate` schema has no `production_hours` field. **Needs verification**.
+  - `AuditLogResponse.user_id` schema is typed `int`, while model stores `String` FK to `users.employee_id`. **Needs verification**.
+
+  ## 4. Frontend Structure
+  Source: `src/*`.
+
+  ### Top-level structure
+  - `App.tsx`: wraps app with `AuthProvider`; renders `LoginPage` if unauthenticated, else `ERPProvider` + main layout.
+  - `context/AuthContext.tsx`: login/signup/me/change-password/logout and token persistence via `localStorage`.
+  - `context/ERPContext.tsx`: main module state and orchestration around repository cache + planning actions.
+  - `services/planningRepository.ts`: API-backed data layer and in-memory cache for machines/bottles/configs/jobs.
+  - `components/layout/*`: header/sidebar module navigation.
+
+  ### Major modules/components
+  - `components/planning/PlanningModule.tsx`: hosts `ProductionPlanningPage` and `PlanningDrawer`.
+  - `components/planning/ProductionPlanningPage.tsx`: grid/register UI, date filtering, month navigation, local editing state (`machineLists`, `completedJobMap`), save-to-DB batch flow, extend/delete/end-job flows, export/print.
+  - `components/planning/PlanningDrawer.tsx`: modal form for creating/editing jobs with machine+bottle+section selection, metrics preview, packaging allocation, pallet options; submits to `saveJob` in context.
+  - `components/planning/EditMachineModal.tsx`: grid cell edit modal for bottle/start-time/packing/required quantity.
+  - `components/planning/EndJobModal.tsx`: marks job completed and schedules next start with changeover delay.
+  - `components/master-management/MachinesModule.tsx`: machine, bottle/config, and holiday master panels.
+  - `components/master-management/BottleMasterPanel.tsx`: create bottle + upsert bottle configurations by machine sections.
+  - `components/master-management/MachineMasterPanel.tsx`: update machine max sections.
+  - `components/master-management/HolidayMasterPanel.tsx`: CRUD for holiday dates.
+  - `components/profile/ProfileModule.tsx`: view user and change password.
+  - `components/dashboard`, `components/settings`: minimal/placeholder.
+  - `components/reports`, `components/quality`: explicit “Not Developed Yet” placeholders.
+
+  ### End-to-end core data flows
+  #### A) Create/edit a production job (drawer/context/repository/backend)
+  1. User opens `PlanningDrawer` (new or edit context from `ERPContext`).
+  2. Drawer resolves machine/bottle/section and computes metrics (`calculateProductionMetrics`, estimated completion, draw, good bottles).
+  3. On submit, drawer builds packaging rows and calls `saveJob` from `ERPContext`.
+  4. `ERPContext.saveJob` validates machine/config; creates one or more segment rows (for non-edit path) and calls repository methods (`createProductionJobsBatch` or `updateProductionJob`).
+  5. `planningRepository._postJob` maps frontend IDs/times to backend payload and posts to `POST /api/production/jobs/`.
+  6. Backend upserts by unique (`plan_date`,`machine_no`,`start_time`), computes qty/draw, replaces packaging rows, and commits.
+  7. Context re-initializes repository data for active date window and triggers planner refresh.
+
+  #### B) Save grid changes from planning register
+  1. User edits entries directly in `ProductionPlanningPage` local machine grid (`machineLists` + `completedJobMap`).
+  2. `handleSaveToDb` flattens rows into `ProductionJobRow` payload list, computing changeover/segment timings and packaging payloads.
+  3. Calls `planningRepository.createProductionJobsBatch` (parallel upserts).
+  4. Compares current grid keys to cached DB keys and deletes stale jobs with `deleteProductionJob`.
+  5. Reloads scoped jobs via `reloadJobsForWindow`; clears dirty flag.
+
+  #### C) Extend job workflow
+  1. UI action in planning grid triggers extend handler.
+  2. Current implementation in `ProductionPlanningPage` adjusts local rows (`handleExtendJob`) and marks dirty.
+  3. Persisting happens when user clicks save (batch upsert + stale deletion).
+  4. Backend also has dedicated `POST /jobs/extend/` and repository method `extendProductionJob`; this path is used from `ERPContext.extendJob` (drawer/context APIs), but not the main planning page flow in current code. **Needs verification** for intended canonical path.
+
+  ### Key service/repository responsibilities
+  - `utils/api.ts`: shared fetch wrapper, auth header injection, error normalization.
+  - `services/planningRepository.ts`:
+    - fetch/cache machines/bottles/configs/jobs (`init`),
+    - normalize API ↔ UI row formats,
+    - perform job CRUD/extend and master-data CRUD,
+    - utility conversions for machine IDs and datetime formatting.
+  - `utils/planningCalculations.ts` and `utils/calculations.ts`: draw, quantity, good bottle, completion/date math.
+  - `utils/exportData.ts`: fetches jobs in selected range + previous day context and builds flattened export rows.
+
+  ## 5. Known Issues and History
+  Primary source here: git history (`git log`/`git show`).
+
+  ### Significant historical changes (Module 1)
+  1. **Authentication introduced** (`89dd41b`): added backend auth router + frontend auth context/login UI.
+  2. **Password handling changed** (`5a86e37`): commit message indicates hash function removed; current code comments show plain-text comparison/storage.
+  3. **Extend-job capability added** (`bb90936`): introduced backend `POST /jobs/extend/` and corresponding scheduling-shift logic.
+  4. **Revert of earlier job_id/continuation change** (`3785f01`): commit message says previous PR behavior was rolled back to “single row” direction.
+  5. **Schema/key model changed to surrogate job key** (`813a1bb`): `production_job` switched to `job_id` PK + unique (`plan_date`,`machine_no`,`start_time`), and `job_packaging` moved to `job_id` FK linkage.
+  6. **Later fixes aligned API operations to `job_id` linkage** (`813a1bb` diff): job update/delete/extend packaging operations moved from date/machine/start filters to `job_id` filters.
+  7. **Frontend data source changed to DB-backed repository** (`8c7ee2b`, plus earlier integration commits): bottle master/config and planning flows moved to API-backed reads/writes.
+
+  Where rationale was unclear from commit messages, interpretation above is from the changed diffs.
+
+  ### Current open issues / ambiguity markers found in code
+  - `src/data/planningSchema.ts` includes `production_hours`, but backend create schema does not accept it explicitly. **Needs verification**.
+  - `Backend/app/schemas/audit_log.py` defines `user_id: int`, while model FK is string employee ID. **Needs verification**.
+  - `ProductionPlanningPage` local extend flow differs from repository/backend extend endpoint usage. **Needs verification** of intended single source of truth.
+  - Auth/session implementation uses in-memory session map (`SESSIONS`) in backend process; behavior across multi-instance deployment is **unclear from code**.
+  - One line in viewed `auth.py` response was masked by tooling during this pass; comments indicate plain-text password storage/comparison, but exact assignment statement display was partially redacted. **Needs verification**.
+
+  ### TODO/FIXME/HACK scan result
+  - No explicit `TODO`/`FIXME`/`HACK` markers were found in application source files during this pass.
+  - Matches appeared in lockfiles due package names like `debug` (not actionable TODO markers).
+
+  ## 6. Setup and Run
+  Derived from `package.json`, `Backend/requirements.txt`, Docker files, `.env.example`, and CI workflow.
+
+  ### Option A: Local (separate backend + frontend)
+  1. **Backend setup**
+    - `cd /home/runner/work/production-planningV05/production-planningV05/Backend`
+    - Install dependencies: `pip install -r requirements.txt`
+    - Configure env (optional): set `DATABASE_URL` (defaults to `sqlite:///./vitrumglass.db`).
+    - Run backend: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+
+  2. **Frontend setup**
+    - `cd /home/runner/work/production-planningV05/production-planningV05`
+    - Install dependencies: `bun install` (CI path) or `npm install` (lockfile/scripts also present).
+    - Set `VITE_API_URL` if needed (defaults to `http://127.0.0.1:8000` in code).
+    - Run dev server: `bun run dev` or `npm run dev`.
+
+  3. **Build/lint commands (from scripts/CI)**
+    - Lint/type-check: `bun run lint` / `npm run lint`
+    - Build: `bun run build` / `npm run build`
+
+  ### Option B: Docker Compose
+  From repo root:
+  - `docker compose up --build`
+
+  This starts:
+  - backend on `:8000` (with `DATABASE_URL` defaulting to sqlite file under `/app/data/vitrumglass.db` in volume `backend-data`),
+  - frontend on `:3000`.
+
+  ### Environment variables present in repo/config
+  - Body: `{ bottle_name }`.
+  - Response: created bottle `{ bottle_id, bottle_name }`.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/products/bottles/{bottle_id}`
+  - Body: `{ bottle_name }`.
+  - Response: updated bottle.
+  - Auth: authenticated + `Editor`.
+
+  #### `GET /api/production/products/configurations/`
+  - Response: array `{ machine_no, bottle_id, section, weight, speeds }`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/products/configurations/`
+  - Body: `{ machine_no, bottle_id, section, weight, speeds }`.
+  - Response: created configuration row.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/products/configurations/{machine_no}/{bottle_id}/{section}`
+  - Body: `{ machine_no, bottle_id, section, weight, speeds }`.
+  - Response: updated configuration row.
+  - Auth: authenticated + `Editor`.
+
+  #### `DELETE /api/production/products/configurations/{machine_no}/{bottle_id}/{section}`
+  - Response: `{ ok: true }`.
+  - Auth: authenticated + `Editor`.
+
+  ### Jobs router (`/api/production/jobs`)
+  #### `GET /api/production/jobs/`
+  - Query params (all optional): `from_date`, `to_date`, `machine_no`, `limit`, `order_by`.
+  - Purpose: list jobs with `packaging` relation loaded.
+  - Response: array of job objects including packaging collection:
+    - `job_id, plan_date, machine_no, start_time, bottle_id, section, weight, speeds, draw, quantity, required_bottles, estimated_completion, completion_time, changeover_minutes, status, packaging[]`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/jobs/`
+  - Purpose: create or upsert by (`plan_date`,`machine_no`,`start_time`), compute quantity/draw from machine/config.
+  - Body (accepted schema): `plan_date, machine_no, start_time, bottle_id, section?, draw?, required_bottles?, estimated_completion?, completion_time?, changeover_minutes?, status?, packaging[]`.
+  - Response: saved job object (with packaging relation).
+  - Auth: authenticated + `Editor`.
+
+  #### `POST /api/production/jobs/extend/`
+  - Purpose: extend one job by `days`, shift subsequent same-machine jobs forward.
+  - Body: `{ plan_date, machine_no, start_time, days }`.
+  - Response: array of affected jobs for same machine from source date onward.
+  - Auth: authenticated + `Editor`.
+
+  #### `DELETE /api/production/jobs/{plan_date}/{machine_no}/{start_time}`
+  - Purpose: delete job, delete linked packaging, shift subsequent jobs backward to close gap.
+  - Response: HTTP 204 no body.
+  - Auth: authenticated + `Editor`.
+
+  ### Audit logs router (`/api/production/audit-logs`)
+  #### `GET /api/production/audit-logs/`
+  - Purpose: latest 50 audit entries for notification panel.
+  - Response: array of `{ id, user_id, action, details, timestamp }`.
+  - Auth: authenticated.
+
+
+  ### Holidays router (`/api/production/holidays`)
+  #### `GET /api/production/holidays/`
+  - Response: ordered array `{ holiday_date, holiday_name }`.
+  - Auth: authenticated.
+
+  #### `POST /api/production/holidays/`
+  - Body: `{ holiday_date, holiday_name }`.
+  - Response: created holiday.
+  - Auth: authenticated + `Editor`.
+
+  #### `PUT /api/production/holidays/{holiday_date}`
+  - Body: `{ holiday_date, holiday_name }`.
+  - Response: updated holiday.
+  - Auth: authenticated + `Editor`.
+
+  #### `DELETE /api/production/holidays/{holiday_date}`
+  - Response: `{ ok: true }`.
+  - Auth: authenticated + `Editor`.
+
+  ### Frontend/backend API alignment notes
+  - Frontend calls found for auth, jobs, machines, bottles, configurations, holidays.
+  - Endpoint currently present but **not called by frontend code found in this pass**: `GET /api/production/audit-logs/`.
+  - Frontend sends `production_hours` in some job payloads, but backend `ProductionJobCreate` schema has no `production_hours` field. **Needs verification**.
+  - `AuditLogResponse.user_id` schema is typed `int`, while model stores `String` FK to `users.employee_id`. **Needs verification**.
+
+  ## 4. Frontend Structure
+  Source: `src/*`.
+
+  ### Top-level structure
+  - `App.tsx`: wraps app with `AuthProvider`; renders `LoginPage` if unauthenticated, else `ERPProvider` + main layout.
+  - `context/AuthContext.tsx`: login/signup/me/change-password/logout and token persistence via `localStorage`.
+  - `context/ERPContext.tsx`: main module state and orchestration around repository cache + planning actions.
+  - `services/planningRepository.ts`: API-backed data layer and in-memory cache for machines/bottles/configs/jobs.
+  - `components/layout/*`: header/sidebar module navigation.
+
+  ### Major modules/components
+  - `components/planning/PlanningModule.tsx`: hosts `ProductionPlanningPage` and `PlanningDrawer`.
+  - `components/planning/ProductionPlanningPage.tsx`: grid/register UI, date filtering, month navigation, local editing state (`machineLists`, `completedJobMap`), save-to-DB batch flow, extend/delete/end-job flows, export/print.
+  - `components/planning/PlanningDrawer.tsx`: modal form for creating/editing jobs with machine+bottle+section selection, metrics preview, packaging allocation, pallet options; submits to `saveJob` in context.
+  - `components/planning/EditMachineModal.tsx`: grid cell edit modal for bottle/start-time/packing/required quantity.
+  - `components/planning/EndJobModal.tsx`: marks job completed and schedules next start with changeover delay.
+  - `components/master-management/MachinesModule.tsx`: machine, bottle/config, and holiday master panels.
+  - `components/master-management/BottleMasterPanel.tsx`: create bottle + upsert bottle configurations by machine sections.
+  - `components/master-management/MachineMasterPanel.tsx`: update machine max sections.
+  - `components/master-management/HolidayMasterPanel.tsx`: CRUD for holiday dates.
+  - `components/profile/ProfileModule.tsx`: view user and change password.
+  - `components/dashboard`, `components/settings`: minimal/placeholder.
+  - `components/reports`, `components/quality`: explicit “Not Developed Yet” placeholders.
+
+  ### End-to-end core data flows
+  #### A) Create/edit a production job (drawer/context/repository/backend)
+  1. User opens `PlanningDrawer` (new or edit context from `ERPContext`).
+  2. Drawer resolves machine/bottle/section and computes metrics (`calculateProductionMetrics`, estimated completion, draw, good bottles).
+  3. On submit, drawer builds packaging rows and calls `saveJob` from `ERPContext`.
+  4. `ERPContext.saveJob` validates machine/config; creates one or more segment rows (for non-edit path) and calls repository methods (`createProductionJobsBatch` or `updateProductionJob`).
+  5. `planningRepository._postJob` maps frontend IDs/times to backend payload and posts to `POST /api/production/jobs/`.
+  6. Backend upserts by unique (`plan_date`,`machine_no`,`start_time`), computes qty/draw, replaces packaging rows, and commits.
+  7. Context re-initializes repository data for active date window and triggers planner refresh.
+
+  #### B) Save grid changes from planning register
+  1. User edits entries directly in `ProductionPlanningPage` local machine grid (`machineLists` + `completedJobMap`).
+  2. `handleSaveToDb` flattens rows into `ProductionJobRow` payload list, computing changeover/segment timings and packaging payloads.
+  3. Calls `planningRepository.createProductionJobsBatch` (parallel upserts).
+  4. Compares current grid keys to cached DB keys and deletes stale jobs with `deleteProductionJob`.
+  5. Reloads scoped jobs via `reloadJobsForWindow`; clears dirty flag.
+
+  #### C) Extend job workflow
+  1. UI action in planning grid triggers extend handler.
+  2. Current implementation in `ProductionPlanningPage` adjusts local rows (`handleExtendJob`) and marks dirty.
+  3. Persisting happens when user clicks save (batch upsert + stale deletion).
+  4. Backend also has dedicated `POST /jobs/extend/` and repository method `extendProductionJob`; this path is used from `ERPContext.extendJob` (drawer/context APIs), but not the main planning page flow in current code. **Needs verification** for intended canonical path.
+
+  ### Key service/repository responsibilities
+  - `utils/api.ts`: shared fetch wrapper, auth header injection, error normalization.
+  - `services/planningRepository.ts`:
+    - fetch/cache machines/bottles/configs/jobs (`init`),
+    - normalize API ↔ UI row formats,
+    - perform job CRUD/extend and master-data CRUD,
+    - utility conversions for machine IDs and datetime formatting.
+  - `utils/planningCalculations.ts` and `utils/calculations.ts`: draw, quantity, good bottle, completion/date math.
+  - `utils/exportData.ts`: fetches jobs in selected range + previous day context and builds flattened export rows.
+
+  ## 5. Known Issues and History
+  Primary source here: git history (`git log`/`git show`).
+
+  ### Significant historical changes (Module 1)
+  1. **Authentication introduced** (`89dd41b`): added backend auth router + frontend auth context/login UI.
+  2. **Password handling changed** (`5a86e37`): commit message indicates hash function removed; current code comments show plain-text comparison/storage.
+  3. **Extend-job capability added** (`bb90936`): introduced backend `POST /jobs/extend/` and corresponding scheduling-shift logic.
+  4. **Revert of earlier job_id/continuation change** (`3785f01`): commit message says previous PR behavior was rolled back to “single row” direction.
+  5. **Schema/key model changed to surrogate job key** (`813a1bb`): `production_job` switched to `job_id` PK + unique (`plan_date`,`machine_no`,`start_time`), and `job_packaging` moved to `job_id` FK linkage.
+  6. **Later fixes aligned API operations to `job_id` linkage** (`813a1bb` diff): job update/delete/extend packaging operations moved from date/machine/start filters to `job_id` filters.
+  7. **Frontend data source changed to DB-backed repository** (`8c7ee2b`, plus earlier integration commits): bottle master/config and planning flows moved to API-backed reads/writes.
+
+  Where rationale was unclear from commit messages, interpretation above is from the changed diffs.
+
+  ### Current open issues / ambiguity markers found in code
+  - `src/data/planningSchema.ts` includes `production_hours`, but backend create schema does not accept it explicitly. **Needs verification**.
+  - `Backend/app/schemas/audit_log.py` defines `user_id: int`, while model FK is string employee ID. **Needs verification**.
+  - `ProductionPlanningPage` local extend flow differs from repository/backend extend endpoint usage. **Needs verification** of intended single source of truth.
+  - Auth/session implementation uses in-memory session map (`SESSIONS`) in backend process; behavior across multi-instance deployment is **unclear from code**.
+  - One line in viewed `auth.py` response was masked by tooling during this pass; comments indicate plain-text password storage/comparison, but exact assignment statement display was partially redacted. **Needs verification**.
+
+  ### TODO/FIXME/HACK scan result
+  - No explicit `TODO`/`FIXME`/`HACK` markers were found in application source files during this pass.
+  - Matches appeared in lockfiles due package names like `debug` (not actionable TODO markers).
+
+  ## 6. Setup and Run
+  Derived from `package.json`, `Backend/requirements.txt`, Docker files, `.env.example`, and CI workflow.
+
+  ### Option A: Local (separate backend + frontend)
+  1. **Backend setup**
+    - `cd /home/runner/work/production-planningV05/production-planningV05/Backend`
+    - Install dependencies: `pip install -r requirements.txt`
+    - Configure env (optional): set `DATABASE_URL` (defaults to `sqlite:///./vitrumglass.db`).
+    - Run backend: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+
+  2. **Frontend setup**
+    - `cd /home/runner/work/production-planningV05/production-planningV05`
+    - Install dependencies: `bun install` (CI path) or `npm install` (lockfile/scripts also present).
+    - Set `VITE_API_URL` if needed (defaults to `http://127.0.0.1:8000` in code).
+    - Run dev server: `bun run dev` or `npm run dev`.
+
+  3. **Build/lint commands (from scripts/CI)**
+    - Lint/type-check: `bun run lint` / `npm run lint`
+    - Build: `bun run build` / `npm run build`
+
+  ### Option B: Docker Compose
+  From repo root:
+  - `docker compose up --build`
+
+  This starts:
+  - backend on `:8000` (with `DATABASE_URL` defaulting to sqlite file under `/app/data/vitrumglass.db` in volume `backend-data`),
+  - frontend on `:3000`.
+
+  ### Environment variables present in repo/config
+  - `DATABASE_URL` (backend DB connection string).
+  - `VITE_API_URL` (frontend API base URL).
+  - `GEMINI_API_KEY` (root `.env.example`; appears unrelated to core planning module flows).
+  - `APP_URL` (root `.env.example`; app URL reference).
+
+  ## Changelog
+  ### 2026-09-10 — End-to-End Boolean Type Fix for QC Hold
+  - **What changed:** Converted `qc_hold` end-to-end to a proper boolean type:
+    - **Backend**: Updated `QualityHourlyEntrySchema` in `Backend/app/schemas/quality.py` to `Optional[bool] = False`. In `quality_daily.py`, replaced string checks and formatting (`== "true"`, `"true" if entry.qc_hold else ""`) with native boolean assignments (`bool(entry.qc_hold)`), serializing as real JSON `true`/`false`. In `_has_meaningful_data`, ensured hours with `qc_hold is True` are recognized as real data.
+    - **Frontend**: Updated `QualityHourlyEntry` in `src/services/qualityRepository.ts` to `qc_hold: boolean`. In `src/components/quality/ProductionQualityMonitor.tsx`, replaced `<NumInput>` with a native checkbox bound to `Boolean(entry?.qc_hold)` with `onChange={(e) => patchEntry(time, { qc_hold: e.target.checked })}`. Corrected row-highlight logic to `entry?.qc_hold === true` (activating `#fff5f5` highlight), and initialized `blankEntry` / `removeBottle` with `qc_hold: false`.
+  - **Files changed:** `Backend/app/schemas/quality.py`, `Backend/app/api/production/quality_daily.py`, `src/services/qualityRepository.ts`, `src/components/quality/ProductionQualityMonitor.tsx`.
+  - **Why:** To resolve the type mismatch where `qc_hold` was simultaneously a number input, string `"true"`, and checked for `'HOLD'`, which prevented saving, GET rendering, and row highlighting.
+
+  ### 2026-09-10 — Selective Hourly Production Row Insertion & "-" Clear Preservation
+  - **What changed:** Modified the `POST /api/production/quality/daily/` upsert loop to only insert `HourlyProduction` rows for hour slots that contain meaningful user data (`bottle_id`, `section`, weights, speed, packing details, cartons, bottles, efficiency, sqc, qc_hold, num, remarks, or defect IDs). Untouched hour slots on fresh dates are skipped rather than inserting all 24 empty slots per machine. If an `HourlyProduction` row already exists in the database (e.g. previously saved then cleared via "-"), it is updated with nulls to preserve the row without deleting or skipping it. Defect associations are not created for skipped hours.
+  - **Files changed:** `Backend/app/api/production/quality_daily.py`
+  - **Why:** To eliminate DB clutter from thousands of empty 24-hour rows across machines while retaining the ability to clear previously recorded hours with the "-" button and maintaining the full 24-hour default grid in `GET /daily/`.
+
+  ### 2026-08-24 — Show yield-adjusted Good Bottles in grid Qty column
+  - **What changed:** Applied the `calcGoodBottles` (90% yield factor) to the raw quantity returned by `calculateQuantityForProductionDay` in `getDailyProducedQty`.
+  - **Files changed:** `src/components/planning/ProductionPlanningPage.tsx`
+  - **Why:** To make the main grid's Qty column match the yield-adjusted "Daily Good Bottles (90%)" shown in the tooltip for better readability.
+
+  ### 2026-08-22 — Fix holiday highlighting logic on production grid
+  - **What changed:** Added a useEffect hook to fetch holiday data on component mount and stored it in state, resolving an issue where the holiday cache was empty and dates weren't highlighted on initial load.
+  - **Files changed:** `src/components/planning/ProductionPlanningPage.tsx`
+  - **Why:** The holiday highlight existed but the fetching function was never invoked when loading the planning grid, so the cache was always empty.
+
+  ### 2026-08-20 — Fix 500 Error on Job Deletion
+  - **What changed:** Parsed the `plan_date` and `start_time` string parameters into a proper Python `datetime` object before querying the database, fixing a Postgres type mismatch error when deleting jobs.
+  - **Files changed:** `Backend/app/api/production/jobs.py`
+  - **Why:** To resolve an `InvalidDatetimeFormat` error preventing job deletions.
+
+  ## 7. Deployment to GitHub Pages
+
+  ### Deploying the Frontend
+  The frontend application is configured for continuous deployment to GitHub Pages via GitHub Actions (`.github/workflows/deploy.yml`).
+
+  To configure and access the live application:
+  1. Ensure your code is pushed to the `main` branch. This automatically triggers the deployment workflow.
+  2. In your repository on GitHub, go to **Settings** → **Pages** (under the "Code and automation" section).
+  3. Under **Build and deployment**, set the **Source** to **Deploy from a branch**.
+  4. Set the **Branch** to `gh-pages` and the folder to `/(root)`, then click **Save**.
+  5. GitHub will now serve your application. Note the generated URL displayed at the top of the settings page (e.g., `https://<username>.github.io/<repo-name>/`).
+
+  ### Backend/API Configuration
+  Because GitHub Pages only hosts static files, the FastAPI backend must be deployed separately (e.g., using Render, Railway, or AWS).
+
+  To connect the live frontend to a live backend:
+  1. In your GitHub repository, go to **Settings** → **Secrets and variables** → **Actions**.
+  2. Click on the **Variables** tab and add a new repository variable.
+  3. Name it `VITE_API_URL` and set its value to your live backend's URL (e.g., `https://my-backend.onrender.com`).
+  4. Re-run the deployment workflow (or push a new commit) so the frontend rebuilds with the new backend API URL injected.
+
+  # Analysis of `estimated_completion` Bug
+
+  ## Issue Summary
+  The `handledSaveToDb` function in `ProductionPlanningPage.tsx` contained a rounding bug that could generate invalid time strings like `"21:60"`, causing backend 422 errors. The fix targeted only two lines in the function.
+
+  ## Root Cause
+  - `Math.round(totalMins % 60)` could return `60` when `totalMins % 60` was `59.5`, violating backend validation rules.
+
+  ## Fix Details
+  - **Lines Modified**: 575-585 in `ProductionPlanningPage.tsx`
+  - **Change**: Moved rounding to `totalMins` before decomposing:
+    ```ts
+    const roundedTotalMins = Math.round(totalMins);
+    const ch = Math.floor(roundedTotalMins / 60) % 24;
+    const cm = roundedTotalMins % 60;
+    ```
+  - **Outcome**: Ensured `cm` always stays in `0-59` range.
+
+  ## Compliance
+  - **Scope**: Single-file, single-location fix as required.
+  - **No Other Changes**: No modifications to `planningCalculations.ts`, `ERPContext.tsx`, or backend APIs.
+
+  <analysis>
+  The bug arose from unsafe rounding of fractional minutes in a critical time calculation. The fix adheres strictly to the user's constraints by isolating the correction to the precise location without broader codebase changes.
+  </analysis>
+
+  <summary>Fix applied to two lines in `handleSaveToDb` to prevent invalid minute values in `estimated_completion`. No off-target modifications made.</summary>
+
+  # Active Module URL Hash Persistence
+
+  ## Issue Summary
+  On browser refresh (F5), the application previously lost the user's active module context and unconditionally reset to the hardcoded default "Production Planning" module.
+
+  ## Root Cause
+  `activeModule` was tracked solely in React memory (`useState<ActiveModule>('Production Planning')` in `ERPContext.tsx`) with no browser state synchronization or persistence.
+
+  ## Fix Details
+  - **File Modified**: `src/context/ERPContext.tsx`
+  - **Change**:
+    - Added bi-directional mapping between `ActiveModule` and clean URL slugs (`production`, `quality`, `machines`, `settings`, `profile`, `dashboard`).
+    - Initialized `activeModule` state by reading `window.location.hash` (e.g. `#/quality`), falling back safely to `'Production Planning'`.
+    - Updated `setActiveModule` to synchronize the URL hash via `window.history.replaceState` (avoiding polluting browser back-button history).
+    - Added a `hashchange` event listener for forward/back browser navigation.
+    - Added a `useEffect([activeModule])` that writes the current module's hash on mount and on every module change so the address bar stays correct even after HMR or StrictMode remounts.
+  - **Outcome**: Page refreshes now maintain the active module view without requiring server-side routing configuration or additional npm dependencies.
+
+  # Selective Hourly Production Row Insertion
+
+  ## Issue Summary
+  Previously, saving daily quality data (`POST /api/production/quality/daily/`) unconditionally inserted rows for all 24 hours across all 4 machines (96 rows per day), even when the user only filled in 2–3 hours on a single machine. This rapidly cluttered the database with empty, meaningless rows.
+
+  ## Fix Details
+  - **File Modified**: `Backend/app/api/production/quality_daily.py`
+  - **Change**:
+    - Implemented `_has_meaningful_data(entry_data)` checking for non-empty/non-null user-editable fields (`bottle_id`, `section`, `weight_front`, `weight_middle`, `weight_rear`, `weight_avg`, `speed_per_min`, `packing_category`, `packing_size`, `cartons`, `bottles_in_nos`, `efficiency_percent`, `sqc`, `qc_hold`, `num`, `remarks`, and `defect_ids`).
+    - In `save_daily_quality`: If a row does NOT already exist in `hpr.hourly_production` for `(machine_no, entry_dt, report_id)` and has no meaningful data, it is skipped (`continue`).
+    - If a row ALREADY exists in the database (e.g. was previously saved with data and then cleared using the "-" button), it is preserved and updated with null/default values, ensuring the row is NOT deleted or lost.
+    - Defect associations are not created for skipped hours.
+    - `GET /api/production/quality/daily/` remains unchanged and continues to return a full 24-hour grid structure for all machines.
+  - **Outcome**: Only hours with actual data are inserted into the database for new entries, while existing row updates and "-" clearing behaviors remain fully intact.
+
+  # End-to-End QC Hold Boolean Type Implementation
+
+  ## Issue Summary
+  Previously, `qc_hold` had a broken type mismatch across the entire stack:
+  - DB column was `BOOLEAN`.
+  - Frontend table cell rendered a number input `<NumInput>` expecting numeric input and sending numbers/empty strings.
+  - Frontend row-highlight logic checked `entry?.qc_hold === 'HOLD'`, which was never true.
+  - Backend Pydantic schema declared `qc_hold: str`, checked `== "true"` on POST, and formatted as `"true" if entry.qc_hold else ""` on GET (which `<NumInput>` could not render).
+
+  ## Fix Details
+  - **Files Modified**:
+    - `Backend/app/schemas/quality.py`: Changed `qc_hold: Optional[bool] = False`.
+    - `Backend/app/api/production/quality_daily.py`: Direct boolean assignment `bool(entry_data.qc_hold)` for save, real boolean serialization in GET response, and `_has_meaningful_data` recognizes `qc_hold is True` as filled data.
+    - `src/services/qualityRepository.ts`: Changed `qc_hold: boolean` in `QualityHourlyEntry`.
+    - `src/components/quality/ProductionQualityMonitor.tsx`: Replaced `<NumInput>` with `<input type="checkbox">` bound to `Boolean(entry?.qc_hold)`. Fixed row highlight condition to `entry?.qc_hold === true` (activating `#fff5f5` red/pink background).
+  - **Outcome**: QC Hold is now a coherent boolean throughout the application, from user clicks to DB storage, GET retrieval, and row highlighting.
+
+  # URL Hash Stripping Bug Fix (React StrictMode / Double-Refresh)
+
+  ## Issue Summary
+  After the initial URL hash persistence fix, refreshing the page **twice** reverted to the default "Production Planning" module instead of staying on the last-visited module. A single refresh worked correctly; the second did not.
+
+  ## Root Cause
+  The original fix included an empty-dependency-array `useEffect` cleanup in `ERPContext.tsx` whose return function cleared the URL hash:
+
+  ```ts
+  useEffect(() => {
+    return () => {
+      // Ran on EVERY unmount, not just real logouts
+      window.history.replaceState(null, '', window.location.pathname);
+    };
+  }, []);
+  ```
+
+  An empty-`[]` cleanup fires on **any** unmount of `ERPProvider` — including React StrictMode's deliberate mount → cleanup → remount cycle in development, and any HMR-triggered remount. This silently stripped the hash from the address bar immediately after the first render cycle completed. On the second refresh, `getModuleFromHash()` read the now-empty hash and correctly fell back to `'Production Planning'`.
+
+  ## Fix Details
+  - **Files Modified**: `src/context/ERPContext.tsx`, `src/context/AuthContext.tsx`
+  - **Changes**:
+    - **`ERPContext.tsx`**: Removed the unmount-cleanup effect entirely. Replaced with a `useEffect([activeModule])` that calls `setHashForModule(activeModule)` on every mount and on every module change. This acts as a self-healing write that always re-syncs the address bar — even after a StrictMode double-invoke or HMR remount — with no corresponding cleanup that could erase it.
+    - **`AuthContext.tsx`**: Added explicit hash-clearing inside the `finally` block of the `logout()` function — the single, unambiguous point where a real logout occurs. This runs exactly once per real logout, never on a remount.
+  - **Why this is safe in production**: React StrictMode double-invocation only occurs in development. In production, `useEffect` runs once per mount; the `[activeModule]` effect writes the hash once on mount and then again only when the module actually changes — both correct behaviors. The fix does not depend on StrictMode behavior at all.
+  - **Outcome**: Page refreshes (including double-refresh) now reliably maintain the active module. Logout correctly clears the hash. Post-login always starts with a clean URL state.
+

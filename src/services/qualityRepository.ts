@@ -46,6 +46,14 @@ export interface QualityHourlyEntry {
   defect_ids: string[];
 }
 
+export interface DefectMasterItem {
+  defect_id: number;
+  defect_type: 'Critical' | 'Major' | 'Minor';
+  defect_sr: number;
+  defect_name: string;
+  is_active: boolean;
+}
+
 /**
  * Database-shaped hourly entry used for request payloads and API responses.
  * Field names and types mirror the database schema exactly:
@@ -243,6 +251,21 @@ export const qualityRepository = {
 
   getShiftsForDate(dateKey: string): QualityShiftMap {
     return readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {})[dateKey] ?? {};
+  },
+
+  /**
+   * Fetches active defects from GET /api/production/quality/defects/?active_only=true.
+   */
+  async getDefects(activeOnly: boolean = true): Promise<DefectMasterItem[]> {
+    try {
+      const res = await apiFetch(`/api/production/quality/defects/?active_only=${activeOnly}`);
+      if (Array.isArray(res)) {
+        return res as DefectMasterItem[];
+      }
+      return [];
+    } catch {
+      return [];
+    }
   },
 
   /**

@@ -124,8 +124,67 @@ const getDerivedJobWindow = (job: ProductionJob): { start: Date; end: Date } => 
   return { start, end };
 };
 
+const MODULE_TO_SLUG: Record<ActiveModule, string> = {
+  'Production Planning': 'production',
+  'Quality Control': 'quality',
+  'Master Management': 'master-management',
+  'Settings': 'settings',
+  'Profile': 'profile',
+  'Dashboard': 'dashboard',
+};
+
+const SLUG_TO_MODULE: Record<string, ActiveModule> = {
+  production: 'Production Planning',
+  quality: 'Quality Control',
+  'master-management': 'Master Management',
+  machines: 'Master Management',
+  settings: 'Settings',
+  profile: 'Profile',
+  dashboard: 'Dashboard',
+};
+
+const getModuleFromHash = (): ActiveModule => {
+  if (typeof window === 'undefined') return 'Production Planning';
+  const raw = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
+  return SLUG_TO_MODULE[raw] || 'Production Planning';
+};
+
+const setHashForModule = (module: ActiveModule) => {
+  if (typeof window === 'undefined') return;
+  const slug = MODULE_TO_SLUG[module] || 'production';
+  const targetHash = `/${slug}`;
+  if (window.location.hash.replace(/^#/, '') !== targetHash) {
+    window.history.replaceState(null, '', `#${targetHash}`);
+  }
+};
+
 export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeModule, setActiveModule] = useState<ActiveModule>('Production Planning');
+  const [activeModule, setActiveModuleState] = useState<ActiveModule>(getModuleFromHash);
+
+  const setActiveModule = useCallback((mod: ActiveModule) => {
+    setActiveModuleState(mod);
+    setHashForModule(mod);
+  }, []);
+
+  // Listen for hashchange events (e.g. browser back/forward or manual hash change)
+  useEffect(() => {
+    const handleHashChange = () => {
+      setActiveModuleState(getModuleFromHash());
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+    };
+  }, []);
+
+  // Keep the URL hash in sync with the current module on every mount and on
+  // every module change. This ensures the address bar is correct even after
+  // a React StrictMode remount or an HMR-triggered remount, instead of only
+  // updating when the user clicks a nav item.
+  useEffect(() => {
+    setHashForModule(activeModule);
+  }, [activeModule]);
+
   const [searchQuery, setSearchQuery] = useState('');
 
   // Derive the current month dynamically so defaults are always today's month,

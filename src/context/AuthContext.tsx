@@ -51,6 +51,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try { await apiFetch('/api/auth/logout', { method: 'POST' }); } finally {
       localStorage.removeItem('authToken');
       setUser(null);
+      if (typeof window !== 'undefined' && window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
     }
   };
 

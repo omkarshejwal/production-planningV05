@@ -21,5 +21,9 @@ class Settings(BaseSettings):
     def production_schema(self) -> str | None:
         return None if self.is_sqlite else "production"
 
+    @property
+    def hpr_schema(self) -> str | None:
+        return None if self.is_sqlite else "hpr"
+
 
 settings = Settings()

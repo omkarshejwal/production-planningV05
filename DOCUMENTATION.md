@@ -590,6 +590,40 @@ This starts:
 - `APP_URL` (root `.env.example`; app URL reference).
 
 ## Changelog
+### 2026-09-11 — Compute and Persist weight_avg, bottles_in_nos, and efficiency_percentage in Save Payload
+- **What changed:**
+  - `src/components/quality/ProductionQualityMonitor.tsx`:
+    - Extracted and unified shared calculation helpers: `calcBottlesInNosFor(e)`, `calcRowAvgFor(e, machineNo)`, and `calcEffFor(e, machineNo)` matching the exact on-screen display formulas.
+    - Updated the on-screen BOTTLES IN NOS table cell to use the shared `calcBottlesInNosFor(entry)` helper function.
+    - In `handleSave()`, mapped each hourly entry across all machines to calculate and populate `weight_avg`, `bottles_in_nos`, and `efficiency_percentage` using these shared formulas before dispatching to `qualityRepository.save()`.
+    - Maintained strict null handling: when formula inputs are absent/empty, the helpers return empty strings so `toNumOrNull` sends `null` to the backend and database, avoiding 0 or NaN values.
+- **Files changed:** `src/components/quality/ProductionQualityMonitor.tsx`
+- **Why:** Resolved issue where `weight_avg`, `bottles_in_nos`, and `efficiency_percentage` displayed accurately on screen but were persisted as `NULL` in `hpr.hourly_production` because they were previously computed solely inside JSX render expressions and never included in the hourly payload.
+
+### 2026-09-11 — Re-Apply Dynamic Defect Master Endpoint Fetch in Quality Monitor
+- **What changed:** Re-applied dynamic defect master fetching lost in the reset to `origin/main`:
+  - `src/services/qualityRepository.ts`: Added `DefectMasterItem` interface and `getDefects(activeOnly: boolean)` calling `GET /api/production/quality/defects/?active_only=true`.
+  - `src/components/quality/ProductionQualityMonitor.tsx`: Deleted static `DB_DEFECT_MASTER` constant. Added `useEffect` on mount to fetch active defects from `qualityRepository.getDefects(true)`, dynamically grouping by `defect_type` (`Critical`, `Major`, `Minor`) and sorting by `defect_sr`. Updated `DefectDropdown` to accept `defectGroups` and `isLoading` props. Updated all filtering, badge color group lookups, and table cell defect name resolution to use live `defectGroups`.
+- **Files changed:** `src/services/qualityRepository.ts`, `src/components/quality/ProductionQualityMonitor.tsx`
+- **Why:** Re-established dynamic synchronisation with database defect definitions, eliminating 400 "Unresolvable defect names" errors caused by discrepancies between hardcoded frontend names and database records.
+
+### 2026-09-11 — Re-Apply URL Hash Module Persistence & Logout State Reset
+- **What changed:** Re-applied frontend navigation fixes lost in the reset to `origin/main`:
+  - `src/context/ERPContext.tsx`: Re-added `getModuleFromHash` and bidirectional slug mappings (`production`, `quality`, `master-management`, `machines`, `settings`, `profile`, `dashboard`). Initialized `activeModule` state via `useState<ActiveModule>(getModuleFromHash)`. Added `setHashForModule` and wired it into `setActiveModule` and a mount/change `useEffect` hook to guarantee persistent URL synchronization across page reloads and StrictMode remounts.
+  - `src/context/AuthContext.tsx`: Added explicit URL hash clearing (`history.replaceState`) inside the `finally` block of `logout()` so logging out resets the browser URL to root without lingering module hashes.
+- **Files changed:** `src/context/ERPContext.tsx`, `src/context/AuthContext.tsx`
+- **Why:** Re-established reliable active module persistence across multiple browser refreshes and ensured clean URL resets upon user logout following the reset to origin/main.
+
+### 2026-09-10 — Quality Module Schema Alignment & Pydantic Validation Fixes
+- **What changed:** Updated `QualityHourlyEntrySchema` in `Backend/app/schemas/quality.py` to match the frontend request shape and database column types:
+  - Strongly typed `bottle_id`, `section`, `cartons`, `bottles_in_nos`, and `num` as `Optional[int]`.
+  - Strongly typed `weight_front`, `weight_middle`, `weight_rear`, `weight_avg`, and `speed_per_min` as `Optional[float]`.
+  - Renamed schema field `efficiency_percent` to `efficiency_percentage: Optional[float] = None` to match the frontend JSON key, and updated `Backend/app/api/production/quality_daily.py` to map between the frontend field and the underlying DB column `efficiency_percent`.
+  - Accepted `packing_category` as `List[str] = []` on the schema, converting to a comma-separated string `", ".join(...)` on DB insertion and splitting back into a `List[str]` in `get_daily_quality`.
+  - Coerced `sqc` and `packing_size` to strings via a `@field_validator(..., mode='before')` to safely bridge the database integer column types with frontend string expectations without validation errors.
+- **Files changed:** `Backend/app/schemas/quality.py`, `Backend/app/api/production/quality_daily.py`
+- **Why:** Resolved 422 Unprocessable Entity errors during `POST /api/production/quality/daily/` and 500 response serialization errors caused by schema type mismatches with the database and frontend.
+
 ### 2026-08-24 — Show yield-adjusted Good Bottles in grid Qty column
 - **What changed:** Applied the `calcGoodBottles` (90% yield factor) to the raw quantity returned by `calculateQuantityForProductionDay` in `getDailyProducedQty`.
 - **Files changed:** `src/components/planning/ProductionPlanningPage.tsx`

@@ -24,47 +24,7 @@ const DB_MACHINE_MASTER = [
   { machine_no: 4, gob_type: '3-gob' },
 ];
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Defect master — grouped active defects (Critical / Major / Minor)
-// ═══════════════════════════════════════════════════════════════════════════
-const DB_DEFECT_MASTER: { group: 'Critical' | 'Major' | 'Minor'; items: string[] }[] = [
-  {
-    group: 'Critical',
-    items: [
-      'Glass Protrusion inside the mouth', 'Top Seam (Sealing Integrity)', 'Choked Bore',
-      'Bird Swing', 'Embedded Glass Pieces Inside', 'Poor Annealing',
-      'Thermal Shock Test Fail', 'Light Transmission Test Fail', 'Glass Spikes',
-      'Mould Fin', 'Soft Blister > 1mm scaling area', 'Swabbing Carbon non removable',
-      'Extraneous Matter (Inside)',
-    ],
-  },
-  {
-    group: 'Major',
-    items: [
-      'Over / Under Weight', 'Over / Under Height', 'Over / Under Capacity',
-      'Over / Under L/T/F', 'De-Shape Bottle', 'Bubble/Blister above 2mm',
-      'Stone above 1.5 mm', 'N/R Damage', 'Pipe Mark',
-      'Neck Bend (More than Total Height x Tan 1d)', 'Sagging', 'Thin Body < 1mm',
-      'Thin Bottom', 'Crushed Baffle', 'Body Bend (More than Total Height x Tan 1d)',
-      'Neck Crack', 'Shoulder Crack', 'Body Crack', 'Bottom Crack', 'Unfilled Neck',
-      'Sunk Top', 'Neck Chip', 'Baffle Out', 'Rocker Bottom', 'Prominent Seam',
-      'Undersize Bore', 'Sunken Panel', 'Bulged Panel', 'Over / Under Body Dia',
-      'Over Press Finish/Plug Seam',
-    ],
-  },
-  {
-    group: 'Minor',
-    items: [
-      'Knots', 'Unstable Bottle', 'Oil Spots', 'Bubble/Blister below 2mm',
-      'Stone below 1.5 mm', 'Impact Marks', 'Seeds', 'Poor Polish', 'Pitting Marks',
-      'Wrinkle Surface', 'Rust / Carbon Mark', 'Rubbing Mark', 'Stiking Mark',
-      'Body / Bottom Tear', 'Black Specs', 'Hot Checks', 'Damage Blank/Mould',
-      'Lap Mark', 'Loading Mark', 'Unblown Shoulder', 'Brush Mark', 'Cold Mould',
-      'Shear Mark', 'Neck Finish Rough', 'Offset Mould', 'Oval Body (75% Tolerance)',
-      'Uneven Glass Distribution', 'Glass Fold', 'Heel Tap', 'Cold Checks',
-    ],
-  },
-];
+
 
 const GROUP_STYLE: Record<string, { color: string; bg: string; border: string }> = {
   Critical: { color: '#be123c', bg: '#fff1f2', border: '#fecdd3' },
@@ -166,7 +126,12 @@ const EffBadge: React.FC<{ val: string }> = ({ val }) => {
 };
 
 // ─── DefectDropdown ────────────────────────────────────────────────────────
-const DefectDropdown: React.FC<{ selected: string[]; onChange: (v: string[]) => void }> = ({ selected, onChange }) => {
+const DefectDropdown: React.FC<{
+  selected: string[];
+  onChange: (v: string[]) => void;
+  defectGroups: { group: 'Critical' | 'Major' | 'Minor'; items: string[] }[];
+  isLoading?: boolean;
+}> = ({ selected, onChange, defectGroups, isLoading = false }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const ref = React.useRef<HTMLDivElement>(null);
@@ -184,7 +149,7 @@ const DefectDropdown: React.FC<{ selected: string[]; onChange: (v: string[]) => 
     onChange(selected.includes(item) ? selected.filter((x) => x !== item) : [...selected, item]);
 
   const q = search.toLowerCase();
-  const filtered = DB_DEFECT_MASTER.map((g) => ({
+  const filtered = defectGroups.map((g) => ({
     ...g,
     items: g.items.filter((d) => d.toLowerCase().includes(q)),
   })).filter((g) => g.items.length > 0);
@@ -213,12 +178,14 @@ const DefectDropdown: React.FC<{ selected: string[]; onChange: (v: string[]) => 
         }}
       >
         {selected.length === 0 ? (
-          <span style={{ fontSize: '11.5px', color: '#94a3b8' }}>Select defects</span>
+          <span style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+            {isLoading ? 'Loading defects...' : 'Select defects'}
+          </span>
         ) : (
           <>
             {visible.map((d) => {
-              const grp = DB_DEFECT_MASTER.find((g) => g.items.includes(d))?.group ?? 'Minor';
-              const s = GROUP_STYLE[grp];
+              const grp = defectGroups.find((g) => g.items.includes(d))?.group ?? 'Minor';
+              const s = GROUP_STYLE[grp] ?? GROUP_STYLE.Minor;
               return (
                 <span
                   key={d}
@@ -305,7 +272,7 @@ const DefectDropdown: React.FC<{ selected: string[]; onChange: (v: string[]) => 
           <div style={{ overflowY: 'auto', flex: 1 }}>
             {filtered.length === 0 && (
               <div style={{ padding: '14px', textAlign: 'center', fontSize: '12px', color: '#94a3b8' }}>
-                No defects found
+                {isLoading ? 'Loading defects...' : 'No defects found'}
               </div>
             )}
             {filtered.map((g) => {
@@ -514,6 +481,30 @@ export const QualityControlModule: React.FC = () => {
   const [shiftStore, setShiftStore] = useState<Record<string, QualityShiftMap>>({});
   const [savedFlags, setSavedFlags] = useState<Record<string, boolean>>({});
   const [loadedDates, setLoadedDates] = useState<Record<string, boolean>>({});
+  const [defectGroups, setDefectGroups] = useState<{ group: 'Critical' | 'Major' | 'Minor'; items: string[] }[]>([]);
+  const [loadingDefects, setLoadingDefects] = useState<boolean>(true);
+
+  // Load real active defects from backend
+  useEffect(() => {
+    let active = true;
+    qualityRepository.getDefects(true).then((defects) => {
+      if (!active) return;
+      const groups: { group: 'Critical' | 'Major' | 'Minor'; items: string[] }[] = (['Critical', 'Major', 'Minor'] as const).map((grp) => ({
+        group: grp,
+        items: defects
+          .filter((d) => d.defect_type === grp)
+          .sort((a, b) => a.defect_sr - b.defect_sr)
+          .map((d) => d.defect_name),
+      }));
+      setDefectGroups(groups);
+      setLoadingDefects(false);
+    }).catch(() => {
+      if (active) setLoadingDefects(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Load saved data from the repository whenever the selected date changes.
   useEffect(() => {
@@ -662,11 +653,13 @@ export const QualityControlModule: React.FC = () => {
       weight_front: '',
       weight_middle: '',
       weight_rear: '',
+      weight_avg: '',
       speed_per_min: '',
       packing_category: [],
       packing_size: '',
       cartons: '',
       bottles_in_nos: '',
+      efficiency_percentage: '',
       sqc: '',
       qc_hold: 0,
       num: '',
@@ -675,22 +668,31 @@ export const QualityControlModule: React.FC = () => {
     });
   };
 
-  // ── Derived calculations ────────────────────────────────────────────────
-  const calcEff = (time: string): string => {
-    const e = getEntry(activeMachine, time);
-    if (!e?.bottle_id || !e.packing_size || !e.cartons) return '';
-    const bottles = parseInt(e.packing_size) * parseInt(e.cartons);
-    const speed = parseFloat(e.speed_per_min);
-    if (!bottles || !speed) return '';
-    return ((bottles / (speed * 60)) * 100).toFixed(1);
+  // ── Derived calculation helpers (shared by display, export, and save payload) ─
+  const gobCountFor = (machineNo: number): number =>
+    machines.find((m) => m.code === `MAC-${String(machineNo).padStart(2, '0')}`)?.gobCount ??
+    (DB_MACHINE_MASTER.find((m) => m.machine_no === machineNo)?.gob_type === '3-gob' ? 3 : 2);
+
+  const calcBottlesInNosFor = (e?: QualityHourlyEntry): string => {
+    const ps = parseInt(e?.packing_size ?? '');
+    const ct = parseInt(e?.cartons ?? '');
+    return ps > 0 && ct > 0 ? String(ps * ct) : '';
   };
 
-  const calcRowAvg = (time: string): string => {
-    const e = getEntry(activeMachine, time);
+  const calcEffFor = (e?: QualityHourlyEntry, _machineNo?: number): string => {
+    if (!e?.bottle_id || !e.packing_size || !e.cartons) return '';
+    const bottlesN = parseInt(e.packing_size) * parseInt(e.cartons);
+    const speed = parseFloat(e.speed_per_min);
+    if (!bottlesN || !speed) return '';
+    return ((bottlesN / (speed * 60)) * 100).toFixed(1);
+  };
+
+  const calcRowAvgFor = (e: QualityHourlyEntry | undefined, machineNo: number): string => {
     if (!e) return '';
     const f = parseFloat(e.weight_front);
     const r = parseFloat(e.weight_rear);
-    if (hasM) {
+    const gob = gobCountFor(machineNo);
+    if (gob === 3) {
       const m = parseFloat(e.weight_middle);
       const vals = [f, m, r].filter((v) => !isNaN(v));
       if (!vals.length) return '';
@@ -700,6 +702,10 @@ export const QualityControlModule: React.FC = () => {
     if (!vals.length) return '';
     return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
   };
+
+  const calcEff = (time: string): string => calcEffFor(getEntry(activeMachine, time), activeMachine);
+
+  const calcRowAvg = (time: string): string => calcRowAvgFor(getEntry(activeMachine, time), activeMachine);
 
   const dayAvg = (field: 'weight_front' | 'weight_middle' | 'weight_rear' | 'avg'): string => {
     const vals: number[] = [];
@@ -732,10 +738,24 @@ export const QualityControlModule: React.FC = () => {
 
   // ── Save / Export / Print ────────────────────────────────────────────────
   const handleSave = async () => {
-    const hourly = productionStore[dateKey] ?? {};
+    const rawHourly = productionStore[dateKey] ?? {};
+    const hourly: Record<string, Record<string, QualityHourlyEntry>> = {};
+    for (const [mStr, timeMap] of Object.entries(rawHourly)) {
+      hourly[mStr] = {};
+      const mNum = parseInt(mStr, 10) || activeMachine;
+      for (const [time, entry] of Object.entries(timeMap)) {
+        hourly[mStr][time] = {
+          ...entry,
+          weight_avg: calcRowAvgFor(entry, mNum),
+          bottles_in_nos: calcBottlesInNosFor(entry),
+          efficiency_percentage: calcEffFor(entry, mNum),
+        };
+      }
+    }
     const shifts = shiftStore[dateKey] ?? {};
     const result = await qualityRepository.save(dateKey, hourly, shifts);
     if (result.ok) {
+      setProductionStore((prev) => ({ ...prev, [dateKey]: hourly }));
       setSavedFlags((prev) => ({ ...prev, [dateKey]: true }));
       toast.success(`Saved production quality data for ${dateLabel}`);
     } else {
@@ -758,8 +778,9 @@ export const QualityControlModule: React.FC = () => {
         continue;
       }
       const bottleName = bottles.find((b) => b.id === e.bottle_id)?.name ?? e.bottle_id;
-      const defectNames = DB_DEFECT_MASTER.flatMap((g) => g.items)
-        .filter((d) => e.defect_ids.includes(d));
+      const defectNames = defectGroups.length > 0
+        ? defectGroups.flatMap((g) => g.items).filter((d) => e.defect_ids.includes(d))
+        : (e.defect_ids ?? []);
       const eff = calcEffFor(e, activeMachine);
       rows.push(
         [
@@ -776,7 +797,7 @@ export const QualityControlModule: React.FC = () => {
           (e.packing_category ?? []).join(' / '),
           e.packing_size,
           e.cartons,
-          e.bottles_in_nos,
+          calcBottlesInNosFor(e) || e.bottles_in_nos,
           eff,
           e.sqc,
           e.qc_hold,
@@ -795,33 +816,6 @@ export const QualityControlModule: React.FC = () => {
     URL.revokeObjectURL(url);
     toast.success(`Exported Machine ${activeMachine} — ${dateLabel} to CSV`);
   };
-
-  const calcEffFor = (e: QualityHourlyEntry, _machineNo: number): string => {
-    if (!e?.bottle_id || !e.packing_size || !e.cartons) return '';
-    const bottlesN = parseInt(e.packing_size) * parseInt(e.cartons);
-    const speed = parseFloat(e.speed_per_min);
-    if (!bottlesN || !speed) return '';
-    return ((bottlesN / (speed * 60)) * 100).toFixed(1);
-  };
-
-  const calcRowAvgFor = (e: QualityHourlyEntry, machineNo: number): string => {
-    const f = parseFloat(e.weight_front);
-    const r = parseFloat(e.weight_rear);
-    const gob = gobCountFor(machineNo);
-    if (gob === 3) {
-      const m = parseFloat(e.weight_middle);
-      const vals = [f, m, r].filter((v) => !isNaN(v));
-      if (!vals.length) return '';
-      return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
-    }
-    const vals = [f, r].filter((v) => !isNaN(v));
-    if (!vals.length) return '';
-    return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
-  };
-
-  const gobCountFor = (machineNo: number): number =>
-    machines.find((m) => m.code === `MAC-${String(machineNo).padStart(2, '0')}`)?.gobCount ??
-    (DB_MACHINE_MASTER.find((m) => m.machine_no === machineNo)?.gob_type === '3-gob' ? 3 : 2);
 
   const handlePrint = () => window.print();
 
@@ -1118,9 +1112,9 @@ export const QualityControlModule: React.FC = () => {
                   ? getAvailableSections(entry.bottle_id)
                   : getAvailableSections('', activeMachine);
 
-                const selectedDefectNames = DB_DEFECT_MASTER
-                  .flatMap((g) => g.items)
-                  .filter((d) => (entry?.defect_ids ?? []).includes(d));
+                const selectedDefectNames = defectGroups.length > 0
+                  ? defectGroups.flatMap((g) => g.items).filter((d) => (entry?.defect_ids ?? []).includes(d))
+                  : (entry?.defect_ids ?? []);
 
                 const td: React.CSSProperties = {
                   padding: '6px 10px',
@@ -1300,11 +1294,7 @@ export const QualityControlModule: React.FC = () => {
                     </td>
 
                     <td style={{ ...tdCenter, fontWeight: 500 }}>
-                      {(() => {
-                        const ps = parseInt(entry?.packing_size ?? '');
-                        const ct = parseInt(entry?.cartons ?? '');
-                        return ps > 0 && ct > 0 ? ps * ct : '';
-                      })()}
+                      {calcBottlesInNosFor(entry)}
                     </td>
 
                     <td style={tdCenter}>
@@ -1327,6 +1317,8 @@ export const QualityControlModule: React.FC = () => {
                       <DefectDropdown
                         selected={selectedDefectNames}
                         onChange={(names) => patchEntry(time, { defect_ids: names })}
+                        defectGroups={defectGroups}
+                        isLoading={loadingDefects}
                       />
                     </td>
 

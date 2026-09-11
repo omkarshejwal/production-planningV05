@@ -13,3 +13,14 @@ def production_fk(table_and_column: str) -> str:
 def production_table_args() -> dict[str, str]:
     schema = settings.production_schema
     return {"schema": schema} if schema else {}
+
+
+def hpr_fk(table_and_column: str) -> str:
+    schema = settings.hpr_schema
+    return f"{schema}.{table_and_column}" if schema else table_and_column
+
+
+def hpr_table_args() -> dict[str, str]:
+    schema = settings.hpr_schema
+    return {"schema": schema} if schema else {}
+
