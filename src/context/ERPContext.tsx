@@ -27,6 +27,7 @@ interface ERPContextType {
   bottles: BottleMaster[];
   bottleMasterRecords: BottleMasterRecord[];
   jobs: ProductionJob[];
+  holidays: { holiday_date: string; holiday_name: string }[];
   planningEntries: DailyPlanningEntry[];
   totalRawMaterialConsumptionTons: number;
   searchQuery: string;
@@ -222,7 +223,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     plantLocation: 'Furnace Line #2 - Vitrum Glass Ind.',
   });
 
-  const refreshPlanner = () => setPlannerVersion((v) => v + 1);
+  const refreshPlanner = useCallback(() => setPlannerVersion((v) => v + 1), []);
 
   /**
    * Fetches jobs scoped to [from, to], updates the fetch-window record,
@@ -345,6 +346,25 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     void plannerVersion;
     const rows = planningRepository.getProductionJobs();
 
+    // Pre-compute the per-day/machine sequence once (O(n log n)) instead of
+    // filtering + sorting the full row list for every job (O(n^2) before).
+    const sequenceById = new Map<string, number>();
+    const groups = new Map<string, ProductionJobRow[]>();
+    for (const row of rows) {
+      const key = `${row.plan_date}|${row.machine_no}`;
+      const group = groups.get(key);
+      if (group) group.push(row);
+      else groups.set(key, [row]);
+    }
+    for (const group of groups.values()) {
+      group.sort((a, b) => a.start_time.localeCompare(b.start_time));
+      group.forEach((job, index) => {
+        const id = jobIdFromRow(job);
+        // keep the first occurrence index, matching the original findIndex semantics
+        if (!sequenceById.has(id)) sequenceById.set(id, index + 1);
+      });
+    }
+
     return rows.map((row) => {
       const config = planningRepository.getBottleConfiguration(row.machine_no, row.bottle_id, row.section);
       const resolvedWeight = config?.weight ?? row.weight;
@@ -364,10 +384,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ? row.production_hours
         : (resolvedMetrics.hourlyQuantity > 0 ? Number((row.quantity / resolvedMetrics.hourlyQuantity).toFixed(2)) : 0);
 
-      const maxSeqForDayMachine = rows
-        .filter((j) => j.plan_date === row.plan_date && j.machine_no === row.machine_no)
-        .sort((a, b) => a.start_time.localeCompare(b.start_time));
-      const sequenceNumber = maxSeqForDayMachine.findIndex((j) => jobIdFromRow(j) === jobIdFromRow(row)) + 1;
+      const sequenceNumber = sequenceById.get(jobIdFromRow(row)) ?? 0;
 
       return {
         id: jobIdFromRow(row),
@@ -429,6 +446,13 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const totalRawMaterialConsumptionTons = useMemo(() => {
     return jobs.reduce((sum, job) => sum + job.drawTonsPerDay, 0);
   }, [jobs]);
+
+  // Holidays arrive with the master-data init fetch; expose them from the
+  // cache so consumers don't issue a second /api/production/holidays call.
+  const holidays = useMemo(() => {
+    void plannerVersion;
+    return planningRepository.getCachedHolidays();
+  }, [plannerVersion]);
 
   const openDrawerForEdit = (
     job?: ProductionJob | null,
@@ -722,6 +746,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bottles,
         bottleMasterRecords,
         jobs,
+        holidays,
         planningEntries,
         totalRawMaterialConsumptionTons,
         searchQuery,

@@ -44,6 +44,7 @@ export interface QualityHourlyEntry {
   num: string;
   remarks: string;
   defect_ids: string[];
+  job_id: string;
 }
 
 export interface DefectMasterItem {
@@ -87,6 +88,7 @@ export interface QualityEntryPayload {
   num: number | null;
   remarks: string | null;
   defect_ids: string[];
+  job_id: string | null;
 }
 
 export interface QualityShiftAssignment {
@@ -100,6 +102,8 @@ export type QualityHourlyStore =
 
 const HOURLY_KEY = 'vitrum.quality.hourly.v1';
 const SHIFT_KEY = 'vitrum.quality.shift.v1';
+
+export { HOURLY_KEY as QUALITY_HOURLY_KEY };
 
 const readStore = <T>(key: string, fallback: T): T => {
   try {
@@ -187,6 +191,7 @@ const toDbEntry = (entry: QualityHourlyEntry): QualityEntryPayload => ({
   num: toNumOrNull(entry.num),
   remarks: toStrOrEmpty(entry.remarks) || null,
   defect_ids: toDefectArray(entry.defect_ids),
+  job_id: entry.job_id || null,
 });
 
 /** Maps a database-shaped entry (or already-normalised form entry) back to the form model. */
@@ -213,6 +218,7 @@ const fromDbEntry = (raw: Record<string, unknown>): QualityHourlyEntry => ({
   num: toStrOrEmpty(raw.num),
   remarks: toStrOrEmpty(raw.remarks),
   defect_ids: toDefectArray(raw.defect_ids),
+  job_id: toStrOrEmpty(raw.job_id),
 });
 
 type NestedPayload =

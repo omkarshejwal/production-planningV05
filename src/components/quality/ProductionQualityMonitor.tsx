@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Printer, Download, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
-import { qualityRepository, QualityHourlyEntry, QualityShiftMap } from '../../services/qualityRepository';
+import { BottleMaster } from '../../types';
+import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QUALITY_HOURLY_KEY } from '../../services/qualityRepository';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Shift master — mirrors the production.shift_master table
@@ -459,6 +460,334 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const toIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const toDisplay = (d: Date) => `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
 
+type DefectGroup = { group: 'Critical' | 'Major' | 'Minor'; items: string[] };
+
+const nextJobIdFromSeq = (seq: number): string => `J${String(seq).padStart(3, '0')}`;
+
+const maxJobSeqIn = (
+  store: Record<string, Record<string, Record<string, QualityHourlyEntry>>>
+): number => {
+  let max = 0;
+  for (const dateKey of Object.keys(store ?? {})) {
+    const byMachine = store[dateKey] ?? {};
+    for (const machineKey of Object.keys(byMachine)) {
+      const byTime = byMachine[machineKey] ?? {};
+      for (const timeKey of Object.keys(byTime)) {
+        const m = /^J0*(\d+)$/.exec(byTime[timeKey]?.job_id ?? '');
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+      }
+    }
+  }
+  return max;
+};
+
+const calcBottlesInNos = (e?: QualityHourlyEntry): string => {
+  const ps = parseInt(e?.packing_size ?? '');
+  const ct = parseInt(e?.cartons ?? '');
+  return ps > 0 && ct > 0 ? String(ps * ct) : '';
+};
+
+const calcEffForEntry = (e?: QualityHourlyEntry): string => {
+  if (!e?.bottle_id || !e.packing_size || !e.cartons) return '';
+  const bottlesN = parseInt(e.packing_size) * parseInt(e.cartons);
+  const speed = parseFloat(e.speed_per_min);
+  if (!bottlesN || !speed) return '';
+  return ((bottlesN / (speed * 60)) * 100).toFixed(1);
+};
+
+const calcRowAverage = (e: QualityHourlyEntry | undefined, gobCount: number): string => {
+  if (!e) return '';
+  const f = parseFloat(e.weight_front);
+  const r = parseFloat(e.weight_rear);
+  if (gobCount === 3) {
+    const m = parseFloat(e.weight_middle);
+    const vals = [f, m, r].filter((v) => !isNaN(v));
+    if (!vals.length) return '';
+    return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
+  }
+  const vals = [f, r].filter((v) => !isNaN(v));
+  if (!vals.length) return '';
+  return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
+};
+
+// Memoized per-hourly-row <tr>. Props are referentially stable across parent
+// renders (handlers are useCallback'd, availableSections/allDefectNames are
+// cached), so typing in one row only re-renders that row instead of all 24.
+const QualityTimeRow = React.memo<{
+  time: string;
+  shiftIdx: number;
+  isFirstInShift: boolean;
+  entry?: QualityHourlyEntry;
+  gobCount: number;
+  hasM: boolean;
+  bottles: BottleMaster[];
+  availableSections: string[];
+  allDefectNames: string[];
+  defectGroups: DefectGroup[];
+  loadingDefects: boolean;
+  selectBottle: (time: string, bottleId: string) => void;
+  selectSection: (time: string, section: string) => void;
+  patchEntry: (time: string, patch: Partial<QualityHourlyEntry>) => void;
+  copyRowDown: (time: string) => void;
+  removeBottle: (time: string) => void;
+}>(({
+  time,
+  shiftIdx,
+  isFirstInShift,
+  entry,
+  gobCount,
+  hasM,
+  bottles,
+  availableSections,
+  allDefectNames,
+  defectGroups,
+  loadingDefects,
+  selectBottle,
+  selectSection,
+  patchEntry,
+  copyRowDown,
+  removeBottle,
+}) => {
+  const hasHold = Number(entry?.qc_hold ?? 0) > 0;
+  const rowBg = hasHold ? '#fff5f5' : SHIFT_ROW_BG[shiftIdx];
+  const rowAvg = calcRowAverage(entry, gobCount);
+
+  const selectedDefectNames = defectGroups.length > 0
+    ? allDefectNames.filter((d) => (entry?.defect_ids ?? []).includes(d))
+    : (entry?.defect_ids ?? []);
+
+  const td: React.CSSProperties = {
+    padding: '6px 10px',
+    borderBottom: `1px solid ${C.border}`,
+    borderRight: `1px solid ${C.border}`,
+    fontSize: '12.5px',
+    color: C.textMain,
+    verticalAlign: 'middle',
+  };
+  const tdLast: React.CSSProperties = { ...td, borderRight: 'none' };
+  const tdCenter: React.CSSProperties = { ...td, textAlign: 'center' };
+  const selectStyle: React.CSSProperties = {
+    width: '100%',
+    padding: '3px 4px',
+    fontSize: '12px',
+    fontWeight: 400,
+    color: C.textMain,
+    backgroundColor: 'transparent',
+    border: '1px solid transparent',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    outline: 'none',
+    textAlign: 'center',
+  };
+  const selectFocus = (e: React.FocusEvent<HTMLSelectElement>) => {
+    e.currentTarget.style.borderColor = '#2563eb';
+  };
+  const selectBlur = (e: React.FocusEvent<HTMLSelectElement>) => {
+    e.currentTarget.style.borderColor = 'transparent';
+  };
+
+  return (
+    <tr
+      key={time}
+      style={{ backgroundColor: rowBg }}
+      onMouseEnter={(e) => { if (!hasHold) e.currentTarget.style.backgroundColor = '#ecf1ff'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = rowBg; }}
+    >
+      {isFirstInShift && (
+        <td rowSpan={8} style={{ textAlign: 'center', verticalAlign: 'middle', borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, width: '38px', backgroundColor: SHIFT_CELL_BG[shiftIdx], padding: '0' }}>
+          <div style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)', fontSize: '10.5px', fontWeight: 700, color: SHIFT_CELL_COLOR[shiftIdx], letterSpacing: '0.08em', textTransform: 'uppercase', userSelect: 'none' }}>
+            {SHIFT_LABELS[shiftIdx]}
+          </div>
+        </td>
+      )}
+
+      <td style={{ ...tdCenter, fontWeight: 500, fontSize: '12px', color: C.textMuted, whiteSpace: 'nowrap' }}>
+        {time}
+      </td>
+
+      <td style={{ ...td, padding: '4px 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+          <select
+            value={entry?.bottle_id ?? ''}
+            onChange={(e) => {
+              selectBottle(time, e.target.value);
+            }}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: '3px 5px',
+              fontSize: '12px',
+              fontWeight: entry?.bottle_id ? 500 : 400,
+              color: entry?.bottle_id ? C.textMain : '#94a3b8',
+              backgroundColor: 'transparent',
+              border: '1px solid transparent',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              outline: 'none',
+              textAlign: 'left',
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
+          >
+            <option value="">— Select bottle</option>
+            {bottles.map((b) => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+          {entry?.bottle_id && (
+            <button
+              onClick={() => copyRowDown(time)}
+              title="Copy this row to the next empty slot"
+              style={{
+                width: '24px', height: '24px', borderRadius: '5px',
+                border: '1px solid #bfdbfe', backgroundColor: '#eff6ff', color: '#2563eb',
+                fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 0, flexShrink: 0, transition: 'background-color 0.15s',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#dbeafe'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#eff6ff'; }}
+            >
+              +
+            </button>
+          )}
+          {entry?.bottle_id ? (
+            <button
+              onClick={() => removeBottle(time)}
+              title="Remove one bottle from this row"
+              style={{
+                width: '24px', height: '24px', borderRadius: '5px',
+                border: '1px solid #fecdd3', backgroundColor: '#fff1f2', color: '#be123c',
+                fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 0, flexShrink: 0, transition: 'background-color 0.15s',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#ffe4e6'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#fff1f2'; }}
+            >
+              −
+            </button>
+          ) : (
+            <button
+              disabled
+              title="No bottle to remove"
+              style={{
+                width: '24px', height: '24px', borderRadius: '5px',
+                border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', color: '#cbd5e1',
+                fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'not-allowed',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 0, flexShrink: 0,
+              }}
+            >
+              −
+            </button>
+          )}
+        </div>
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <select
+          value={entry?.section ?? ''}
+          onChange={(e) => selectSection(time, e.target.value)}
+          style={selectStyle}
+          onFocus={selectFocus}
+          onBlur={selectBlur}
+        >
+          <option value="">—</option>
+          {availableSections.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
+        <NumInput value={entry?.weight_front ?? ''} onChange={(v) => patchEntry(time, { weight_front: v })} />
+      </td>
+      {hasM && (
+        <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
+          <NumInput value={entry?.weight_middle ?? ''} onChange={(v) => patchEntry(time, { weight_middle: v })} />
+        </td>
+      )}
+      <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
+        <NumInput value={entry?.weight_rear ?? ''} onChange={(v) => patchEntry(time, { weight_rear: v })} />
+      </td>
+
+      <td style={{ ...tdCenter, fontSize: '12px', fontWeight: rowAvg ? 600 : 400, color: rowAvg ? '#1e293b' : '#94a3b8' }}>
+        {rowAvg || ''}
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.speed_per_min ?? ''} onChange={(v) => patchEntry(time, { speed_per_min: v })} />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 6px' }}>
+        <PackingMultiSelect
+          selected={entry?.packing_category ?? []}
+          onChange={(v) => patchEntry(time, { packing_category: v })}
+        />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.packing_size ?? ''} onChange={(v) => patchEntry(time, { packing_size: v })} />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.cartons ?? ''} onChange={(v) => patchEntry(time, { cartons: v })} />
+      </td>
+
+      <td style={{ ...tdCenter, fontWeight: 500 }}>
+        {calcBottlesInNos(entry)}
+      </td>
+
+      <td style={tdCenter}>
+        <EffBadge val={calcEffForEntry(entry)} />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.sqc ?? ''} onChange={(v) => patchEntry(time, { sqc: v })} />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.qc_hold != null ? String(entry.qc_hold) : '0'} onChange={(v) => patchEntry(time, { qc_hold: v === '' ? 0 : Number(v) })} />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.num ?? ''} onChange={(v) => patchEntry(time, { num: v })} />
+      </td>
+
+      <td style={{ ...td, minWidth: '200px', padding: '4px 8px' }}>
+        <DefectDropdown
+          selected={selectedDefectNames}
+          onChange={(names) => patchEntry(time, { defect_ids: names })}
+          defectGroups={defectGroups}
+          isLoading={loadingDefects}
+        />
+      </td>
+
+      <td style={{ ...tdLast, padding: '4px 8px', minWidth: '120px', width: '120px' }}>
+        <input
+          type="text"
+          value={entry?.remarks ?? ''}
+          onChange={(e) => patchEntry(time, { remarks: e.target.value })}
+          placeholder="Enter remarks..."
+          style={{
+            width: '100%', border: '1px solid transparent', borderRadius: '4px',
+            padding: '4px 6px', fontSize: '12px', color: '#475569',
+            backgroundColor: 'transparent', outline: 'none',
+            transition: 'border-color 0.15s, background-color 0.15s',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.borderColor = '#2563eb';
+            e.currentTarget.style.backgroundColor = '#ffffff';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.borderColor = 'transparent';
+            e.currentTarget.style.backgroundColor = 'transparent';
+          }}
+        />
+      </td>
+    </tr>
+  );
+});
+
 // ─── Module ────────────────────────────────────────────────────────────────
 export const QualityControlModule: React.FC = () => {
   const { machines, bottles, bottleMasterRecords } = useERP();
@@ -481,8 +810,24 @@ export const QualityControlModule: React.FC = () => {
   const [shiftStore, setShiftStore] = useState<Record<string, QualityShiftMap>>({});
   const [savedFlags, setSavedFlags] = useState<Record<string, boolean>>({});
   const [loadedDates, setLoadedDates] = useState<Record<string, boolean>>({});
-  const [defectGroups, setDefectGroups] = useState<{ group: 'Critical' | 'Major' | 'Minor'; items: string[] }[]>([]);
+  const [defectGroups, setDefectGroups] = useState<DefectGroup[]>([]);
   const [loadingDefects, setLoadingDefects] = useState<boolean>(true);
+
+  // Next sequential job number (J001, J002, ...). Persisted job_ids across
+  // dates must never be reused, so the counter is seeded from stored data.
+  const jobIdCounter = useRef(1);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(QUALITY_HOURLY_KEY);
+      if (!raw) return;
+      const stored = JSON.parse(raw) as Record<string, Record<string, Record<string, QualityHourlyEntry>>>;
+      const max = maxJobSeqIn(stored ?? {});
+      if (max >= jobIdCounter.current) jobIdCounter.current = max + 1;
+    } catch {
+      // Ignore corrupt/unavailable cache — counter starts at 1.
+    }
+  }, []);
 
   // Load real active defects from backend
   useEffect(() => {
@@ -514,6 +859,8 @@ export const QualityControlModule: React.FC = () => {
       setProductionStore((prev) => ({ ...prev, [dateKey]: hourly ?? {} }));
       setShiftStore((prev) => ({ ...prev, [dateKey]: shifts ?? {} }));
       setLoadedDates((prev) => ({ ...prev, [dateKey]: true }));
+      const max = maxJobSeqIn({ [dateKey]: hourly ?? {} });
+      if (max >= jobIdCounter.current) jobIdCounter.current = max + 1;
     });
     return () => {
       active = false;
@@ -543,12 +890,13 @@ export const QualityControlModule: React.FC = () => {
     num: '',
     remarks: '',
     defect_ids: [],
+    job_id: '',
   });
 
   const getEntry = (machineNo: number, time: string): QualityHourlyEntry | undefined =>
     productionStore[dateKey]?.[String(machineNo)]?.[time];
 
-  const patchEntry = (time: string, patch: Partial<QualityHourlyEntry>) => {
+  const patchEntry = useCallback((time: string, patch: Partial<QualityHourlyEntry>) => {
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
     setProductionStore((prev) => {
       const existing = prev[dateKey]?.[String(activeMachine)]?.[time] ?? blankEntry(time, slot?.shift_id ?? 1);
@@ -563,7 +911,7 @@ export const QualityControlModule: React.FC = () => {
         },
       };
     });
-  };
+  }, [dateKey, activeMachine]);
 
   // ── Shift assignments ────────────────────────────────────────────────────
   const getShiftAssignment = (shiftId: number) =>
@@ -581,23 +929,49 @@ export const QualityControlModule: React.FC = () => {
   // ── Master-data lookups ──────────────────────────────────────────────────
   const sectionKey = `${String(activeMachine).padStart(2, '0')}`;
 
-  const getAvailableSections = (bottleId: string, machineNo?: number): string[] => {
+  // Available sections are derived from bottleMasterRecords/machines, which
+  // only change when master data reloads, so the per-key result can be cached
+  // and shared across rows renders (previously filtered the full record list
+  // for every one of the 24 rows on every keypress).
+  const sectionsCache = useRef(new Map<string, string[]>());
+  useEffect(() => {
+    sectionsCache.current.clear();
+  }, [bottleMasterRecords, machines]);
+
+  const getAvailableSections = useCallback((bottleId: string, machineNo?: number): string[] => {
+    const key = `${machineNo ?? activeMachine}|${bottleId || ''}`;
+    const cached = sectionsCache.current.get(key);
+    if (cached) return cached;
+
     const num = machineNo ?? activeMachine;
     const mch = `MAC-${String(num).padStart(2, '0')}`;
     const sections = bottleMasterRecords
       .filter((r) => r.mch === mch && (!bottleId || r.drawingNumber === bottleId))
       .map((r) => String(r.section));
     const unique = [...new Set(sections)];
-    if (unique.length > 0) return unique.sort((a, b) => parseInt(a) - parseInt(b));
-    const machine = machines.find((m) => m.code === mch);
-    if (machine && machine.availableSections.length > 0) {
-      return machine.availableSections.map(String);
+
+    let result: string[];
+    if (unique.length > 0) {
+      result = unique.sort((a, b) => parseInt(a) - parseInt(b));
+    } else {
+      const machine = machines.find((m) => m.code === mch);
+      if (machine && machine.availableSections.length > 0) {
+        result = machine.availableSections.map(String);
+      } else {
+        result = ['5', '6', '7', '8'];
+      }
     }
-    return ['5', '6', '7', '8'];
-  };
+    sectionsCache.current.set(key, result);
+    return result;
+  }, [activeMachine, bottleMasterRecords, machines]);
+
+  const allDefectNames = useMemo(() => defectGroups.flatMap((g) => g.items), [defectGroups]);
 
   // Select a bottle: auto-fill F/M/R weights + speed from bottle_configuration.
-  const selectBottle = (time: string, bottleId: string) => {
+  // A NEW job is created when the row has no job yet, or when the operator
+  // picks a different bottle than the one already on the row (the previous
+  // job — and its job_id — is then superseded by the new one).
+  const selectBottle = useCallback((time: string, bottleId: string) => {
     if (!bottleId) {
       patchEntry(time, {
         bottle_id: '',
@@ -605,48 +979,109 @@ export const QualityControlModule: React.FC = () => {
         weight_middle: '',
         weight_rear: '',
         speed_per_min: '',
+        job_id: '',
       });
       return;
     }
-    const entry = getEntry(activeMachine, time);
-    const currentSection = entry?.section ?? '';
-    const configs = bottleMasterRecords.filter(
-      (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
-    );
-    const config =
-      (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
-      configs[0];
-    patchEntry(time, {
-      bottle_id: bottleId,
-      weight_front: (config && config.weightGrams ? String(config.weightGrams) : ''),
-      weight_middle: hasM && config && config.weightGrams ? String(config.weightGrams) : '',
-      weight_rear: (config && config.weightGrams ? String(config.weightGrams) : ''),
-      speed_per_min: (config && config.speed ? String(config.speed) : ''),
+    const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
+    setProductionStore((prev) => {
+      const machineKey = String(activeMachine);
+      const existingEntry = prev[dateKey]?.[machineKey]?.[time];
+      const currentSection = existingEntry?.section ?? '';
+      const prevJobId = existingEntry?.job_id || '';
+      const prevBottle = existingEntry?.bottle_id || '';
+      const isNewJob = !prevJobId || (prevBottle && prevBottle !== bottleId);
+      const newJobId = isNewJob
+        ? nextJobIdFromSeq(jobIdCounter.current)
+        : prevJobId;
+      if (isNewJob) jobIdCounter.current += 1;
+      const configs = bottleMasterRecords.filter(
+        (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
+      );
+      const config =
+        (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
+        configs[0];
+      const base = existingEntry ?? blankEntry(time, slot?.shift_id ?? 1);
+      return {
+        ...prev,
+        [dateKey]: {
+          ...(prev[dateKey] ?? {}),
+          [machineKey]: {
+            ...(prev[dateKey]?.[machineKey] ?? {}),
+            [time]: {
+              ...base,
+              job_id: newJobId,
+              bottle_id: bottleId,
+              weight_front: (config && config.weightGrams ? String(config.weightGrams) : ''),
+              weight_middle: hasM && config && config.weightGrams ? String(config.weightGrams) : '',
+              weight_rear: (config && config.weightGrams ? String(config.weightGrams) : ''),
+              speed_per_min: (config && config.speed ? String(config.speed) : ''),
+            },
+          },
+        },
+      };
     });
-  };
+  }, [dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, patchEntry]);
 
-  const selectSection = (time: string, section: string) => patchEntry(time, { section });
+  const selectSection = useCallback((time: string, section: string) => patchEntry(time, { section }), [patchEntry]);
 
-  // Copy a filled row down to the next empty slot.
-  const copyRowDown = (time: string) => {
+  // Copy a filled row down to the next empty slot. The row's job_id is
+  // preserved (a copied row CONTINUES the same job). If all 24 slots of the
+  // day are full, the final 8 AM row extends the same job into the next day's
+  // first row — crossing the day boundary never starts a new job.
+  const copyRowDown = useCallback((time: string) => {
     const idx = PRODUCTION_TIMES.findIndex((pt) => pt.time === time);
-    const source = getEntry(activeMachine, time);
-    if (!source?.bottle_id) return;
-    for (let i = idx + 1; i < PRODUCTION_TIMES.length; i++) {
-      const nextTime = PRODUCTION_TIMES[i].time;
-      if (!getEntry(activeMachine, nextTime)?.bottle_id) {
-        patchEntry(nextTime, {
-          ...source,
-          production_time: nextTime,
-          entry_id: `${dateKey}:${source.machine_no}:${nextTime}`,
-          shift_id: PRODUCTION_TIMES[i].shift_id,
-        });
-        return;
+    setProductionStore((prev) => {
+      const machineKey = String(activeMachine);
+      const source = prev[dateKey]?.[machineKey]?.[time];
+      if (!source?.bottle_id) return prev;
+      for (let i = idx + 1; i < PRODUCTION_TIMES.length; i++) {
+        const nextTime = PRODUCTION_TIMES[i].time;
+        if (!prev[dateKey]?.[machineKey]?.[nextTime]?.bottle_id) {
+          return {
+            ...prev,
+            [dateKey]: {
+              ...(prev[dateKey] ?? {}),
+              [machineKey]: {
+                ...(prev[dateKey]?.[machineKey] ?? {}),
+                [nextTime]: {
+                  ...source,
+                  production_time: nextTime,
+                  entry_id: `${dateKey}:${source.machine_no}:${nextTime}`,
+                  shift_id: PRODUCTION_TIMES[i].shift_id,
+                },
+              },
+            },
+          };
+        }
       }
-    }
-  };
+      if (idx === PRODUCTION_TIMES.length - 1) {
+        const nextDate = new Date(`${dateKey}T00:00:00`);
+        nextDate.setDate(nextDate.getDate() + 1);
+        const nextDateKey = toIso(nextDate);
+        const firstTime = PRODUCTION_TIMES[0].time;
+        const firstShiftId = PRODUCTION_TIMES[0].shift_id;
+        return {
+          ...prev,
+          [nextDateKey]: {
+            ...(prev[nextDateKey] ?? {}),
+            [machineKey]: {
+              ...(prev[nextDateKey]?.[machineKey] ?? {}),
+              [firstTime]: {
+                ...source,
+                production_time: firstTime,
+                entry_id: `${nextDateKey}:${source.machine_no}:${firstTime}`,
+                shift_id: firstShiftId,
+              },
+            },
+          },
+        };
+      }
+      return prev;
+    });
+  }, [dateKey, activeMachine]);
 
-  const removeBottle = (time: string) => {
+  const removeBottle = useCallback((time: string) => {
     patchEntry(time, {
       bottle_id: '',
       section: '',
@@ -665,43 +1100,21 @@ export const QualityControlModule: React.FC = () => {
       num: '',
       defect_ids: [],
       remarks: '',
+      job_id: '',
     });
-  };
+  }, [patchEntry]);
 
   // ── Derived calculation helpers (shared by display, export, and save payload) ─
   const gobCountFor = (machineNo: number): number =>
     machines.find((m) => m.code === `MAC-${String(machineNo).padStart(2, '0')}`)?.gobCount ??
     (DB_MACHINE_MASTER.find((m) => m.machine_no === machineNo)?.gob_type === '3-gob' ? 3 : 2);
 
-  const calcBottlesInNosFor = (e?: QualityHourlyEntry): string => {
-    const ps = parseInt(e?.packing_size ?? '');
-    const ct = parseInt(e?.cartons ?? '');
-    return ps > 0 && ct > 0 ? String(ps * ct) : '';
-  };
+  const calcBottlesInNosFor = (e?: QualityHourlyEntry): string => calcBottlesInNos(e);
 
-  const calcEffFor = (e?: QualityHourlyEntry, _machineNo?: number): string => {
-    if (!e?.bottle_id || !e.packing_size || !e.cartons) return '';
-    const bottlesN = parseInt(e.packing_size) * parseInt(e.cartons);
-    const speed = parseFloat(e.speed_per_min);
-    if (!bottlesN || !speed) return '';
-    return ((bottlesN / (speed * 60)) * 100).toFixed(1);
-  };
+  const calcEffFor = (e?: QualityHourlyEntry, _machineNo?: number): string => calcEffForEntry(e);
 
-  const calcRowAvgFor = (e: QualityHourlyEntry | undefined, machineNo: number): string => {
-    if (!e) return '';
-    const f = parseFloat(e.weight_front);
-    const r = parseFloat(e.weight_rear);
-    const gob = gobCountFor(machineNo);
-    if (gob === 3) {
-      const m = parseFloat(e.weight_middle);
-      const vals = [f, m, r].filter((v) => !isNaN(v));
-      if (!vals.length) return '';
-      return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
-    }
-    const vals = [f, r].filter((v) => !isNaN(v));
-    if (!vals.length) return '';
-    return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
-  };
+  const calcRowAvgFor = (e: QualityHourlyEntry | undefined, machineNo: number): string =>
+    calcRowAverage(e, gobCountFor(machineNo));
 
   const calcEff = (time: string): string => calcEffFor(getEntry(activeMachine, time), activeMachine);
 
@@ -1104,247 +1517,31 @@ export const QualityControlModule: React.FC = () => {
                 const shiftIdx = Math.floor(idx / 8);
                 const isFirstInShift = idx % 8 === 0;
                 const entry = getEntry(activeMachine, time);
-                const hasHold = Number(entry?.qc_hold ?? 0) > 0;
-                const rowBg = hasHold ? '#fff5f5' : SHIFT_ROW_BG[shiftIdx];
-                const rowAvg = calcRowAvg(time);
 
                 const availSections = entry?.bottle_id
                   ? getAvailableSections(entry.bottle_id)
                   : getAvailableSections('', activeMachine);
 
-                const selectedDefectNames = defectGroups.length > 0
-                  ? defectGroups.flatMap((g) => g.items).filter((d) => (entry?.defect_ids ?? []).includes(d))
-                  : (entry?.defect_ids ?? []);
-
-                const td: React.CSSProperties = {
-                  padding: '6px 10px',
-                  borderBottom: `1px solid ${C.border}`,
-                  borderRight: `1px solid ${C.border}`,
-                  fontSize: '12.5px',
-                  color: C.textMain,
-                  verticalAlign: 'middle',
-                };
-                const tdLast: React.CSSProperties = { ...td, borderRight: 'none' };
-                const tdCenter: React.CSSProperties = { ...td, textAlign: 'center' };
-                const selectStyle: React.CSSProperties = {
-                  width: '100%',
-                  padding: '3px 4px',
-                  fontSize: '12px',
-                  fontWeight: 400,
-                  color: C.textMain,
-                  backgroundColor: 'transparent',
-                  border: '1px solid transparent',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  outline: 'none',
-                  textAlign: 'center',
-                };
-                const selectFocus = (e: React.FocusEvent<HTMLSelectElement>) => {
-                  e.currentTarget.style.borderColor = '#2563eb';
-                };
-                const selectBlur = (e: React.FocusEvent<HTMLSelectElement>) => {
-                  e.currentTarget.style.borderColor = 'transparent';
-                };
-
                 return (
-                  <tr
+                  <QualityTimeRow
                     key={time}
-                    style={{ backgroundColor: rowBg }}
-                    onMouseEnter={(e) => { if (!hasHold) e.currentTarget.style.backgroundColor = '#ecf1ff'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = rowBg; }}
-                  >
-                    {isFirstInShift && (
-                      <td rowSpan={8} style={{ textAlign: 'center', verticalAlign: 'middle', borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, width: '38px', backgroundColor: SHIFT_CELL_BG[shiftIdx], padding: '0' }}>
-                        <div style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)', fontSize: '10.5px', fontWeight: 700, color: SHIFT_CELL_COLOR[shiftIdx], letterSpacing: '0.08em', textTransform: 'uppercase', userSelect: 'none' }}>
-                          {SHIFT_LABELS[shiftIdx]}
-                        </div>
-                      </td>
-                    )}
-
-                    <td style={{ ...tdCenter, fontWeight: 500, fontSize: '12px', color: C.textMuted, whiteSpace: 'nowrap' }}>
-                      {time}
-                    </td>
-
-                    <td style={{ ...td, padding: '4px 6px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <select
-                          value={entry?.bottle_id ?? ''}
-                          onChange={(e) => {
-                            selectBottle(time, e.target.value);
-                          }}
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            padding: '3px 5px',
-                            fontSize: '12px',
-                            fontWeight: entry?.bottle_id ? 500 : 400,
-                            color: entry?.bottle_id ? C.textMain : '#94a3b8',
-                            backgroundColor: 'transparent',
-                            border: '1px solid transparent',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            outline: 'none',
-                            textAlign: 'left',
-                          }}
-                          onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
-                          onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
-                        >
-                          <option value="">— Select bottle</option>
-                          {bottles.map((b) => (
-                            <option key={b.id} value={b.id}>{b.name}</option>
-                          ))}
-                        </select>
-                        {entry?.bottle_id && (
-                          <button
-                            onClick={() => copyRowDown(time)}
-                            title="Copy this row to the next empty slot"
-                            style={{
-                              width: '24px', height: '24px', borderRadius: '5px',
-                              border: '1px solid #bfdbfe', backgroundColor: '#eff6ff', color: '#2563eb',
-                              fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'pointer',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              padding: 0, flexShrink: 0, transition: 'background-color 0.15s',
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#dbeafe'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#eff6ff'; }}
-                          >
-                            +
-                          </button>
-                        )}
-                        {entry?.bottle_id ? (
-                          <button
-                            onClick={() => removeBottle(time)}
-                            title="Remove one bottle from this row"
-                            style={{
-                              width: '24px', height: '24px', borderRadius: '5px',
-                              border: '1px solid #fecdd3', backgroundColor: '#fff1f2', color: '#be123c',
-                              fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'pointer',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              padding: 0, flexShrink: 0, transition: 'background-color 0.15s',
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#ffe4e6'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#fff1f2'; }}
-                          >
-                            −
-                          </button>
-                        ) : (
-                          <button
-                            disabled
-                            title="No bottle to remove"
-                            style={{
-                              width: '24px', height: '24px', borderRadius: '5px',
-                              border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', color: '#cbd5e1',
-                              fontSize: '16px', fontWeight: 700, lineHeight: 1, cursor: 'not-allowed',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              padding: 0, flexShrink: 0,
-                            }}
-                          >
-                            −
-                          </button>
-                        )}
-                      </div>
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <select
-                        value={entry?.section ?? ''}
-                        onChange={(e) => selectSection(time, e.target.value)}
-                        style={selectStyle}
-                        onFocus={selectFocus}
-                        onBlur={selectBlur}
-                      >
-                        <option value="">—</option>
-                        {availSections.map((s) => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
-                      <NumInput value={entry?.weight_front ?? ''} onChange={(v) => patchEntry(time, { weight_front: v })} />
-                    </td>
-                    {hasM && (
-                      <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
-                        <NumInput value={entry?.weight_middle ?? ''} onChange={(v) => patchEntry(time, { weight_middle: v })} />
-                      </td>
-                    )}
-                    <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
-                      <NumInput value={entry?.weight_rear ?? ''} onChange={(v) => patchEntry(time, { weight_rear: v })} />
-                    </td>
-
-                    <td style={{ ...tdCenter, fontSize: '12px', fontWeight: rowAvg ? 600 : 400, color: rowAvg ? '#1e293b' : '#94a3b8' }}>
-                      {rowAvg || ''}
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.speed_per_min ?? ''} onChange={(v) => patchEntry(time, { speed_per_min: v })} />
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 6px' }}>
-                      <PackingMultiSelect
-                        selected={entry?.packing_category ?? []}
-                        onChange={(v) => patchEntry(time, { packing_category: v })}
-                      />
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.packing_size ?? ''} onChange={(v) => patchEntry(time, { packing_size: v })} />
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.cartons ?? ''} onChange={(v) => patchEntry(time, { cartons: v })} />
-                    </td>
-
-                    <td style={{ ...tdCenter, fontWeight: 500 }}>
-                      {calcBottlesInNosFor(entry)}
-                    </td>
-
-                    <td style={tdCenter}>
-                      <EffBadge val={calcEff(time)} />
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.sqc ?? ''} onChange={(v) => patchEntry(time, { sqc: v })} />
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.qc_hold != null ? String(entry.qc_hold) : '0'} onChange={(v) => patchEntry(time, { qc_hold: v === '' ? 0 : Number(v) })} />
-                    </td>
-
-                    <td style={{ ...tdCenter, padding: '4px 4px' }}>
-                      <NumInput value={entry?.num ?? ''} onChange={(v) => patchEntry(time, { num: v })} />
-                    </td>
-
-                    <td style={{ ...td, minWidth: '200px', padding: '4px 8px' }}>
-                      <DefectDropdown
-                        selected={selectedDefectNames}
-                        onChange={(names) => patchEntry(time, { defect_ids: names })}
-                        defectGroups={defectGroups}
-                        isLoading={loadingDefects}
-                      />
-                    </td>
-
-                    <td style={{ ...tdLast, padding: '4px 8px', minWidth: '120px', width: '120px' }}>
-                      <input
-                        type="text"
-                        value={entry?.remarks ?? ''}
-                        onChange={(e) => patchEntry(time, { remarks: e.target.value })}
-                        placeholder="Enter remarks..."
-                        style={{
-                          width: '100%', border: '1px solid transparent', borderRadius: '4px',
-                          padding: '4px 6px', fontSize: '12px', color: '#475569',
-                          backgroundColor: 'transparent', outline: 'none',
-                          transition: 'border-color 0.15s, background-color 0.15s',
-                        }}
-                        onFocus={(e) => {
-                          e.currentTarget.style.borderColor = '#2563eb';
-                          e.currentTarget.style.backgroundColor = '#ffffff';
-                        }}
-                        onBlur={(e) => {
-                          e.currentTarget.style.borderColor = 'transparent';
-                          e.currentTarget.style.backgroundColor = 'transparent';
-                        }}
-                      />
-                    </td>
-                  </tr>
+                    time={time}
+                    shiftIdx={shiftIdx}
+                    isFirstInShift={isFirstInShift}
+                    entry={entry}
+                    gobCount={gobCount}
+                    hasM={hasM}
+                    bottles={bottles}
+                    availableSections={availSections}
+                    allDefectNames={allDefectNames}
+                    defectGroups={defectGroups}
+                    loadingDefects={loadingDefects}
+                    selectBottle={selectBottle}
+                    selectSection={selectSection}
+                    patchEntry={patchEntry}
+                    copyRowDown={copyRowDown}
+                    removeBottle={removeBottle}
+                  />
                 );
               })}
 

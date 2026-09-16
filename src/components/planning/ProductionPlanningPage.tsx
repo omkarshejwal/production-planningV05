@@ -1,9 +1,6 @@
 import React, { useCallback, useMemo, useState, useEffect } from 'react';
 
 import { toast } from 'sonner';
-import ExcelJS from 'exceljs';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { useERP } from '../../context/ERPContext';
 import { planningRepository } from '../../services/planningRepository';
 import { ProductionJobRow } from '../../data/planningSchema';
@@ -52,6 +49,7 @@ import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
 import { ConfirmationModal } from '../common/ConfirmationModal';
+import ExcelJS, { Row, Cell, Column } from 'exceljs';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -267,13 +265,23 @@ function loadFromStorage(): { machineLists: MachineLists; completedJobMap: Compl
 }
 
 export const ProductionPlanningPage: React.FC = () => {
-  const { jobs, bottles, refreshPlanner, reloadJobsForWindow, selectedMonth, setSelectedMonth, fromDate, setFromDate, toDate, setToDate } = useERP();
+  const { jobs, bottles, holidays, refreshPlanner, reloadJobsForWindow, selectedMonth, setSelectedMonth, fromDate, setFromDate, toDate, setToDate } = useERP();
 
   // Filters
   const [draftFromDate, setDraftFromDate] = useState(fromDate);
   const [draftToDate, setDraftToDate] = useState(toDate);
   const [appliedFromDate, setAppliedFromDate] = useState(fromDate);
   const [appliedToDate, setAppliedToDate] = useState(toDate);
+
+  // Lowercase name → first matching bottle (for the per-cell product lookup)
+  const bottleNameLookup = useMemo(() => {
+    const m = new Map<string, { id: string; name: string }>();
+    for (const b of bottles) {
+      const key = b.name.toLowerCase();
+      if (!m.has(key)) m.set(key, b);
+    }
+    return m;
+  }, [bottles]);
 
   const dateRows = useMemo<DateRow[]>(() => {
     const { monthStart, monthEnd } = getMonthRange(selectedMonth);
@@ -312,15 +320,7 @@ export const ProductionPlanningPage: React.FC = () => {
   }, [dateRows]);
 
   // Holiday lookup: isoDate → holiday_name, and set of row indices that are holidays
-  const [holidays, setHolidays] = useState<{ holiday_date: string; holiday_name: string }[]>([]);
-
-  useEffect(() => {
-    const fetchHolidays = async () => {
-      const data = await planningRepository.getHolidays();
-      setHolidays(data);
-    };
-    fetchHolidays();
-  }, []);
+  // (holidays come from the shared cache via ERPContext — no extra API call)
 
   const holidayMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -763,6 +763,11 @@ export const ProductionPlanningPage: React.FC = () => {
     setIsExporting(true);
 
     try {
+      // exceljs is only needed for export — load it lazily so the initial
+      // bundle stays small. CJS interop fallback via .default for safety.
+      const exceljsModule: any = await import('exceljs');
+      const ExcelJS = exceljsModule.Workbook ? exceljsModule : exceljsModule.default;
+
       const { monthStart, monthEnd } = getMonthRange(selectedMonth);
       const startIso = appliedFromDate || monthStart;
       const endIso = appliedToDate || monthEnd;
@@ -840,8 +845,8 @@ export const ProductionPlanningPage: React.FC = () => {
       headerRow1.alignment = { horizontal: 'center', vertical: 'middle' };
       headerRow2.alignment = { horizontal: 'center', vertical: 'middle' };
 
-      worksheet.eachRow((row, rowNumber) => {
-        row.eachCell((cell, colNumber) => {
+      worksheet.eachRow((row: ExcelJS.Row, rowNumber: number) => {
+        row.eachCell((cell: ExcelJS.Cell, colNumber: number) => {
           cell.border = {
             top: { style: 'thin' },
             left: { style: 'thin' },
@@ -864,18 +869,29 @@ export const ProductionPlanningPage: React.FC = () => {
         });
       });
 
-      worksheet.columns = worksheet.columns.map((column) => {
+      worksheet.columns = worksheet.columns.map((column: ExcelJS.Column) => {
         let max = 10;
-        column.eachCell?.({ includeEmpty: true }, (cell) => {
-          const value = cell.value;
-          const text = value instanceof Date
-            ? value.toLocaleDateString('en-GB')
-            : value === null || value === undefined
-              ? ''
-              : String(value);
-          max = Math.max(max, text.length + 2);
-        });
-        return { ...column, width: Math.min(48, max) };
+
+        column.eachCell?.(
+          { includeEmpty: true },
+          (cell: ExcelJS.Cell) => {
+            const value = cell.value;
+
+            const text =
+              value instanceof Date
+                ? value.toLocaleDateString('en-GB')
+                : value === null || value === undefined
+                  ? ''
+                  : String(value);
+
+            max = Math.max(max, text.length + 2);
+          }
+        );
+
+        return {
+          ...column,
+          width: Math.min(48, max),
+        };
       });
 
       const filename = buildExportFilename(
@@ -916,6 +932,13 @@ export const ProductionPlanningPage: React.FC = () => {
     setIsPrinting(true);
 
     try {
+      // jspdf + autoTable are only needed for printing — load them lazily so
+      // the initial bundle stays small. CJS interop fallback via .default.
+      const jspdfModule: any = await import('jspdf');
+      const jsPDF = jspdfModule.jsPDF ?? jspdfModule.default?.jsPDF;
+      const autoTableModule: any = await import('jspdf-autotable');
+      const autoTable = autoTableModule.autoTable ?? autoTableModule.default;
+
       const { monthStart, monthEnd } = getMonthRange(selectedMonth);
       const startIso = appliedFromDate || monthStart;
       const endIso = appliedToDate || monthEnd;
@@ -1703,7 +1726,7 @@ export const ProductionPlanningPage: React.FC = () => {
                           const hasProduct = !isBlank && !!entry.product && entry.product !== 'None';
                           // Dynamic sections from bottle_configuration for this bottle+machine
                           const bottleForSec = hasProduct
-                            ? bottles.find(b => b.name.toLowerCase() === entry.product.toLowerCase())
+                            ? bottleNameLookup.get(entry.product.toLowerCase())
                             : null;
                           const bidForSec = bottleForSec?.id;
                           const validForEntry = bidForSec

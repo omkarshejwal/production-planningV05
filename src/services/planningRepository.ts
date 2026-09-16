@@ -31,6 +31,57 @@ let _initialized = false;
 let _cacheVersion = 0;
 
 /**
+ * Derived-config lookups for getBottleConfigurations / getBottleConfiguration /
+ * getMachineSections.  These are re-computed lazily only when _configs or
+ * _machines change (init, addMachineSection, removeMachineSection), so the
+ * render loops that previously filtered + sorted the full config list on every
+ * call now hit an O(1) map lookup instead.
+ */
+let _configLookups: {
+  byMachine: Map<string, BottleConfigurationRow[]>;
+  byMachineBottle: Map<string, BottleConfigurationRow[]>;
+  byBottle: Map<string, BottleConfigurationRow[]>;
+} | null = null;
+let _machineSections: Map<string, number[]> | null = null;
+
+const invalidateConfigLookups = () => {
+  _configLookups = null;
+  _machineSections = null;
+};
+
+const bySection = (a: BottleConfigurationRow, b: BottleConfigurationRow): number => a.section - b.section;
+
+const ensureConfigLookups = () => {
+  if (_configLookups) return _configLookups;
+
+  const byMachine = new Map<string, BottleConfigurationRow[]>();
+  const byMachineBottle = new Map<string, BottleConfigurationRow[]>();
+  const byBottle = new Map<string, BottleConfigurationRow[]>();
+
+  for (const config of _configs) {
+    let list = byMachine.get(config.machine_no);
+    if (!list) { list = []; byMachine.set(config.machine_no, list); }
+    list.push(config);
+
+    const key = `${config.machine_no}|${config.bottle_id}`;
+    list = byMachineBottle.get(key);
+    if (!list) { list = []; byMachineBottle.set(key, list); }
+    list.push(config);
+
+    list = byBottle.get(config.bottle_id);
+    if (!list) { list = []; byBottle.set(config.bottle_id, list); }
+    list.push(config);
+  }
+
+  for (const list of byMachine.values()) list.sort(bySection);
+  for (const list of byMachineBottle.values()) list.sort(bySection);
+  for (const list of byBottle.values()) list.sort(bySection);
+
+  _configLookups = { byMachine, byMachineBottle, byBottle };
+  return _configLookups;
+};
+
+/**
  * Monotonically-increasing counter bumped on every successful cache refresh.
  * ERPContext compares this on each render to detect external cache updates
  * (e.g. after Machine Master or Bottle Master saves).
@@ -181,6 +232,7 @@ export const planningRepository = {
         bottle_name: toStr(b.bottle_name),
       }));
       _configs = (rawConfigs as Record<string, unknown>[]).map(mapConfigRow);
+      invalidateConfigLookups();
       _jobs = (rawJobs as Record<string, unknown>[]).map(mapJobRow);
       _holidays = (rawHolidays as Record<string, unknown>[]).map((h) => ({
         holiday_date: toStr(h.holiday_date),
@@ -209,20 +261,15 @@ export const planningRepository = {
   },
 
   getBottleConfigurations(machine_no: string, bottle_id: string): BottleConfigurationRow[] {
+    const { byMachine, byMachineBottle, byBottle } = ensureConfigLookups();
     if (bottle_id === '*') {
-      return _configs
-        .filter((row) => row.machine_no === machine_no)
-        .sort((a, b) => a.section - b.section);
+      const machineConfigs = byMachine.get(machine_no);
+      return machineConfigs ? [...machineConfigs] : [];
     }
-    const specific = _configs
-      .filter((row) => row.machine_no === machine_no && row.bottle_id === bottle_id)
-      .sort((a, b) => a.section - b.section);
-      
-    if (specific.length > 0) return specific;
-
-    return _configs
-      .filter((row) => row.bottle_id === bottle_id)
-      .sort((a, b) => a.section - b.section);
+    const specific = byMachineBottle.get(`${machine_no}|${bottle_id}`);
+    if (specific && specific.length > 0) return [...specific];
+    const anyForBottle = byBottle.get(bottle_id);
+    return anyForBottle ? [...anyForBottle] : [];
   },
 
   getAllConfigurations(): BottleConfigurationRow[] {
@@ -540,6 +587,9 @@ export const planningRepository = {
    * Non-contiguous DB entries (e.g. stray section 9 on Machine 1) are excluded.
    */
   getMachineSections(machineNo: string): number[] {
+    const cached = _machineSections?.get(machineNo);
+    if (cached) return [...cached];
+
     const base = this.getBaseSections(machineNo);
     const machine = _machines.find((m) => m.machine_no === machineNo);
     const maxSection = machine && machine.max_section > 0 ? machine.max_section : 12;
@@ -559,7 +609,9 @@ export const planningRepository = {
         break;
       }
     }
-    return contiguous;
+    if (!_machineSections) _machineSections = new Map();
+    _machineSections.set(machineNo, contiguous);
+    return [...contiguous];
   },
 
   /**
@@ -635,6 +687,7 @@ export const planningRepository = {
           _configs.push({ machine_no: macStr, bottle_id: bottleId, section, weight, speeds: newSpeed });
         }
       }
+      invalidateConfigLookups();
       return { ok: true, section };
     }
     return { ok: false, error: 'Failed to add section to all bottles.' };
@@ -673,6 +726,7 @@ export const planningRepository = {
         );
         if (idx >= 0) _configs.splice(idx, 1);
       }
+      invalidateConfigLookups();
       return { ok: true };
     }
     return { ok: false, error: 'Failed to remove section from all bottles.' };
