@@ -1,4 +1,5 @@
 # pyrefly: ignore [missing-import]
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
@@ -8,11 +9,13 @@ from typing import Dict, Any
 from app.db.session import get_db
 from app.models.quality import (
     HourlyProductionReport, ShiftAssignment, HourlyProduction,
-    DefectMaster, HourlyProductionDefect
+    DefectMaster, HourlyProductionDefect, HprJob
 )
 from app.schemas.quality import QualityDailyRequest, QualityDailyResponse, QualityHourlyEntrySchema, QualityShiftAssignmentSchema
 from app.api.auth import get_current_user
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -304,6 +307,101 @@ def save_daily_quality(
 
                 # Step 4: Replace all defects
                 entry.defects = [defect_map[dname] for dname in entry_data.defect_ids]
+
+        # Step 4.5: Upsert HPR Job rows inferred from hourly production entries
+        for machine_str, m_dict in payload.hourly.items():
+            machine_no = int(machine_str)
+
+            # a. Build list of (job_id, production_time, bottle_id) for non-empty job_id
+            machine_entries = []
+            for time_str, entry_data in m_dict.items():
+                raw_job_id = (entry_data.job_id or "").strip()
+                if not raw_job_id:
+                    continue
+                if entry_data.bottle_id is None:
+                    continue
+
+                parsed_time = _parse_time_string(time_str)
+                entry_dt = datetime.combine(p_date, parsed_time)
+                machine_entries.append({
+                    "job_id": raw_job_id,
+                    "production_time": entry_dt,
+                    "bottle_id": entry_data.bottle_id,
+                })
+
+            if not machine_entries:
+                continue
+
+            # Sort by production_time
+            machine_entries.sort(key=lambda x: x["production_time"])
+
+            # b. Group consecutive entries by job_id
+            groups = []
+            current_job_id = None
+            current_group = []
+            for item in machine_entries:
+                if item["job_id"] == current_job_id:
+                    current_group.append(item)
+                else:
+                    if current_group:
+                        groups.append(current_group)
+                    current_job_id = item["job_id"]
+                    current_group = [item]
+            if current_group:
+                groups.append(current_group)
+
+            # Compute group metadata
+            computed_groups = []
+            for grp in groups:
+                grp_job_id = grp[0]["job_id"]
+                job_start_time = min(e["production_time"] for e in grp)
+                job_end_candidate = max(e["production_time"] for e in grp)
+                # Data-quality edge case: bottle_id should be consistent within a group;
+                # if inconsistent, use the first entry's and note in comment, do not crash.
+                bottle_id = grp[0]["bottle_id"]
+                computed_groups.append({
+                    "job_id": grp_job_id,
+                    "job_start_time": job_start_time,
+                    "job_end_candidate": job_end_candidate,
+                    "bottle_id": bottle_id,
+                })
+
+            # c. Per machine, group with the latest job_start_time is RUNNING; all others COMPLETED
+            latest_start = max(g["job_start_time"] for g in computed_groups)
+            for g in computed_groups:
+                if g["job_start_time"] == latest_start:
+                    g["status"] = "RUNNING"
+                    g["job_end_time"] = None
+                else:
+                    g["status"] = "COMPLETED"
+                    g["job_end_time"] = g["job_end_candidate"]
+
+            # d. Upsert into hpr_job by job_id
+            for g in computed_groups:
+                grp_job_id = g["job_id"]
+                existing_job = db.query(HprJob).filter_by(job_id=grp_job_id).first()
+                if not existing_job:
+                    new_job = HprJob(
+                        job_id=grp_job_id,
+                        machine_no=machine_no,
+                        bottle_id=g["bottle_id"],
+                        job_start_time=g["job_start_time"],
+                        job_end_time=g["job_end_time"],
+                        status=g["status"],
+                        remarks=None,
+                    )
+                    db.add(new_job)
+                else:
+                    if existing_job.machine_no == machine_no and existing_job.bottle_id == g["bottle_id"]:
+                        existing_job.job_start_time = min(existing_job.job_start_time, g["job_start_time"])
+                        existing_job.status = g["status"]
+                        existing_job.job_end_time = g["job_end_time"]
+                    else:
+                        logger.warning(
+                            f"Job ID collision for job_id '{grp_job_id}': "
+                            f"existing (machine={existing_job.machine_no}, bottle={existing_job.bottle_id}) vs "
+                            f"conflicting (machine={machine_no}, bottle={g['bottle_id']}). Skipping update."
+                        )
 
         # Step 5: Single Commit
         db.commit()

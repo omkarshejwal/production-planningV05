@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from sqlalchemy import Column, Integer, SmallInteger, BigInteger, String, Numeric, Date, Time, DateTime, Boolean, ForeignKey, UniqueConstraint, Text
+from sqlalchemy import Column, Integer, SmallInteger, BigInteger, String, Numeric, Date, Time, DateTime, Boolean, ForeignKey, UniqueConstraint, Text, func
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import relationship
 from app.db.base import Base, hpr_fk, hpr_table_args, production_fk
@@ -99,3 +99,20 @@ class HourlyProductionDefect(Base):
     defect_id = Column(BigInteger, ForeignKey(hpr_fk("defect_master.defect_id")), primary_key=True)
 
     __table_args__ = (hpr_table_args(),)
+
+
+class HprJob(Base):
+    __tablename__ = "hpr_job"
+
+    job_id = Column(String(20), primary_key=True, index=True)
+    machine_no = Column(Integer, nullable=False)
+    bottle_id = Column(Integer, nullable=False)
+    job_start_time = Column(DateTime, nullable=False)
+    job_end_time = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False)
+    remarks = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = hpr_table_args()
+
