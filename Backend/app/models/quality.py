@@ -73,12 +73,12 @@ class HourlyProduction(Base):
     speed_per_min = Column(Numeric(10, 2), nullable=True)
     
     packing_category = Column(String(255), nullable=True)
-    packing_size = Column(String(50), nullable=True)
+    packing_size = Column(Integer, nullable=True)
     cartons = Column(Integer, nullable=True)
     bottles_in_nos = Column(Integer, nullable=True)
     efficiency_percent = Column(Numeric(5, 2), nullable=True)
     
-    sqc = Column(String(100), nullable=True)
+    sqc = Column(Integer, nullable=True)
     qc_hold = Column(Integer, nullable=True)
     num = Column(Integer, nullable=True)
     remarks = Column(Text, nullable=True)

@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Union
 from datetime import date, time, datetime
 
@@ -42,23 +42,16 @@ class QualityHourlyEntrySchema(BaseModel):
     weight_avg: Optional[float] = None
     speed_per_min: Optional[float] = None
     packing_category: Union[List[str], str, None] = None
-    packing_size: Optional[str] = None
+    packing_size: Optional[int] = None
     cartons: Optional[int] = None
     bottles_in_nos: Optional[int] = None
     efficiency_percentage: Optional[float] = None
-    sqc: Optional[str] = None
+    sqc: Optional[int] = None
     qc_hold: Optional[int] = None
     num: Optional[int] = None
     remarks: Optional[str] = None
     defect_ids: List[str] = []
     job_id: Optional[str] = None
-
-    @field_validator('sqc', 'packing_size', mode='before')
-    @classmethod
-    def coerce_to_str(cls, v):
-        if v is not None:
-            return str(v)
-        return v
 
 class QualityShiftAssignmentSchema(BaseModel):
     supervisor: str
