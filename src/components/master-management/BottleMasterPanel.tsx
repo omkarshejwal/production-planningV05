@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { FlaskConical, Search, Check, ChevronDown } from 'lucide-react';
+import { FlaskConical, Search, Check, ChevronDown, Pencil, X } from 'lucide-react';
 import { planningRepository } from '../../services/planningRepository';
 import { MachineMasterRow, BottleMasterRow, BottleConfigurationRow } from '../../data/planningSchema';
 
@@ -36,6 +36,14 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   const [selectedBase, setSelectedBase] = useState<BottleMasterRow | null>(null);
   const [overriddenSections, setOverriddenSections] = useState<Set<number>>(new Set());
   const dropRef = useRef<HTMLDivElement>(null);
+
+  // Rename mode for Edit Existing: editName holds the editable bottle name,
+  // originalBaseName is the DB name for revert, origSnapshot captures weight
+  // and section speeds at the moment edits begin so Cancel can restore them.
+  const [renaming, setRenaming] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [originalBaseName, setOriginalBaseName] = useState('');
+  const [origSnapshot, setOrigSnapshot] = useState<{ weight: string; rows: SectionFormRow[] } | null>(null);
 
   const selectedMachine = machines.find((m) => m.machine_no === machineNo) ?? null;
 
@@ -89,6 +97,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     if (!selectedMachine) {
       setFormRows([]);
       setFormWeight('');
+      setOrigSnapshot(null);
       return;
     }
 
@@ -111,19 +120,27 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setOverriddenSections(new Set());
 
     // Pre-populate the shared weight from the first existing config (edit mode)
+    let weightToSet = '';
     if (bottleId) {
       const firstExisting = rows.find((r) => r.speeds !== '');
       if (firstExisting) {
         const existingConfig = bottleId
           ? configIndex.byKey.get(`${machineNo}|${bottleId}|${firstExisting.section}`)
           : undefined;
-        setFormWeight(existingConfig ? String(existingConfig.weight) : '');
-      } else {
-        setFormWeight('');
+        weightToSet = existingConfig ? String(existingConfig.weight) : '';
       }
-    } else {
-      setFormWeight('');
     }
+    setFormWeight(weightToSet);
+
+    // In edit mode, snapshot the DB values so Cancel can restore them.
+    if (tab === 'edit' && bottleId) {
+      setOrigSnapshot({ weight: weightToSet, rows });
+    } else {
+      setOrigSnapshot(null);
+    }
+    setRenaming(false);
+    setEditName('');
+    setOriginalBaseName('');
 
     setSaved(false);
   }, [machineNo, tab, selectedBase, configs, machineSections, selectedMachine, baseSections]);
@@ -146,12 +163,40 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setSelectedBase(null);
     setOverriddenSections(new Set());
     setSaved(false);
+    setRenaming(false);
+    setEditName('');
+    setOriginalBaseName('');
+    setOrigSnapshot(null);
   }
 
   function selectBottle(b: BottleMasterRow) {
     setSelectedBase(b);
     setQuery(b.bottle_name);
     setDropOpen(false);
+    setOverriddenSections(new Set());
+    setSaved(false);
+    setRenaming(false);
+    setEditName('');
+    setOriginalBaseName('');
+    setOrigSnapshot(null);
+  }
+
+  // Enter rename mode. Original values are tracked via origSnapshot.
+  function beginRename() {
+    if (!selectedBase) return;
+    setOriginalBaseName(selectedBase.bottle_name);
+    setEditName(selectedBase.bottle_name);
+    setRenaming(true);
+    setSaved(false);
+  }
+
+  function handleCancel() {
+    if (!selectedBase || !origSnapshot) return;
+    setRenaming(false);
+    setEditName('');
+    setOriginalBaseName('');
+    setFormWeight(origSnapshot.weight);
+    setFormRows(origSnapshot.rows.map((r) => ({ ...r })));
     setOverriddenSections(new Set());
     setSaved(false);
   }
@@ -309,6 +354,34 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
         setSaving(false);
         return;
       }
+      const newName = editName.trim();
+      if (renaming) {
+        if (!newName) {
+          alert('Bottle name cannot be empty.');
+          setSaving(false);
+          return;
+        }
+        if (newName !== selectedBase.bottle_name) {
+          const duplicate = bottles.some(
+            (b) => b.bottle_name.trim().toLowerCase() === newName.toLowerCase() && b.bottle_id !== selectedBase.bottle_id
+          );
+          if (duplicate) {
+            alert('A bottle with this name already exists.');
+            setSaving(false);
+            return;
+          }
+          const result = await planningRepository.updateBottle(bottleIdInt, newName);
+          if (!result.ok) {
+            alert(result.error || 'Failed to update bottle name.');
+            setSaving(false);
+            return;
+          }
+        }
+        setSelectedBase((prev) => (prev ? { ...prev, bottle_name: newName } : prev));
+        setRenaming(false);
+        setEditName('');
+        setOriginalBaseName('');
+      }
       bottleIdInt = parseInt(selectedBase.bottle_id, 10);
     }
 
@@ -350,6 +423,14 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
       setFormRows([]);
     }
   }
+
+  const isDirty =
+    tab === 'edit' &&
+    selectedBase !== null &&
+    origSnapshot !== null &&
+    (renaming ||
+      formWeight !== origSnapshot.weight ||
+      formRows.some((r, i) => r.speeds !== origSnapshot.rows[i]?.speeds));
 
   const canSave =
     selectedMachine !== null &&
@@ -398,6 +479,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                     setSelectedBase(null);
                     setQuery('');
                     setSaved(false);
+                    setRenaming(false);
+                    setEditName('');
+                    setOriginalBaseName('');
+                    setOrigSnapshot(null);
                   }}
                   className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
                 >
@@ -436,41 +521,80 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   }}
                   className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
-              ) : (
-                <div ref={dropRef} className="relative">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                    <Search className="w-3.5 h-3.5" />
-                  </span>
+              ) : renaming && selectedBase ? (
+                <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
-                    value={query}
+                    value={editName}
                     onChange={(e) => {
-                      setQuery(e.target.value);
-                      setDropOpen(true);
-                      setSelectedBase(null);
+                      setEditName(e.target.value);
                       setSaved(false);
                     }}
-                    onFocus={() => machineNo && setDropOpen(true)}
-                    disabled={!machineNo}
-                    className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
+                    autoFocus
+                    className="w-full h-10 px-3 text-sm border border-blue-400 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                   />
-                  {dropOpen && filteredBases.length > 0 && (
-                    <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
-                      {filteredBases.map((b) => (
-                        <div
-                          key={b.bottle_id}
-                          className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
-                          onMouseDown={() => selectBottle(b)}
-                        >
-                          <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
-                          <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    title="Cancel rename"
+                    className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div ref={dropRef} className="relative flex-1">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                      <Search className="w-3.5 h-3.5" />
+                    </span>
+                    {selectedBase ? (
+                      <button
+                        type="button"
+                        onClick={() => setDropOpen(true)}
+                        className="w-full h-10 pl-7 pr-3 text-left text-sm font-medium text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                      >
+                        {selectedBase.bottle_name}
+                      </button>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
+                        value={query}
+                        onChange={(e) => {
+                          setQuery(e.target.value);
+                          setDropOpen(true);
+                          setSaved(false);
+                        }}
+                        onFocus={() => machineNo && setDropOpen(true)}
+                        disabled={!machineNo}
+                        className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
+                      />
+                    )}
+                    {dropOpen && filteredBases.length > 0 && (
+                      <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+                        {filteredBases.map((b) => (
+                          <div
+                            key={b.bottle_id}
+                            className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
+                            onMouseDown={() => selectBottle(b)}
+                          >
+                            <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
+                            <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   {selectedBase && (
-                    <p className="text-[10px] text-blue-600 mt-0.5">{selectedBase.bottle_id} selected</p>
+                    <button
+                      type="button"
+                      onClick={beginRename}
+                      title="Rename bottle"
+                      className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
                   )}
                 </div>
               )}
@@ -506,6 +630,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                     setSelectedBase(null);
                     setQuery('');
                     setSaved(false);
+                    setRenaming(false);
+                    setEditName('');
+                    setOriginalBaseName('');
+                    setOrigSnapshot(null);
                   }}
                   className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
                 >
@@ -544,41 +672,80 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                   }}
                   className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
-              ) : (
-                <div ref={dropRef} className="relative">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                    <Search className="w-3.5 h-3.5" />
-                  </span>
+              ) : renaming && selectedBase ? (
+                <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
-                    value={query}
+                    value={editName}
                     onChange={(e) => {
-                      setQuery(e.target.value);
-                      setDropOpen(true);
-                      setSelectedBase(null);
+                      setEditName(e.target.value);
                       setSaved(false);
                     }}
-                    onFocus={() => machineNo && setDropOpen(true)}
-                    disabled={!machineNo}
-                    className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
+                    autoFocus
+                    className="w-full h-10 px-3 text-sm border border-blue-400 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                   />
-                  {dropOpen && filteredBases.length > 0 && (
-                    <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
-                      {filteredBases.map((b) => (
-                        <div
-                          key={b.bottle_id}
-                          className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
-                          onMouseDown={() => selectBottle(b)}
-                        >
-                          <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
-                          <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    title="Cancel rename"
+                    className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div ref={dropRef} className="relative flex-1">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                      <Search className="w-3.5 h-3.5" />
+                    </span>
+                    {selectedBase ? (
+                      <button
+                        type="button"
+                        onClick={() => setDropOpen(true)}
+                        className="w-full h-10 pl-7 pr-3 text-left text-sm font-medium text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                      >
+                        {selectedBase.bottle_name}
+                      </button>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
+                        value={query}
+                        onChange={(e) => {
+                          setQuery(e.target.value);
+                          setDropOpen(true);
+                          setSaved(false);
+                        }}
+                        onFocus={() => machineNo && setDropOpen(true)}
+                        disabled={!machineNo}
+                        className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
+                      />
+                    )}
+                    {dropOpen && filteredBases.length > 0 && (
+                      <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+                        {filteredBases.map((b) => (
+                          <div
+                            key={b.bottle_id}
+                            className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
+                            onMouseDown={() => selectBottle(b)}
+                          >
+                            <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
+                            <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   {selectedBase && (
-                    <p className="text-[10px] text-blue-600 mt-0.5">{selectedBase.bottle_id} selected</p>
+                    <button
+                      type="button"
+                      onClick={beginRename}
+                      title="Rename bottle"
+                      className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
                   )}
                 </div>
               )}
@@ -634,7 +801,16 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           </div>
         )}
 
-        <div className="flex justify-end pt-2">
+        <div className="flex justify-end items-center gap-2 pt-2">
+          {tab === 'edit' && isDirty && (
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 hover:text-gray-800 transition-all duration-200"
+            >
+              Cancel
+            </button>
+          )}
           <button
             onClick={handleSave}
             disabled={!canSave}

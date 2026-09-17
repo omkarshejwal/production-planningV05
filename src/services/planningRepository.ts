@@ -470,6 +470,10 @@ export const planningRepository = {
         method: 'PUT',
         body: JSON.stringify({ bottle_name }),
       });
+      const idStr = String(bottle_id);
+      const existing = _bottles.find((b) => b.bottle_id === idStr);
+      if (existing) existing.bottle_name = bottle_name;
+      _cacheVersion++;
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message || 'Failed to update bottle' };
