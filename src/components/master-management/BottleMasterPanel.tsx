@@ -50,14 +50,28 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     return planningRepository.getBaseSections(machineNo);
   }, [machineNo]);
 
+  // Pre-index the full configs list once so render-time/effect lookups are O(1)
+  // instead of repeatedly scanning the whole list with .find()/.some().
+  const configIndex = useMemo(() => {
+    const byKey = new Map<string, BottleConfigurationRow>();
+    const byMachineBottle = new Map<string, BottleConfigurationRow[]>();
+    for (const c of configs) {
+      byKey.set(`${c.machine_no}|${c.bottle_id}|${c.section}`, c);
+      const mbKey = `${c.machine_no}|${c.bottle_id}`;
+      const list = byMachineBottle.get(mbKey);
+      if (list) list.push(c);
+      else byMachineBottle.set(mbKey, [c]);
+    }
+    return { byKey, byMachineBottle };
+  }, [configs]);
+
 
 
   // In edit mode, only show bottles that have configurations for the selected machine
   const filteredBases = tab === 'edit' && machineNo
     ? bottles.filter((b) => {
-      const hasConfig = configs.some(
-        (c) => c.bottle_id === b.bottle_id && c.machine_no === machineNo
-      );
+      const hasConfig =
+        (configIndex.byMachineBottle.get(`${machineNo}|${b.bottle_id}`)?.length ?? 0) > 0;
       if (!hasConfig) return false;
       return (
         b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
@@ -82,9 +96,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
     const rows: SectionFormRow[] = machineSections.map((sec) => {
       const existing = bottleId
-        ? configs.find(
-          (c) => c.bottle_id === bottleId && c.machine_no === machineNo && c.section === sec
-        )
+        ? configIndex.byKey.get(`${machineNo}|${bottleId}|${sec}`)
         : undefined;
       const isBase = baseSections.includes(sec);
       return {
@@ -102,12 +114,9 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     if (bottleId) {
       const firstExisting = rows.find((r) => r.speeds !== '');
       if (firstExisting) {
-        const existingConfig = configs.find(
-          (c) =>
-            c.bottle_id === bottleId &&
-            c.machine_no === machineNo &&
-            c.section === firstExisting.section
-        );
+        const existingConfig = bottleId
+          ? configIndex.byKey.get(`${machineNo}|${bottleId}|${firstExisting.section}`)
+          : undefined;
         setFormWeight(existingConfig ? String(existingConfig.weight) : '');
       } else {
         setFormWeight('');
@@ -305,18 +314,22 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
     const weight = parseFloat(formWeight);
 
-    let allOk = true;
-    for (const row of formRows) {
-      const speeds = parseFloat(row.speeds);
-      if (isNaN(speeds) || speeds <= 0) continue;
-
-      const result = await planningRepository.upsertBottleConfiguration({
+    const rowsToSave = formRows
+      .filter((row) => {
+        const speeds = parseFloat(row.speeds);
+        return !isNaN(speeds) && speeds > 0;
+      })
+      .map((row) => ({
         machine_no: machineInt,
         bottle_id: bottleIdInt,
         section: row.section,
         weight: isNaN(weight) ? 0 : weight,
-        speeds,
-      });
+        speeds: parseFloat(row.speeds),
+      }));
+
+    let allOk = true;
+    if (rowsToSave.length > 0) {
+      const result = await planningRepository.bulkUpsertBottleConfigurations(rowsToSave);
       if (!result.ok) {
         allOk = false;
         console.error(result.error);

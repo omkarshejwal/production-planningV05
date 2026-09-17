@@ -41,6 +41,8 @@ let _configLookups: {
   byMachine: Map<string, BottleConfigurationRow[]>;
   byMachineBottle: Map<string, BottleConfigurationRow[]>;
   byBottle: Map<string, BottleConfigurationRow[]>;
+  byMachineBottleSection: Map<string, BottleConfigurationRow>;
+  byBottleSection: Map<string, BottleConfigurationRow>;
 } | null = null;
 let _machineSections: Map<string, number[]> | null = null;
 
@@ -57,6 +59,8 @@ const ensureConfigLookups = () => {
   const byMachine = new Map<string, BottleConfigurationRow[]>();
   const byMachineBottle = new Map<string, BottleConfigurationRow[]>();
   const byBottle = new Map<string, BottleConfigurationRow[]>();
+  const byMachineBottleSection = new Map<string, BottleConfigurationRow>();
+  const byBottleSection = new Map<string, BottleConfigurationRow>();
 
   for (const config of _configs) {
     let list = byMachine.get(config.machine_no);
@@ -71,13 +75,16 @@ const ensureConfigLookups = () => {
     list = byBottle.get(config.bottle_id);
     if (!list) { list = []; byBottle.set(config.bottle_id, list); }
     list.push(config);
+
+    byMachineBottleSection.set(`${key}|${config.section}`, config);
+    byBottleSection.set(`${config.bottle_id}|${config.section}`, config);
   }
 
   for (const list of byMachine.values()) list.sort(bySection);
   for (const list of byMachineBottle.values()) list.sort(bySection);
   for (const list of byBottle.values()) list.sort(bySection);
 
-  _configLookups = { byMachine, byMachineBottle, byBottle };
+  _configLookups = { byMachine, byMachineBottle, byBottle, byMachineBottleSection, byBottleSection };
   return _configLookups;
 };
 
@@ -276,8 +283,18 @@ export const planningRepository = {
     return [..._configs];
   },
 
+  /**
+   * Exact-equivalent O(1) lookup mirroring getBottleConfigurations' fallback
+   * semantics: when the (machine, bottle) pair has no configs, falls back to the
+   * bottle's config from any machine for the requested section.
+   */
   getBottleConfiguration(machine_no: string, bottle_id: string, section: number): BottleConfigurationRow | undefined {
-    return this.getBottleConfigurations(machine_no, bottle_id).find((row) => row.section === section);
+    const { byMachineBottle, byMachineBottleSection, byBottleSection } = ensureConfigLookups();
+    const hasSpecific = (byMachineBottle.get(`${machine_no}|${bottle_id}`)?.length ?? 0) > 0;
+    if (hasSpecific) {
+      return byMachineBottleSection.get(`${machine_no}|${bottle_id}|${section}`);
+    }
+    return byBottleSection.get(`${bottle_id}|${section}`);
   },
 
   getProductionJobs(): ProductionJobRow[] {
@@ -439,6 +456,8 @@ export const planningRepository = {
         method: 'POST',
         body: JSON.stringify({ bottle_name }),
       });
+      _bottles.push({ bottle_id: toStr(result.bottle_id), bottle_name });
+      _cacheVersion++;
       return { ok: true, id: result.bottle_id };
     } catch (err: any) {
       return { ok: false, error: err.message || 'Failed to create bottle' };
@@ -502,6 +521,53 @@ export const planningRepository = {
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message || 'Failed to save configuration' };
+    }
+  },
+
+  /**
+   * Saves all given bottle configurations in ONE bulk API request. The backend
+   * upserts the rows atomically in a single transaction (INSERT ... ON CONFLICT
+   * DO UPDATE). On success the in-memory cache is updated so callers can avoid a
+   * full application refresh.
+   */
+  async bulkUpsertBottleConfigurations(
+    configs: {
+      machine_no: number;
+      bottle_id: number;
+      section: number;
+      weight: number;
+      speeds: number;
+    }[]
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (configs.length === 0) return { ok: true };
+    try {
+      await apiFetch('/api/production/products/configurations/bulk/', {
+        method: 'POST',
+        body: JSON.stringify({ configurations: configs }),
+      });
+
+      for (const config of configs) {
+        const row: BottleConfigurationRow = {
+          machine_no: this._machineIdToStr(config.machine_no),
+          bottle_id: String(config.bottle_id),
+          section: config.section,
+          weight: config.weight,
+          speeds: config.speeds,
+        };
+        const idx = _configs.findIndex(
+          (c) =>
+            c.machine_no === row.machine_no &&
+            c.bottle_id === row.bottle_id &&
+            c.section === row.section
+        );
+        if (idx >= 0) _configs[idx] = row;
+        else _configs.push(row);
+      }
+      invalidateConfigLookups();
+      _cacheVersion++;
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message || 'Failed to save configurations' };
     }
   },
 
@@ -743,6 +809,13 @@ export const planningRepository = {
   },
 
   // ── Internal helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Converts an integer machine number to the MAC-XX format the frontend uses.
+   */
+  _machineIdToStr(machineInt: number): string {
+    return `MAC-${String(machineInt).padStart(2, '0')}`;
+  },
 
   /**
    * Converts a MAC-01 style machine_no to the integer the backend expects (1, 2, 3, 4).

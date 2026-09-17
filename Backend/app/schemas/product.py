@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from decimal import Decimal
+from typing import List
 
 class BottleMasterBase(BaseModel):
     bottle_name: str
@@ -21,6 +22,9 @@ class BottleConfigurationBase(BaseModel):
 
 class BottleConfigurationCreate(BottleConfigurationBase):
     pass
+
+class BottleConfigurationBulkRequest(BaseModel):
+    configurations: List[BottleConfigurationCreate]
 
 class BottleConfigurationResponse(BottleConfigurationBase):
     class Config:

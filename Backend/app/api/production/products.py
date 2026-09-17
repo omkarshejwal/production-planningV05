@@ -1,5 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from typing import List
 
 from app.db.session import get_db
@@ -7,7 +10,8 @@ from app.models.product import BottleMaster, BottleConfiguration
 from app.models.audit_log import AuditLog
 from app.schemas.product import (
     BottleMasterResponse, BottleMasterCreate,
-    BottleConfigurationResponse, BottleConfigurationCreate
+    BottleConfigurationResponse, BottleConfigurationCreate,
+    BottleConfigurationBulkRequest
 )
 from app.api.deps import require_manager_role
 from app.api.auth import get_current_user
@@ -160,3 +164,87 @@ def delete_configuration(
     ))
     db.commit()
     return {"ok": True}
+
+@router.post("/configurations/bulk/")
+def bulk_upsert_configurations(
+    payload: BottleConfigurationBulkRequest,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role),
+    current_user: User = Depends(get_current_user),
+):
+    """Upserts many bottle configurations atomically in a single transaction.
+
+    Mimics the existing per-row create/update behavior: rows that already exist
+    (machine_no, bottle_id, section) are updated with the same audit action as
+    update_configuration; new rows are inserted with the CONFIGURED_BOTTLE action.
+    The whole batch commits or rolls back together.
+    """
+    configs = payload.configurations
+    if not configs:
+        return {"ok": True, "saved": 0}
+
+    existing_keys = set(
+        (r.machine_no, r.bottle_id, r.section)
+        for r in db.query(
+            BottleConfiguration.machine_no,
+            BottleConfiguration.bottle_id,
+            BottleConfiguration.section,
+        )
+        .filter(
+            or_(
+                *[
+                    and_(
+                        BottleConfiguration.machine_no == c.machine_no,
+                        BottleConfiguration.bottle_id == c.bottle_id,
+                        BottleConfiguration.section == c.section,
+                    )
+                    for c in configs
+                ]
+            )
+        )
+        .all()
+    )
+
+    table = BottleConfiguration.__table__
+    dialect = db.get_bind().dialect.name
+    insert_stmt = (pg_insert if dialect.startswith("postgresql") else sqlite_insert)(table)
+    upsert_stmt = insert_stmt.on_conflict_do_update(
+        index_elements=[table.c.machine_no, table.c.bottle_id, table.c.section],
+        set_={
+            "weight": insert_stmt.excluded.weight,
+            "speeds": insert_stmt.excluded.speeds,
+        },
+    )
+
+    try:
+        db.execute(
+            upsert_stmt,
+            [
+                {
+                    "machine_no": c.machine_no,
+                    "bottle_id": c.bottle_id,
+                    "section": c.section,
+                    "weight": c.weight,
+                    "speeds": c.speeds,
+                }
+                for c in configs
+            ],
+        )
+
+        for c in configs:
+            is_update = (c.machine_no, c.bottle_id, c.section) in existing_keys
+            db.add(AuditLog(
+                user_id=current_user.employee_id,
+                action="UPDATED_BOTTLE_CONFIG" if is_update else "CONFIGURED_BOTTLE",
+                details=(
+                    f"User ({user_role}) updated config for Bottle {c.bottle_id} on Machine {c.machine_no} Section {c.section}"
+                    if is_update
+                    else f"User ({user_role}) configured Bottle {c.bottle_id} on Machine {c.machine_no} Section {c.section}"
+                ),
+            ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Failed to bulk save bottle configurations.")
+
+    return {"ok": True, "saved": len(configs)}

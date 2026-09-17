@@ -17,6 +17,18 @@
  *   - qc_hold / sqc are integers, not booleans or strings
  *   - defects stay attached to their entry (hourly_production_defect is a
  *     join of entry_id + defect_id that the backend persists)
+ *
+ * Caching notes:
+ *   - The whole store is parsed from localStorage exactly once (lazily) and
+ *     kept in an in-memory cache, so navigating dates never re-parses it.
+ *   - `load()` never discards rows that already exist locally: the locally
+ *     persisted rows are the authoritative copy, and the API result is merged
+ *     in for slots the local cache has nothing for. This keeps next-day job
+ *     continuations created with "+" (and any other local-only rows) alive
+ *     across saves and reloads even if their individual backend POST is
+ *     delayed or offline.
+ *   - `load()` deduplicates concurrent requests per date, and `getDefects()`
+ *     caches the master defect list, so the same data is never fetched twice.
  */
 
 import { apiFetch } from '../utils/api';
@@ -99,6 +111,9 @@ export interface QualityShiftAssignment {
 export type QualityShiftMap = Record<number, QualityShiftAssignment>;
 export type QualityHourlyStore =
   Record<string, Record<string, Record<string, QualityHourlyEntry>>>;
+/** One date's hourly map: { [machineNo]: { [time]: entry } } */
+export type QualityDayHourly =
+  Record<string, Record<string, QualityHourlyEntry>>;
 
 const HOURLY_KEY = 'vitrum.quality.hourly.v1';
 const SHIFT_KEY = 'vitrum.quality.shift.v1';
@@ -122,6 +137,75 @@ const writeStore = (key: string, value: unknown) => {
     // Ignore storage quota / privacy-mode failures — in-memory copy still works.
   }
 };
+
+// ─── In-memory store cache (loaded lazily, updated on every save/load) ─────
+let hourlyCache: QualityHourlyStore | undefined;
+let shiftCache: Record<string, QualityShiftMap> | undefined;
+
+const ensureCache = (): { hourly: QualityHourlyStore; shifts: Record<string, QualityShiftMap> } => {
+  if (!hourlyCache) hourlyCache = readStore<QualityHourlyStore>(HOURLY_KEY, {});
+  if (!shiftCache) shiftCache = readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {});
+  return { hourly: hourlyCache, shifts: shiftCache };
+};
+
+const writeCaches = (hourly: QualityHourlyStore, shifts: Record<string, QualityShiftMap>) => {
+  hourlyCache = hourly;
+  shiftCache = shifts;
+  writeStore(HOURLY_KEY, hourly);
+  writeStore(SHIFT_KEY, shifts);
+};
+
+// A row counts as "content" when any meaningful field is filled. Empty
+// default-shape slots (the API returns a full 24 x 4 grid) are ignored, so
+// they never shadow real local rows and never bloat a save payload.
+export const hasMeaningfulData = (e?: QualityHourlyEntry | null): boolean => {
+  if (!e) return false;
+  if (e.bottle_id || e.section || e.job_id) return true;
+  if (e.weight_front || e.weight_middle || e.weight_rear || e.weight_avg) return true;
+  if (e.speed_per_min || e.packing_size || e.cartons || e.bottles_in_nos || e.efficiency_percentage) return true;
+  if (e.sqc || e.num || e.remarks) return true;
+  if (Number(e.qc_hold ?? 0) !== 0) return true;
+  if ((e.packing_category?.length ?? 0) > 0) return true;
+  if ((e.defect_ids?.length ?? 0) > 0) return true;
+  return false;
+};
+
+// Merges an API snapshot with the locally persisted rows so a row that only
+// exists locally (e.g. a just-created next-day continuation that has not been
+// POSTed yet) is never dropped by a reload. For slots the local cache has no
+// content for, the API row wins (so DB rows created elsewhere still appear).
+const mergeLoadedHourly = (
+  api: QualityDayHourly | undefined,
+  cached: QualityDayHourly | undefined
+): QualityDayHourly => {
+  const out: QualityDayHourly = {};
+  const machines = new Set<string>([
+    ...Object.keys(api ?? {}),
+    ...Object.keys(cached ?? {}),
+  ]);
+  for (const machineKey of machines) {
+    const apiTimes = api?.[machineKey] ?? {};
+    const cachedTimes = cached?.[machineKey] ?? {};
+    const byTime: Record<string, QualityHourlyEntry> = {};
+    const times = new Set<string>([...Object.keys(apiTimes), ...Object.keys(cachedTimes)]);
+    for (const timeKey of times) {
+      const local = cachedTimes[timeKey];
+      const remote = apiTimes[timeKey];
+      byTime[timeKey] = local && hasMeaningfulData(local) ? local : (remote ?? local);
+    }
+    out[machineKey] = byTime;
+  }
+  return out;
+};
+
+// Deduplicates concurrent load requests per date (StrictMode double-effects,
+// rapid date navigation, etc. all share one in-flight request).
+const inFlightLoads = new Map<string, Promise<{ hourly: QualityDayHourly; shifts: QualityShiftMap }>>();
+
+const defectNamesCache: {
+  resolved: DefectMasterItem[] | null;
+  pending: Promise<DefectMasterItem[]> | null;
+} = { resolved: null, pending: null };
 
 // ─── Mapping helpers (string-based UI form <-> database-typed payload) ───────
 
@@ -251,37 +335,73 @@ const normalizeDbHourly = (raw: Record<string, Record<string, Record<string, unk
 };
 
 export const qualityRepository = {
-  getHourlyForDate(dateKey: string): Record<string, Record<string, QualityHourlyEntry>> {
-    return readStore<QualityHourlyStore>(HOURLY_KEY, {})[dateKey] ?? {};
+  getHourlyForDate(dateKey: string): QualityDayHourly {
+    return ensureCache().hourly[dateKey] ?? {};
   },
 
   getShiftsForDate(dateKey: string): QualityShiftMap {
-    return readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {})[dateKey] ?? {};
+    return ensureCache().shifts[dateKey] ?? {};
   },
 
   /**
    * Fetches active defects from GET /api/production/quality/defects/?active_only=true.
+   * The result is cached so master data is never fetched more than once, and
+   * concurrent callers share a single in-flight request.
    */
   async getDefects(activeOnly: boolean = true): Promise<DefectMasterItem[]> {
-    try {
-      const res = await apiFetch(`/api/production/quality/defects/?active_only=${activeOnly}`);
-      if (Array.isArray(res)) {
-        return res as DefectMasterItem[];
-      }
-      return [];
-    } catch {
-      return [];
+    if (!activeOnly) {
+      const res = await apiFetch('/api/production/quality/defects/?active_only=false');
+      return Array.isArray(res) ? (res as DefectMasterItem[]) : [];
     }
+    if (defectNamesCache.resolved) return defectNamesCache.resolved;
+    if (!defectNamesCache.pending) {
+      defectNamesCache.pending = (async () => {
+        try {
+          const res = await apiFetch('/api/production/quality/defects/?active_only=true');
+          const list = Array.isArray(res) ? (res as DefectMasterItem[]) : [];
+          // Cache successes only, so a transient failure can be retried later.
+          defectNamesCache.resolved = list;
+          return list;
+        } catch {
+          return [];
+        } finally {
+          defectNamesCache.pending = null;
+        }
+      })();
+    }
+    return defectNamesCache.pending;
   },
 
   /**
    * Loads the hourly + shift assignment data for a single production date.
    * Tries the API first, falling back to the persisted localStorage cache.
+   *
+   * The API result is MERGED with the persisted local rows — local rows are
+   * authoritative (a next-day continuation created with "+" that the backend
+   * has not received yet is never dropped), while API rows fill the slots the
+   * local cache has nothing for. Concurrent calls for the same date share one
+   * request.
    */
   async load(dateKey: string): Promise<{
-    hourly: Record<string, Record<string, QualityHourlyEntry>>;
+    hourly: QualityDayHourly;
     shifts: QualityShiftMap;
   }> {
+    const pending = inFlightLoads.get(dateKey);
+    if (pending) return pending;
+    const promise = this._load(dateKey).finally(() => {
+      inFlightLoads.delete(dateKey);
+    });
+    inFlightLoads.set(dateKey, promise);
+    return promise;
+  },
+
+  async _load(dateKey: string): Promise<{
+    hourly: QualityDayHourly;
+    shifts: QualityShiftMap;
+  }> {
+    const { hourly, shifts } = ensureCache();
+    const cachedHourly = hourly[dateKey] ?? {};
+    const cachedShifts = shifts[dateKey] ?? {};
     try {
       const res = await apiFetch(`/api/production/quality/daily/?date=${dateKey}`);
       if (res && typeof res === 'object') {
@@ -289,22 +409,24 @@ export const qualityRepository = {
           hourly?: Record<string, Record<string, Record<string, unknown>>>;
           shift_assignments?: QualityShiftMap;
         };
-        if (body.hourly) {
-          const hourly = normalizeDbHourly(body.hourly);
-          const shifts = body.shift_assignments ?? {};
-          const stores = readStore<QualityHourlyStore>(HOURLY_KEY, {});
-          const shiftStores = readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {});
-          writeStore(HOURLY_KEY, { ...stores, [dateKey]: hourly });
-          writeStore(SHIFT_KEY, { ...shiftStores, [dateKey]: shifts });
-          return { hourly, shifts };
+        if (body.hourly && typeof body.hourly === 'object') {
+          const apiHourly = normalizeDbHourly(body.hourly);
+          const apiShifts = body.shift_assignments ?? {};
+          const mergedHourly = mergeLoadedHourly(apiHourly, cachedHourly);
+          const mergedShifts = { ...cachedShifts, ...apiShifts };
+          writeCaches(
+            { ...hourly, [dateKey]: mergedHourly },
+            { ...shifts, [dateKey]: mergedShifts }
+          );
+          return { hourly: mergedHourly, shifts: mergedShifts };
         }
       }
     } catch {
       // API endpoint unavailable (e.g. offline dev) — use local cache below.
     }
     return {
-      hourly: this.getHourlyForDate(dateKey),
-      shifts: this.getShiftsForDate(dateKey),
+      hourly: cachedHourly,
+      shifts: cachedShifts,
     };
   },
 
@@ -313,16 +435,19 @@ export const qualityRepository = {
    * Always writes the localStorage cache; best-effort POST to the backend
    * mirrors the existing repository write flow. The request body uses the
    * exact database field names and numeric/null types defined by the schema.
+   *
+   * Only the given date's key is written, so saving today never touches a
+   * next-day continuation stored under its own date key.
    */
   async save(
     dateKey: string,
-    hourly: Record<string, Record<string, QualityHourlyEntry>>,
+    hourly: QualityDayHourly,
     shifts: QualityShiftMap
-  ): Promise<{ ok: boolean }> {
-    const stores = readStore<QualityHourlyStore>(HOURLY_KEY, {});
-    const shiftStores = readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {});
-    writeStore(HOURLY_KEY, { ...stores, [dateKey]: hourly });
-    writeStore(SHIFT_KEY, { ...shiftStores, [dateKey]: shifts });
+  ): Promise<{ ok: boolean; persisted: boolean }> {
+    const { hourly: hc, shifts: sc } = ensureCache();
+    const nextHourly = { ...hc, [dateKey]: hourly };
+    const nextShifts = { ...sc, [dateKey]: shifts };
+    writeCaches(nextHourly, nextShifts);
 
     try {
       await apiFetch('/api/production/quality/daily/', {
@@ -333,9 +458,10 @@ export const qualityRepository = {
           shift_assignments: shifts,
         }),
       });
+      return { ok: true, persisted: true };
     } catch {
       // Endpoint not deployed yet — the localStorage cache is authoritative.
+      return { ok: true, persisted: false };
     }
-    return { ok: true };
   },
 };

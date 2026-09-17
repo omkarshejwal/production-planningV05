@@ -25,16 +25,18 @@ export const MachinesModule: React.FC = () => {
   const [activeTab, setActiveTab] = useState<MasterTabId>('bottle');
 
   const refresh = useCallback(() => {
-    planningRepository.init().then(() => {
-      setMachineRows(planningRepository.getMachines());
-      setBottles(planningRepository.getBottles());
-      setConfigs(planningRepository.getAllConfigurations());
-    });
+    setMachineRows(planningRepository.getMachines());
+    setBottles(planningRepository.getBottles());
+    setConfigs(planningRepository.getAllConfigurations());
   }, []);
 
-  useEffect(() => {
-    refresh();
+  const fullInit = useCallback(() => {
+    planningRepository.init().then(refresh);
   }, [refresh]);
+
+  useEffect(() => {
+    fullInit();
+  }, [fullInit]);
 
   return (
     <div className="p-4 md:p-6 max-w-[1920px] mx-auto min-h-[calc(100vh-9rem)]">

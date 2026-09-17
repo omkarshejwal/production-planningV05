@@ -3,7 +3,7 @@ import { Printer, Download, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
 import { BottleMaster } from '../../types';
-import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QUALITY_HOURLY_KEY } from '../../services/qualityRepository';
+import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QUALITY_HOURLY_KEY, hasMeaningfulData } from '../../services/qualityRepository';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Shift master — mirrors the production.shift_master table
@@ -481,6 +481,35 @@ const maxJobSeqIn = (
   return max;
 };
 
+// Merges a freshly loaded snapshot with whatever is already in memory for the
+// same date. In-memory entries (unsaved edits and cross-day continuations
+// created by "+") always win, so navigating between dates or re-rendering
+// never drops a row that exists in the live store.
+const mergeHourlyByDate = (
+  inMemory: Record<string, Record<string, QualityHourlyEntry>> | undefined,
+  loaded: Record<string, Record<string, QualityHourlyEntry>>
+): Record<string, Record<string, QualityHourlyEntry>> => {
+  const merged: Record<string, Record<string, QualityHourlyEntry>> = {};
+  const machineKeys = new Set<string>([...Object.keys(loaded ?? {}), ...Object.keys(inMemory ?? {})]);
+  for (const machineKey of machineKeys) {
+    const memByTime = inMemory?.[machineKey] ?? {};
+    const loadedByTime = loaded?.[machineKey] ?? {};
+    const timeKeys = new Set<string>([...Object.keys(loadedByTime), ...Object.keys(memByTime)]);
+    const byTime: Record<string, QualityHourlyEntry> = {};
+    for (const timeKey of timeKeys) {
+      byTime[timeKey] = memByTime[timeKey] ?? loadedByTime[timeKey];
+    }
+    merged[machineKey] = byTime;
+  }
+  return merged;
+};
+
+// Same principle as mergeHourlyByDate for the shift-assignment cards.
+const mergeShifts = (
+  inMemory: QualityShiftMap | undefined,
+  loaded: QualityShiftMap
+): QualityShiftMap => ({ ...loaded, ...(inMemory ?? {}) });
+
 const calcBottlesInNos = (e?: QualityHourlyEntry): string => {
   const ps = parseInt(e?.packing_size ?? '');
   const ct = parseInt(e?.cartons ?? '');
@@ -817,6 +846,30 @@ export const QualityControlModule: React.FC = () => {
   // dates must never be reused, so the counter is seeded from stored data.
   const jobIdCounter = useRef(1);
 
+  // Dates that received a cross-midnight continuation row via "+". The row
+  // lives under its OWN date key, so these dates are persisted together with
+  // the current date's save (otherwise the continuation never reaches storage).
+  const continuationDates = useRef<Record<string, boolean>>({});
+
+  // Rows edited (or created) in this session, per date + machine + time. Only
+  // these rows — plus rows that carry meaningful data — are sent on Save, so a
+  // save never sends the whole pre-loaded 96-slot grid and never drops a row.
+  const touchedTimes = useRef<Record<string, Record<string, Record<string, boolean>>>>({});
+
+  const productionStoreRef = useRef(productionStore);
+  useEffect(() => {
+    productionStoreRef.current = productionStore;
+  }, [productionStore]);
+
+  // Guards Save against concurrent/duplicate submissions.
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+
+  // Dates whose load has completed (ref persists across re-renders), plus the
+  // in-flight promises used to deduplicate concurrent loads for the same date.
+  const loadedRef = useRef<Record<string, boolean>>({});
+  const inFlightRef = useRef<Record<string, Promise<{ hourly: Record<string, Record<string, QualityHourlyEntry>>; shifts: QualityShiftMap }> | undefined>>({});
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(QUALITY_HOURLY_KEY);
@@ -852,18 +905,41 @@ export const QualityControlModule: React.FC = () => {
   }, []);
 
   // Load saved data from the repository whenever the selected date changes.
+  // Dates that are already loaded (or currently loading) are never re-fetched:
+  // navigating back to a date reuses the in-memory / cached data instead of
+  // issuing another request, and concurrent mounts share one in-flight request.
+  // The snapshot is MERGED into the in-memory store (never replacing it), so
+  // unsaved edits and next-day continuations created by "+" survive navigation.
   useEffect(() => {
-    let active = true;
-    qualityRepository.load(dateKey).then(({ hourly, shifts }) => {
-      if (!active) return;
-      setProductionStore((prev) => ({ ...prev, [dateKey]: hourly ?? {} }));
-      setShiftStore((prev) => ({ ...prev, [dateKey]: shifts ?? {} }));
+    let cancelled = false;
+    if (loadedRef.current[dateKey]) return;
+    const existing = inFlightRef.current[dateKey];
+    const pending = existing ?? qualityRepository.load(dateKey);
+    inFlightRef.current[dateKey] = pending;
+    pending.then(({ hourly, shifts }) => {
+      inFlightRef.current[dateKey] = undefined;
+      if (cancelled) return;
+      setProductionStore((prev) => ({
+        ...prev,
+        [dateKey]: mergeHourlyByDate(prev[dateKey], hourly ?? {}),
+      }));
+      setShiftStore((prev) => ({
+        ...prev,
+        [dateKey]: mergeShifts(prev[dateKey], shifts ?? {}),
+      }));
+      // A successful fetch always returns the full 24x4 grid, even for an
+      // untouched day, so a genuinely empty result means the fetch failed and
+      // nothing was cached. Only then is the date left un-marked so a later
+      // visit (or date change) retries instead of showing a stale empty grid.
+      loadedRef.current[dateKey] = Object.keys(hourly ?? {}).length > 0;
       setLoadedDates((prev) => ({ ...prev, [dateKey]: true }));
       const max = maxJobSeqIn({ [dateKey]: hourly ?? {} });
       if (max >= jobIdCounter.current) jobIdCounter.current = max + 1;
+    }).catch(() => {
+      inFlightRef.current[dateKey] = undefined;
     });
     return () => {
-      active = false;
+      cancelled = true;
     };
   }, [dateKey]);
 
@@ -893,19 +969,28 @@ export const QualityControlModule: React.FC = () => {
     job_id: '',
   });
 
-  const getEntry = (machineNo: number, time: string): QualityHourlyEntry | undefined =>
-    productionStore[dateKey]?.[String(machineNo)]?.[time];
+  // Memoized view of the active machine's hourly rows for the selected date.
+  // The table body and summary read from this stable map, so editing one row
+  // changes only that row's entry reference and the memoized summaries below.
+  const activeRows = useMemo(
+    () => productionStore[dateKey]?.[String(activeMachine)] ?? {},
+    [productionStore, dateKey, activeMachine]
+  );
 
   const patchEntry = useCallback((time: string, patch: Partial<QualityHourlyEntry>) => {
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
+    const mStr = String(activeMachine);
+    const byDate = touchedTimes.current[dateKey] ?? (touchedTimes.current[dateKey] = {});
+    const byMachine = byDate[mStr] ?? (byDate[mStr] = {});
+    byMachine[time] = true;
     setProductionStore((prev) => {
-      const existing = prev[dateKey]?.[String(activeMachine)]?.[time] ?? blankEntry(time, slot?.shift_id ?? 1);
+      const existing = prev[dateKey]?.[mStr]?.[time] ?? blankEntry(time, slot?.shift_id ?? 1);
       return {
         ...prev,
         [dateKey]: {
           ...(prev[dateKey] ?? {}),
-          [String(activeMachine)]: {
-            ...(prev[dateKey]?.[String(activeMachine)] ?? {}),
+          [mStr]: {
+            ...(prev[dateKey]?.[mStr] ?? {}),
             [time]: { ...existing, ...patch },
           },
         },
@@ -984,24 +1069,29 @@ export const QualityControlModule: React.FC = () => {
       return;
     }
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
+    const machineKey = String(activeMachine);
+    const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
+    const currentSection = existingEntry?.section ?? '';
+    const prevJobId = existingEntry?.job_id || '';
+    const prevBottle = existingEntry?.bottle_id || '';
+    const isNewJob = !prevJobId || (prevBottle && prevBottle !== bottleId);
+    const newJobId = isNewJob
+      ? nextJobIdFromSeq(jobIdCounter.current)
+      : prevJobId;
+    if (isNewJob) jobIdCounter.current += 1;
+
+    const configs = bottleMasterRecords.filter(
+      (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
+    );
+    const config =
+      (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
+      configs[0];
+
+    const tByDate = touchedTimes.current[dateKey] ?? (touchedTimes.current[dateKey] = {});
+    (tByDate[machineKey] ?? (tByDate[machineKey] = {}))[time] = true;
+
     setProductionStore((prev) => {
-      const machineKey = String(activeMachine);
-      const existingEntry = prev[dateKey]?.[machineKey]?.[time];
-      const currentSection = existingEntry?.section ?? '';
-      const prevJobId = existingEntry?.job_id || '';
-      const prevBottle = existingEntry?.bottle_id || '';
-      const isNewJob = !prevJobId || (prevBottle && prevBottle !== bottleId);
-      const newJobId = isNewJob
-        ? nextJobIdFromSeq(jobIdCounter.current)
-        : prevJobId;
-      if (isNewJob) jobIdCounter.current += 1;
-      const configs = bottleMasterRecords.filter(
-        (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
-      );
-      const config =
-        (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
-        configs[0];
-      const base = existingEntry ?? blankEntry(time, slot?.shift_id ?? 1);
+      const base = prev[dateKey]?.[machineKey]?.[time] ?? blankEntry(time, slot?.shift_id ?? 1);
       return {
         ...prev,
         [dateKey]: {
@@ -1035,9 +1125,14 @@ export const QualityControlModule: React.FC = () => {
       const machineKey = String(activeMachine);
       const source = prev[dateKey]?.[machineKey]?.[time];
       if (!source?.bottle_id) return prev;
+      const markTouched = (date: string, mKey: string, tKey: string) => {
+        const byDate = touchedTimes.current[date] ?? (touchedTimes.current[date] = {});
+        (byDate[mKey] ?? (byDate[mKey] = {}))[tKey] = true;
+      };
       for (let i = idx + 1; i < PRODUCTION_TIMES.length; i++) {
         const nextTime = PRODUCTION_TIMES[i].time;
         if (!prev[dateKey]?.[machineKey]?.[nextTime]?.bottle_id) {
+          markTouched(dateKey, machineKey, nextTime);
           return {
             ...prev,
             [dateKey]: {
@@ -1061,6 +1156,10 @@ export const QualityControlModule: React.FC = () => {
         const nextDateKey = toIso(nextDate);
         const firstTime = PRODUCTION_TIMES[0].time;
         const firstShiftId = PRODUCTION_TIMES[0].shift_id;
+        // Never overwrite an existing job in the next day's first slot.
+        if (prev[nextDateKey]?.[machineKey]?.[firstTime]?.bottle_id) return prev;
+        continuationDates.current[nextDateKey] = true;
+        markTouched(nextDateKey, machineKey, firstTime);
         return {
           ...prev,
           [nextDateKey]: {
@@ -1070,6 +1169,7 @@ export const QualityControlModule: React.FC = () => {
               [firstTime]: {
                 ...source,
                 production_time: firstTime,
+                report_id: nextDateKey,
                 entry_id: `${nextDateKey}:${source.machine_no}:${firstTime}`,
                 shift_id: firstShiftId,
               },
@@ -1105,59 +1205,82 @@ export const QualityControlModule: React.FC = () => {
   }, [patchEntry]);
 
   // ── Derived calculation helpers (shared by display, export, and save payload) ─
-  const gobCountFor = (machineNo: number): number =>
+  const gobCountFor = useCallback((machineNo: number): number =>
     machines.find((m) => m.code === `MAC-${String(machineNo).padStart(2, '0')}`)?.gobCount ??
-    (DB_MACHINE_MASTER.find((m) => m.machine_no === machineNo)?.gob_type === '3-gob' ? 3 : 2);
+    (DB_MACHINE_MASTER.find((m) => m.machine_no === machineNo)?.gob_type === '3-gob' ? 3 : 2),
+  [machines]);
 
-  const calcBottlesInNosFor = (e?: QualityHourlyEntry): string => calcBottlesInNos(e);
+  const calcBottlesInNosFor = useCallback((e?: QualityHourlyEntry): string => calcBottlesInNos(e), []);
 
-  const calcEffFor = (e?: QualityHourlyEntry, _machineNo?: number): string => calcEffForEntry(e);
+  const calcEffFor = useCallback((e?: QualityHourlyEntry, _machineNo?: number): string => calcEffForEntry(e), []);
 
-  const calcRowAvgFor = (e: QualityHourlyEntry | undefined, machineNo: number): string =>
-    calcRowAverage(e, gobCountFor(machineNo));
+  const calcRowAvgFor = useCallback((e: QualityHourlyEntry | undefined, machineNo: number): string =>
+    calcRowAverage(e, gobCountFor(machineNo)),
+  [gobCountFor]);
 
-  const calcEff = (time: string): string => calcEffFor(getEntry(activeMachine, time), activeMachine);
-
-  const calcRowAvg = (time: string): string => calcRowAvgFor(getEntry(activeMachine, time), activeMachine);
-
-  const dayAvg = (field: 'weight_front' | 'weight_middle' | 'weight_rear' | 'avg'): string => {
-    const vals: number[] = [];
+  // Memoized day summary stats. Recompute only when the active machine's rows
+  // actually change, instead of re-scanning all 24 slots on every render and
+  // each keypress.
+  const dayAvgs = useMemo(() => {
+    const collect = (field: 'weight_front' | 'weight_middle' | 'weight_rear'): string => {
+      const vals: number[] = [];
+      for (const pt of PRODUCTION_TIMES) {
+        const v = parseFloat(activeRows[pt.time]?.[field] ?? '');
+        if (!isNaN(v)) vals.push(v);
+      }
+      return vals.length ? (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1) : '';
+    };
+    const avgVals: number[] = [];
     for (const pt of PRODUCTION_TIMES) {
-      const v = field === 'avg'
-        ? parseFloat(calcRowAvg(pt.time))
-        : parseFloat(getEntry(activeMachine, pt.time)?.[field] ?? '');
-      if (!isNaN(v)) vals.push(v);
+      const v = parseFloat(calcRowAvgFor(activeRows[pt.time], activeMachine));
+      if (!isNaN(v)) avgVals.push(v);
     }
-    if (!vals.length) return '';
-    return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
-  };
+    return {
+      front: collect('weight_front'),
+      middle: collect('weight_middle'),
+      rear: collect('weight_rear'),
+      avg: avgVals.length ? (avgVals.reduce((s, v) => s + v, 0) / avgVals.length).toFixed(1) : '',
+    };
+  }, [activeRows, activeMachine, calcRowAvgFor]);
 
-  const effValues = PRODUCTION_TIMES.map((pt) => parseFloat(calcEff(pt.time))).filter((v) => !isNaN(v));
-  const avgEff = effValues.length
-    ? (effValues.reduce((s, v) => s + v, 0) / effValues.length).toFixed(1)
-    : '—';
-
-  const totalCartons = PRODUCTION_TIMES.reduce(
-    (s, pt) => s + (parseInt(getEntry(activeMachine, pt.time)?.cartons ?? '') || 0),
-    0
-  );
-
-  const totalBottles = PRODUCTION_TIMES.reduce((s, pt) => {
-    const e = getEntry(activeMachine, pt.time);
-    const ps = parseInt(e?.packing_size ?? '');
-    const ct = parseInt(e?.cartons ?? '');
-    return s + (ps > 0 && ct > 0 ? ps * ct : 0);
-  }, 0);
+  const stats = useMemo(() => {
+    let totalCartons = 0;
+    let totalBottles = 0;
+    const effVals: number[] = [];
+    for (const pt of PRODUCTION_TIMES) {
+      const e = activeRows[pt.time];
+      const ct = parseInt(e?.cartons ?? '');
+      if (!isNaN(ct)) totalCartons += ct;
+      const ps = parseInt(e?.packing_size ?? '');
+      if (!isNaN(ct) && ps > 0) totalBottles += ps * ct;
+      const eff = parseFloat(calcEffFor(e, activeMachine));
+      if (!isNaN(eff)) effVals.push(eff);
+    }
+    return {
+      totalCartons,
+      totalBottles,
+      avgEff: effVals.length ? (effVals.reduce((s, v) => s + v, 0) / effVals.length).toFixed(1) : '—',
+    };
+  }, [activeRows, activeMachine, calcEffFor]);
 
   // ── Save / Export / Print ────────────────────────────────────────────────
-  const handleSave = async () => {
-    const rawHourly = productionStore[dateKey] ?? {};
-    const hourly: Record<string, Record<string, QualityHourlyEntry>> = {};
-    for (const [mStr, timeMap] of Object.entries(rawHourly)) {
-      hourly[mStr] = {};
+  // Builds the smallest correct payload: only rows edited in this session and
+  // rows that carry real data are included — never the pre-loaded empty 24-slot
+  // grid. Touched-but-cleared rows are still sent so the backend clears values
+  // that were previously saved.
+  const buildSavePayload = (
+    date: string,
+    store: Record<string, Record<string, Record<string, QualityHourlyEntry>>>,
+    touched: Record<string, Record<string, boolean>> | undefined
+  ): Record<string, Record<string, QualityHourlyEntry>> => {
+    const out: Record<string, Record<string, QualityHourlyEntry>> = {};
+    const byMachine = store[date] ?? {};
+    for (const [mStr, timeMap] of Object.entries(byMachine)) {
       const mNum = parseInt(mStr, 10) || activeMachine;
       for (const [time, entry] of Object.entries(timeMap)) {
-        hourly[mStr][time] = {
+        if (!entry) continue;
+        if (!touched?.[mStr]?.[time] && !hasMeaningfulData(entry)) continue;
+        (out[mStr] ??= {})[time] = {
           ...entry,
           weight_avg: calcRowAvgFor(entry, mNum),
           bottles_in_nos: calcBottlesInNosFor(entry),
@@ -1165,14 +1288,37 @@ export const QualityControlModule: React.FC = () => {
         };
       }
     }
-    const shifts = shiftStore[dateKey] ?? {};
-    const result = await qualityRepository.save(dateKey, hourly, shifts);
-    if (result.ok) {
-      setProductionStore((prev) => ({ ...prev, [dateKey]: hourly }));
-      setSavedFlags((prev) => ({ ...prev, [dateKey]: true }));
+    return out;
+  };
+
+  const handleSave = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      // The selected date plus every date that received a continuation row via
+      // "+". Continuations live under their OWN date keys and are saved with
+      // those dates, so saving today never drops tomorrow's 9 AM row.
+      const datesToSave = new Set<string>([dateKey]);
+      for (const auxKey of Object.keys(continuationDates.current)) datesToSave.add(auxKey);
+
+      let savedAny = false;
+      for (const date of datesToSave) {
+        if (Object.keys(productionStore[date] ?? {}).length === 0) continue;
+        const payload = buildSavePayload(date, productionStore, touchedTimes.current[date]);
+        const shifts = shiftStore[date] ?? {};
+        if (Object.keys(payload).length === 0 && Object.keys(shifts).length === 0) continue;
+        const result = await qualityRepository.save(date, payload, shifts);
+        if (!result.ok) continue;
+        // These rows are now persisted; keep the rest of the store untouched so
+        // unedited rows and other machines' rows stay exactly as they are.
+        touchedTimes.current[date] = {};
+        setSavedFlags((prev) => ({ ...prev, [date]: true }));
+      }
       toast.success(`Saved production quality data for ${dateLabel}`);
-    } else {
-      toast.error('Failed to save production quality data.');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -1230,7 +1376,205 @@ export const QualityControlModule: React.FC = () => {
     toast.success(`Exported Machine ${activeMachine} — ${dateLabel} to CSV`);
   };
 
-  const handlePrint = () => window.print();
+  const [isPrinting, setIsPrinting] = useState(false);
+
+  // Generates a landscape PDF of the currently loaded Quality Monitor data and
+  // downloads it directly — mirrors the Production Planning module's print
+  // behavior (jspdf + jspdf-autotable, no window.print() / browser dialog).
+  const handlePrint = async () => {
+    if (isPrinting) return;
+    setIsPrinting(true);
+
+    try {
+      // jspdf + autoTable are only needed for printing — load them lazily so
+      // the initial bundle stays small. CJS interop fallback via .default.
+      const jspdfModule: any = await import('jspdf');
+      const jsPDF = jspdfModule.jsPDF ?? jspdfModule.default?.jsPDF;
+      const autoTableModule: any = await import('jspdf-autotable');
+      const autoTable = autoTableModule.autoTable ?? autoTableModule.default;
+
+      // Collect ALL currently available monitor data — the same in-memory store
+      // the table renders from, so no extra API/database calls are needed.
+      const byTime = productionStore[dateKey]?.[String(activeMachine)] ?? {};
+
+      const bottleNameFor = (id: string) =>
+        bottles.find((b) => b.id === id)?.name ?? id;
+
+      const defectNamesFor = (entry?: QualityHourlyEntry): string[] => {
+        if (defectGroups.length === 0) return entry?.defect_ids ?? [];
+        return allDefectNames.filter((d) => (entry?.defect_ids ?? []).includes(d));
+      };
+
+      const doc = new jsPDF('landscape');
+
+      // ── Header: title, date, machine + shift assignments ────────────────
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text('Production Quality Monitor', 10, 13);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10.5);
+      doc.text(`Date: ${dateLabel}    Machine: No. ${activeMachine}`, 10, 19);
+
+      let y = 25;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.text('Shift Assignments (Supervisor / Executive):', 10, y);
+      y += 4;
+      doc.setFont('helvetica', 'normal');
+      for (const sh of DB_SHIFT_MASTER) {
+        const a = getShiftAssignment(sh.shift_id);
+        doc.setFontSize(8);
+        doc.text(
+          `${sh.shift_name} (${sh.display_time}):  Supervisor — ${a.supervisor || '—'}    Executive — ${a.executive || '—'}`,
+          10,
+          y
+        );
+        y += 3.8;
+      }
+      const startY = y + 3;
+
+      // ── Table header (two rows; Weight F/M/R depends on machine gob type) ─
+      const headRowBase: any[] = [
+        { content: 'Time', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Shift', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Bottle Name', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Section', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Weight (gms)', colSpan: hasM ? 3 : 2, styles: { halign: 'center' } },
+        { content: 'Average', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Speed/Min', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Packing Category', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Packing Size', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Cartons', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Bottles', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Eff%', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'SQC', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'QC HOLD', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'NUM', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Defects', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'Remarks', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+      ];
+      const head = [headRowBase, ['F', ...(hasM ? ['M'] : []), 'R']];
+
+      // ── Body: all 24 hourly rows (calculations identical to on-screen) ───
+      const body: any[][] = [];
+      for (const pt of PRODUCTION_TIMES) {
+        const e = byTime[pt.time];
+        const defectNames = defectNamesFor(e);
+        body.push([
+          pt.time,
+          SHIFT_LABELS[pt.shift_id - 1] ?? '',
+          e?.bottle_id ? bottleNameFor(e.bottle_id) : '',
+          e?.section ?? '',
+          e?.weight_front ?? '',
+          ...(hasM ? [e?.weight_middle ?? ''] : []),
+          e?.weight_rear ?? '',
+          calcRowAvgFor(e, activeMachine),
+          e?.speed_per_min ?? '',
+          (e?.packing_category ?? []).join(' / '),
+          e?.packing_size ?? '',
+          e?.cartons ?? '',
+          calcBottlesInNosFor(e) || e?.bottles_in_nos || '',
+          calcEffFor(e, activeMachine),
+          e?.sqc ?? '',
+          e?.qc_hold != null ? String(e.qc_hold) : '0',
+          e?.num ?? '',
+          defectNames.join(' / '),
+          e?.remarks ?? '',
+        ]);
+      }
+
+      // Day Avg / Summary row — mirrors the on-screen totals.
+      const colCount = hasM ? 19 : 18;
+      const summary: any[] = new Array(colCount).fill('');
+      summary[0] = {
+        content: 'Day Avg / Summary',
+        colSpan: 4,
+        styles: { halign: 'right', fontStyle: 'bold' },
+      };
+      let wIdx = 4;
+      summary[wIdx++] = dayAvgs.front;
+      if (hasM) summary[wIdx++] = dayAvgs.middle;
+      summary[wIdx++] = dayAvgs.rear;
+      summary[wIdx++] = dayAvgs.avg;
+      wIdx++; // Speed
+      wIdx++; // Packing Category
+      wIdx++; // Packing Size
+      summary[wIdx++] = stats.totalCartons.toLocaleString();
+      summary[wIdx++] = stats.totalBottles.toLocaleString();
+      summary[wIdx++] = `${stats.avgEff}%`;
+      body.push(summary);
+
+      // ── Column widths + alignment (landscape A4 with 10mm page margins) ──
+      const colWidths = hasM
+        ? [13, 11, 34, 11, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 24, 24]
+        : [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 24, 24];
+
+      const columnStyles: Record<number, any> = {};
+      colWidths.forEach((w, i) => {
+        const leftAligned = i === 2 || i === colWidths.length - 1 || i === colWidths.length - 2;
+        columnStyles[i] = { cellWidth: w, halign: leftAligned ? 'left' : 'center' };
+      });
+
+      // Rows flow onto additional pages automatically when the 24-hour table
+      // and summary exceed a single physical page — nothing is truncated.
+      autoTable(doc, {
+        head,
+        body,
+        startY,
+        margin: { top: startY, left: 10, right: 10, bottom: 12 },
+        theme: 'grid',
+        includeEmptyRows: true,
+        columnStyles,
+        styles: {
+          fontSize: 6,
+          cellPadding: 1.4,
+          textColor: [30, 41, 59],
+          lineColor: [203, 213, 225],
+          lineWidth: 0.1,
+          valign: 'middle',
+        },
+        headStyles: {
+          fillColor: [30, 41, 59],
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          fontSize: 6.5,
+          halign: 'center',
+        },
+        alternateRowStyles: false,
+        didParseCell: (data: any) => {
+          if (data.section !== 'body') return;
+          const idx = data.row.index;
+          if (idx < PRODUCTION_TIMES.length) {
+            const shiftIdx = Math.floor(idx / 8);
+            data.cell.styles.fillColor = SHIFT_ROW_BG[shiftIdx];
+          } else {
+            data.cell.styles.fillColor = [240, 244, 250];
+            data.cell.styles.fontStyle = 'bold';
+          }
+        },
+      });
+
+      // ── Footer with page numbers on every page ──────────────────────────
+      const pageCount = doc.getNumberOfPages();
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(7);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`Production Quality Monitor — Machine ${activeMachine} — ${dateLabel}`, 10, pageH - 5);
+        doc.text(`Page ${i} of ${pageCount}`, pageW - 10, pageH - 5, { align: 'right' });
+      }
+
+      doc.save(`Production_Quality_Monitor_${dateKey}.pdf`);
+      toast.success('Generated PDF successfully.');
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to generate PDF. Please try again.');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
 
   const shiftDate = (delta: number) => {
     const d = new Date(navDate);
@@ -1516,7 +1860,7 @@ export const QualityControlModule: React.FC = () => {
                 const { time } = slot;
                 const shiftIdx = Math.floor(idx / 8);
                 const isFirstInShift = idx % 8 === 0;
-                const entry = getEntry(activeMachine, time);
+                const entry = activeRows[time];
 
                 const availSections = entry?.bottle_id
                   ? getAvailableSections(entry.bottle_id)
@@ -1551,20 +1895,20 @@ export const QualityControlModule: React.FC = () => {
                   Day Avg / Summary
                 </td>
                 <td style={{ padding: '8px 6px', textAlign: 'center', fontWeight: 700, fontSize: '12px', color: '#1e293b', borderRight: `1px solid ${C.border}` }}>
-                  {dayAvg('weight_front')}
+                  {dayAvgs.front}
                 </td>
                 {hasM && (
                   <td style={{ padding: '8px 6px', textAlign: 'center', fontWeight: 700, fontSize: '12px', color: '#1e293b', borderRight: `1px solid ${C.border}` }}>
-                    {dayAvg('weight_middle')}
+                    {dayAvgs.middle}
                   </td>
                 )}
                 <td style={{ padding: '8px 6px', textAlign: 'center', fontWeight: 700, fontSize: '12px', color: '#1e293b', borderRight: `1px solid ${C.border}` }}>
-                  {dayAvg('weight_rear')}
+                  {dayAvgs.rear}
                 </td>
                 <td style={{ padding: '8px 6px', textAlign: 'center', borderRight: `1px solid ${C.border}` }}>
-                  {dayAvg('avg') ? (
+                  {dayAvgs.avg ? (
                     <span style={{ display: 'inline-block', backgroundColor: '#334155', color: '#ffffff', borderRadius: '4px', padding: '2px 7px', fontWeight: 700, fontSize: '12px' }}>
-                      {dayAvg('avg')}
+                      {dayAvgs.avg}
                     </span>
                   ) : ''}
                 </td>
@@ -1572,14 +1916,14 @@ export const QualityControlModule: React.FC = () => {
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: '#1e293b', fontSize: '13px', borderRight: `1px solid ${C.border}` }}>
-                  {totalCartons.toLocaleString()}
+                  {stats.totalCartons.toLocaleString()}
                 </td>
                 <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: '#1e293b', fontSize: '13px', borderRight: `1px solid ${C.border}` }}>
-                  {totalBottles.toLocaleString()}
+                  {stats.totalBottles.toLocaleString()}
                 </td>
                 <td style={{ padding: '8px 10px', textAlign: 'center', borderRight: `1px solid ${C.border}` }}>
                   <span style={{ display: 'inline-block', backgroundColor: '#2563eb', color: '#ffffff', borderRadius: '4px', padding: '2px 8px', fontWeight: 700, fontSize: '12px' }}>
-                    {avgEff}%
+                    {stats.avgEff}%
                   </span>
                 </td>
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
@@ -1600,12 +1944,14 @@ export const QualityControlModule: React.FC = () => {
           )}
           <button
             onClick={() => void handleSave()}
+            disabled={saving}
             style={{
               backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px',
-              padding: '7px 22px', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+              padding: '7px 22px', fontSize: '13px', fontWeight: 600,
+              cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
               letterSpacing: '0.01em', transition: 'background-color 0.15s',
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#1d4ed8'; }}
+            onMouseEnter={(e) => { if (!saving) e.currentTarget.style.backgroundColor = '#1d4ed8'; }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#2563eb'; }}
           >
             Save
