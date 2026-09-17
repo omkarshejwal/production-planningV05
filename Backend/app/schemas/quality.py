@@ -51,6 +51,7 @@ class QualityHourlyEntrySchema(BaseModel):
     num: Optional[int] = None
     remarks: Optional[str] = None
     defect_ids: List[str] = []
+    job_id: Optional[str] = None
 
     @field_validator('sqc', 'packing_size', mode='before')
     @classmethod

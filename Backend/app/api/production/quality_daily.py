@@ -63,7 +63,8 @@ def get_default_shape(date_str: str) -> QualityDailyResponse:
                 qc_hold=None,
                 num=None,
                 remarks=None,
-                defect_ids=[]
+                defect_ids=[],
+                job_id=None
             )
     
     shifts = {str(s): QualityShiftAssignmentSchema(supervisor="", executive="") for s in SHIFTS}
@@ -131,7 +132,8 @@ def get_daily_quality(date: str, db: Session = Depends(get_db)):
             qc_hold=int(entry.qc_hold) if entry.qc_hold is not None else None,
             num=entry.num,
             remarks=entry.remarks,
-            defect_ids=[d.defect_name for d in entry.defects]
+            defect_ids=[d.defect_name for d in entry.defects],
+            job_id=entry.job_id
         )
 
     return response
@@ -257,6 +259,11 @@ def save_daily_quality(
                 ctns = entry_data.cartons
                 binos = entry_data.bottles_in_nos
                 eff = entry_data.efficiency_percentage
+                if eff is not None:
+                    try:
+                        eff = round(min(max(float(eff), 0.0), 999.99), 2)
+                    except (ValueError, TypeError):
+                        eff = None
                 sq = entry_data.sqc
                 qch = entry_data.qc_hold
                 n_val = entry_data.num
@@ -272,7 +279,8 @@ def save_daily_quality(
                         weight_front=w_f, weight_middle=w_m, weight_rear=w_r, weight_avg=w_a,
                         speed_per_min=s_p_m, packing_category=p_c, packing_size=p_s,
                         cartons=ctns, bottles_in_nos=binos, efficiency_percent=eff,
-                        sqc=sq, qc_hold=qch, num=n_val, remarks=rmk
+                        sqc=sq, qc_hold=qch, num=n_val, remarks=rmk,
+                        job_id=entry_data.job_id
                     )
                     db.add(entry)
                 else:
@@ -292,6 +300,7 @@ def save_daily_quality(
                     entry.qc_hold = qch
                     entry.num = n_val
                     entry.remarks = rmk
+                    entry.job_id = entry_data.job_id
 
                 # Step 4: Replace all defects
                 entry.defects = [defect_map[dname] for dname in entry_data.defect_ids]

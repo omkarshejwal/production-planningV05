@@ -82,6 +82,7 @@ class HourlyProduction(Base):
     qc_hold = Column(Integer, nullable=True)
     num = Column(Integer, nullable=True)
     remarks = Column(Text, nullable=True)
+    job_id = Column(String(20), nullable=True)
 
     defects = relationship("DefectMaster", secondary=lambda: HourlyProductionDefect.__table__, lazy="selectin")
 
