@@ -590,6 +590,22 @@ This starts:
 - `APP_URL` (root `.env.example`; app URL reference).
 
 ## Changelog
+### 2026-09-16 — Quality Module: Add Backend job_id Support & Efficiency Bounds Protection
+- **What changed:**
+  - `Backend/app/models/quality.py`:
+    - Added `job_id = Column(String(20), nullable=True)` to `HourlyProduction` model directly following `remarks`. Note: Treated as a standalone string label, not a Foreign Key constraint.
+  - `Backend/app/schemas/quality.py`:
+    - Added `job_id: Optional[str] = None` to `QualityHourlyEntrySchema` so Pydantic accepts `job_id` on POST payloads and serializes it on GET responses.
+  - `Backend/app/api/production/quality_daily.py`:
+    - Added `job_id=None` in `get_default_shape(...)`.
+    - Added `job_id=entry.job_id` in `get_daily_quality(...)` response mapping.
+    - Added `job_id=entry_data.job_id` in `save_daily_quality(...)` create and update branches.
+    - Clamped `efficiency_percentage` between `0.0` and `999.99` (`round(min(max(float(eff), 0.0), 999.99), 2)`) before saving to prevent PostgreSQL `NumericValueOutOfRange` (overflow) errors on the DB column `NUMERIC(5, 2)`.
+- **Files changed:** `Backend/app/models/quality.py`, `Backend/app/schemas/quality.py`, `Backend/app/api/production/quality_daily.py`
+- **Why:** 
+  1. Closes the persistence gap where frontend-generated sequential job identifiers (`J001`, `J002`, etc.) were silently dropped on save and cleared on reload.
+  2. Guards the database transaction against 500 errors when extreme efficiency calculations occur from test carton inputs.
+
 ### 2026-09-11 — Compute and Persist weight_avg, bottles_in_nos, and efficiency_percentage in Save Payload
 - **What changed:**
   - `src/components/quality/ProductionQualityMonitor.tsx`:

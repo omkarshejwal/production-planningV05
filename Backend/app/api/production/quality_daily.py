@@ -1,4 +1,6 @@
 # pyrefly: ignore [missing-import]
+import logging
+import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
@@ -8,11 +10,13 @@ from typing import Dict, Any
 from app.db.session import get_db
 from app.models.quality import (
     HourlyProductionReport, ShiftAssignment, HourlyProduction,
-    DefectMaster, HourlyProductionDefect
+    DefectMaster, HourlyProductionDefect, HprJob
 )
 from app.schemas.quality import QualityDailyRequest, QualityDailyResponse, QualityHourlyEntrySchema, QualityShiftAssignmentSchema
 from app.api.auth import get_current_user
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -228,6 +232,12 @@ def save_daily_quality(
         ).filter_by(report_id=report.report_id).all()
         entry_map = {(e.machine_no, e.production_time): e for e in existing_entries}
 
+        # Snapshot of OLD job_id values from DB before any mutations occur
+        old_job_id_snapshot = {
+            (e.machine_no, e.production_time): (e.job_id.strip() if e.job_id and e.job_id.strip() else None)
+            for e in existing_entries
+        }
+
         for machine_str, m_dict in payload.hourly.items():
             machine_no = int(machine_str)
             for time_str, entry_data in m_dict.items():
@@ -283,6 +293,7 @@ def save_daily_quality(
                         job_id=entry_data.job_id
                     )
                     db.add(entry)
+                    entry_map[(machine_no, entry_dt)] = entry
                 else:
                     entry.bottle_id = b_id
                     entry.section = sec
@@ -304,6 +315,134 @@ def save_daily_quality(
 
                 # Step 4: Replace all defects
                 entry.defects = [defect_map[dname] for dname in entry_data.defect_ids]
+
+        # Step 4.5: Compute canonical job_id and upsert HPR Job rows
+        # Seed the next available sequence number once per save_daily_quality call across all machines/runs
+        # Note: Known small race-condition risk in concurrent environments; acceptable for current scale.
+        all_jobs = db.query(HprJob.job_id).all()
+        max_seq = 0
+        for (jid,) in all_jobs:
+            if jid:
+                m = re.match(r"^J(\d+)$", jid)
+                if m:
+                    max_seq = max(max_seq, int(m.group(1)))
+        next_new_seq = max_seq + 1
+
+        for machine_str, m_dict in payload.hourly.items():
+            machine_no = int(machine_str)
+
+            # 2. Build time-sorted list of entries with non-null bottle_id
+            entries = []
+            for time_str, entry_data in m_dict.items():
+                if entry_data.bottle_id is None:
+                    continue
+
+                parsed_time = _parse_time_string(time_str)
+                entry_dt = datetime.combine(p_date, parsed_time)
+                old_jid = old_job_id_snapshot.get((machine_no, entry_dt))
+
+                entries.append({
+                    "time_str": time_str,
+                    "production_time": entry_dt,
+                    "bottle_id": entry_data.bottle_id,
+                    "old_job_id": old_jid,
+                })
+
+            if not entries:
+                continue
+
+            # Sort chronologically by production_time
+            entries.sort(key=lambda x: x["production_time"])
+
+            # 3. Group into CONTIGUOUS runs where bottle_id is the same as immediately preceding entry
+            runs = []
+            current_run = []
+            current_bottle_id = None
+            for item in entries:
+                if item["bottle_id"] == current_bottle_id:
+                    current_run.append(item)
+                else:
+                    if current_run:
+                        runs.append(current_run)
+                    current_bottle_id = item["bottle_id"]
+                    current_run = [item]
+            if current_run:
+                runs.append(current_run)
+
+            # 4, 5, 6. Determine canonical job_id, overwrite ORM entries, and compute run metadata
+            computed_runs = []
+            for run in runs:
+                old_jids = [item["old_job_id"] for item in run if item["old_job_id"]]
+                unique_old_jids = list(dict.fromkeys(old_jids))
+
+                if unique_old_jids:
+                    # 4a. Existing run: agree or chronologically earliest
+                    canonical_job_id = unique_old_jids[0]
+                    if len(unique_old_jids) > 1:
+                        logger.warning(
+                            f"Run on machine {machine_no} spans multiple distinct old job_ids: {unique_old_jids}. "
+                            f"Using chronologically earliest '{canonical_job_id}' as canonical."
+                        )
+                else:
+                    # 4b. Brand-new run: generate next sequential job_id using the request-scoped counter.
+                    # Format matches 'J{:03d}' (e.g. J001, J002).
+                    canonical_job_id = f"J{next_new_seq:03d}"
+                    next_new_seq += 1
+
+                # 5. Overwrite job_id on every ORM entry in this run
+                for item in run:
+                    orm_entry = entry_map.get((machine_no, item["production_time"]))
+                    if orm_entry:
+                        orm_entry.job_id = canonical_job_id
+
+                # 6. Compute job_start_time, job_end_candidate, and bottle_id
+                job_start_time = min(e["production_time"] for e in run)
+                job_end_candidate = max(e["production_time"] for e in run)
+                bottle_id = run[0]["bottle_id"]
+
+                computed_runs.append({
+                    "canonical_job_id": canonical_job_id,
+                    "job_start_time": job_start_time,
+                    "job_end_candidate": job_end_candidate,
+                    "bottle_id": bottle_id,
+                })
+
+            # 6. Per machine, the run with the latest job_start_time is RUNNING; all others COMPLETED
+            latest_start = max(r["job_start_time"] for r in computed_runs)
+            for r in computed_runs:
+                if r["job_start_time"] == latest_start:
+                    r["status"] = "RUNNING"
+                    r["job_end_time"] = None
+                else:
+                    r["status"] = "COMPLETED"
+                    r["job_end_time"] = r["job_end_candidate"]
+
+            # 7. Upsert into hpr_job by canonical_job_id
+            for r in computed_runs:
+                c_job_id = r["canonical_job_id"]
+                existing_job = db.query(HprJob).filter_by(job_id=c_job_id).first()
+                if not existing_job:
+                    new_job = HprJob(
+                        job_id=c_job_id,
+                        machine_no=machine_no,
+                        bottle_id=r["bottle_id"],
+                        job_start_time=r["job_start_time"],
+                        job_end_time=r["job_end_time"],
+                        status=r["status"],
+                        remarks=None,
+                    )
+                    db.add(new_job)
+                else:
+                    if existing_job.machine_no == machine_no and existing_job.bottle_id == r["bottle_id"]:
+                        existing_job.job_start_time = min(existing_job.job_start_time, r["job_start_time"])
+                        existing_job.status = r["status"]
+                        existing_job.job_end_time = r["job_end_time"]
+                    else:
+                        logger.warning(
+                            f"Job ID collision for job_id '{c_job_id}': "
+                            f"existing (machine={existing_job.machine_no}, bottle={existing_job.bottle_id}) vs "
+                            f"conflicting (machine={machine_no}, bottle={r['bottle_id']}). Skipping update."
+                        )
 
         # Step 5: Single Commit
         db.commit()
