@@ -1127,8 +1127,9 @@ export const ProductionPlanningPage: React.FC = () => {
       const next = [...prev] as MachineLists;
       const list = [...next[mIdx]];
       const entry = list[rowIdx];
-      const newSpeed = lookupSpeed(mIdx + 1, entry.product, val);
-      const speeds = newSpeed > 0 ? newSpeed : entry.speeds;
+      // Speed always comes from the exact (machine, bottle, section)
+      // bottle_configuration row. Never carry one section's speed over.
+      const speeds = lookupSpeed(mIdx + 1, entry.product, val);
       const qty = calcQty(speeds, mIdx + 1);
       const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : qty;
       const draw = calcDraw(entry.wt, requiredQty);

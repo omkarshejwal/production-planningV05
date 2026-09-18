@@ -3,7 +3,7 @@ import { Printer, Download, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
 import { BottleMaster } from '../../types';
-import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QUALITY_HOURLY_KEY, hasMeaningfulData } from '../../services/qualityRepository';
+import { qualityRepository, QualityHourlyEntry, QualityShiftMap, hasMeaningfulData } from '../../services/qualityRepository';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Shift master — mirrors the production.shift_master table
@@ -462,25 +462,6 @@ const toDisplay = (d: Date) => `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d
 
 type DefectGroup = { group: 'Critical' | 'Major' | 'Minor'; items: string[] };
 
-const nextJobIdFromSeq = (seq: number): string => `J${String(seq).padStart(3, '0')}`;
-
-const maxJobSeqIn = (
-  store: Record<string, Record<string, Record<string, QualityHourlyEntry>>>
-): number => {
-  let max = 0;
-  for (const dateKey of Object.keys(store ?? {})) {
-    const byMachine = store[dateKey] ?? {};
-    for (const machineKey of Object.keys(byMachine)) {
-      const byTime = byMachine[machineKey] ?? {};
-      for (const timeKey of Object.keys(byTime)) {
-        const m = /^J0*(\d+)$/.exec(byTime[timeKey]?.job_id ?? '');
-        if (m) max = Math.max(max, parseInt(m[1], 10));
-      }
-    }
-  }
-  return max;
-};
-
 // Merges a freshly loaded snapshot with whatever is already in memory for the
 // same date. In-memory entries (unsaved edits and cross-day continuations
 // created by "+") always win, so navigating between dates or re-rendering
@@ -842,10 +823,6 @@ export const QualityControlModule: React.FC = () => {
   const [defectGroups, setDefectGroups] = useState<DefectGroup[]>([]);
   const [loadingDefects, setLoadingDefects] = useState<boolean>(true);
 
-  // Next sequential job number (J001, J002, ...). Persisted job_ids across
-  // dates must never be reused, so the counter is seeded from stored data.
-  const jobIdCounter = useRef(1);
-
   // Dates that received a cross-midnight continuation row via "+". The row
   // lives under its OWN date key, so these dates are persisted together with
   // the current date's save (otherwise the continuation never reaches storage).
@@ -870,19 +847,6 @@ export const QualityControlModule: React.FC = () => {
   const loadedRef = useRef<Record<string, boolean>>({});
   const inFlightRef = useRef<Record<string, Promise<{ hourly: Record<string, Record<string, QualityHourlyEntry>>; shifts: QualityShiftMap }> | undefined>>({});
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(QUALITY_HOURLY_KEY);
-      if (!raw) return;
-      const stored = JSON.parse(raw) as Record<string, Record<string, Record<string, QualityHourlyEntry>>>;
-      const max = maxJobSeqIn(stored ?? {});
-      if (max >= jobIdCounter.current) jobIdCounter.current = max + 1;
-    } catch {
-      // Ignore corrupt/unavailable cache — counter starts at 1.
-    }
-  }, []);
-
-  // Load real active defects from backend
   useEffect(() => {
     let active = true;
     qualityRepository.getDefects(true).then((defects) => {
@@ -933,8 +897,6 @@ export const QualityControlModule: React.FC = () => {
       // visit (or date change) retries instead of showing a stale empty grid.
       loadedRef.current[dateKey] = Object.keys(hourly ?? {}).length > 0;
       setLoadedDates((prev) => ({ ...prev, [dateKey]: true }));
-      const max = maxJobSeqIn({ [dateKey]: hourly ?? {} });
-      if (max >= jobIdCounter.current) jobIdCounter.current = max + 1;
     }).catch(() => {
       inFlightRef.current[dateKey] = undefined;
     });
@@ -1053,9 +1015,10 @@ export const QualityControlModule: React.FC = () => {
   const allDefectNames = useMemo(() => defectGroups.flatMap((g) => g.items), [defectGroups]);
 
   // Select a bottle: auto-fill F/M/R weights + speed from bottle_configuration.
-  // A NEW job is created when the row has no job yet, or when the operator
-  // picks a different bottle than the one already on the row (the previous
-  // job — and its job_id — is then superseded by the new one).
+  // job_id is owned by the database — the frontend never generates one. A
+  // DB-assigned id is preserved only when re-selecting the same bottle on the
+  // same row; any other selection leaves job_id empty so the backend creates
+  // a fresh job id on save.
   const selectBottle = useCallback((time: string, bottleId: string) => {
     if (!bottleId) {
       patchEntry(time, {
@@ -1072,13 +1035,9 @@ export const QualityControlModule: React.FC = () => {
     const machineKey = String(activeMachine);
     const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
     const currentSection = existingEntry?.section ?? '';
-    const prevJobId = existingEntry?.job_id || '';
     const prevBottle = existingEntry?.bottle_id || '';
-    const isNewJob = !prevJobId || (prevBottle && prevBottle !== bottleId);
-    const newJobId = isNewJob
-      ? nextJobIdFromSeq(jobIdCounter.current)
-      : prevJobId;
-    if (isNewJob) jobIdCounter.current += 1;
+    const newJobId =
+      prevBottle === bottleId ? existingEntry?.job_id || '' : '';
 
     const configs = bottleMasterRecords.filter(
       (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
@@ -1310,6 +1269,37 @@ export const QualityControlModule: React.FC = () => {
         if (Object.keys(payload).length === 0 && Object.keys(shifts).length === 0) continue;
         const result = await qualityRepository.save(date, payload, shifts);
         if (!result.ok) continue;
+        // The database owns job_id: write the DB-generated ids returned by the
+        // save back into the live store so display and subsequent saves reuse
+        // the same ids instead of creating new ones.
+        if (result.hourly && Object.keys(result.hourly).length > 0) {
+          const saved = result.hourly;
+          setProductionStore((prev) => {
+            const prevDate = prev[date] ?? {};
+            const machineKeys = new Set<string>([...Object.keys(saved), ...Object.keys(prevDate)]);
+            const mergedDate: Record<string, Record<string, QualityHourlyEntry>> = {};
+            for (const mKey of machineKeys) {
+              const savedMachine = saved[mKey] ?? {};
+              const prevMachine = prevDate[mKey] ?? {};
+              const byTime: Record<string, QualityHourlyEntry> = {};
+              for (const tKey of new Set<string>([...Object.keys(savedMachine), ...Object.keys(prevMachine)])) {
+                const savedEntry = savedMachine[tKey];
+                const prevEntry = prevMachine[tKey];
+                if (!savedEntry) {
+                  byTime[tKey] = prevEntry;
+                } else if (!prevEntry) {
+                  byTime[tKey] = savedEntry;
+                } else {
+                  // Keep the operator's current values; only job_id comes from
+                  // the authoritative database response.
+                  byTime[tKey] = { ...prevEntry, job_id: savedEntry.job_id || prevEntry.job_id || '' };
+                }
+              }
+              mergedDate[mKey] = byTime;
+            }
+            return { ...prev, [date]: mergedDate };
+          });
+        }
         // These rows are now persisted; keep the rest of the store untouched so
         // unedited rows and other machines' rows stay exactly as they are.
         touchedTimes.current[date] = {};

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, X } from 'lucide-react';
 import { BottleEntry, EditSavePayload, MachineEntry, PackCatKey } from '../../types/planning';
-import { MAX_SECTIONS, calcQty, lookupSpeed, getMachineBottles, NONE_ENTRY } from '../../utils/planningCalculations';
+import { MAX_SECTIONS, VALID_SECTIONS, calcQty, lookupSpeed, getMachineBottles, NONE_ENTRY } from '../../utils/planningCalculations';
 import { TimePicker } from './TimePicker';
 
 export const PACKING_OPTIONS: { key: 'ST' | 'SN' | 'SB' | 'BT'; label: string; desc: string }[] = [
@@ -83,9 +83,19 @@ export function EditMachineModal({
     return bottles.filter((b) => b.name.toLowerCase().includes(query));
   }, [bottles, bottleSearch]);
 
-  const section = currentEntry.section ?? MAX_SECTIONS(mIdx);
   const bottleRef = selected === 'None' ? NONE_ENTRY : bottles.find(b => b.name === selected) ?? NONE_ENTRY;
-  const cutSpeed = selected !== 'None' ? (lookupSpeed(machineNo, selected, section) || bottleRef.speeds) : 0;
+
+  // Resolve the section from the bottle's saved bottle_configuration rows.
+  // The cut speed always comes from the exact (machine, bottle, section) row —
+  // one section's speed is never copied onto another.
+  const configuredSections = selected !== 'None'
+    ? VALID_SECTIONS(mIdx).filter((s) => lookupSpeed(machineNo, selected, s) > 0)
+    : [];
+  const currentSection = currentEntry.section ?? MAX_SECTIONS(mIdx);
+  const section = configuredSections.includes(currentSection)
+    ? currentSection
+    : (configuredSections[configuredSections.length - 1] ?? MAX_SECTIONS(mIdx));
+  const cutSpeed = selected !== 'None' ? lookupSpeed(machineNo, selected, section) : 0;
   const bottle: BottleEntry = { name: bottleRef.name, wt: bottleRef.wt, speeds: cutSpeed };
   const prodQty = cutSpeed > 0 ? calcQty(cutSpeed, machineNo) : 0;
   const reqNum = parseFloat(requiredBottles);

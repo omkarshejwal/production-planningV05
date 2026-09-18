@@ -438,19 +438,23 @@ export const qualityRepository = {
    *
    * Only the given date's key is written, so saving today never touches a
    * next-day continuation stored under its own date key.
+   *
+   * The backend owns job_id: on success it returns the full day's state with
+   * the DB-generated job ids, which are persisted back to the cache and
+   * returned to the caller so the frontend can reuse them verbatim.
    */
   async save(
     dateKey: string,
     hourly: QualityDayHourly,
     shifts: QualityShiftMap
-  ): Promise<{ ok: boolean; persisted: boolean }> {
+  ): Promise<{ ok: boolean; persisted: boolean; hourly?: QualityDayHourly }> {
     const { hourly: hc, shifts: sc } = ensureCache();
     const nextHourly = { ...hc, [dateKey]: hourly };
     const nextShifts = { ...sc, [dateKey]: shifts };
     writeCaches(nextHourly, nextShifts);
 
     try {
-      await apiFetch('/api/production/quality/daily/', {
+      const res = await apiFetch('/api/production/quality/daily/', {
         method: 'POST',
         body: JSON.stringify({
           production_date: dateKey,
@@ -458,7 +462,16 @@ export const qualityRepository = {
           shift_assignments: shifts,
         }),
       });
-      return { ok: true, persisted: true };
+      const body = res as {
+        hourly?: Record<string, Record<string, Record<string, unknown>>>;
+      } | null;
+      const savedHourly = body?.hourly
+        ? normalizeDbHourly(body.hourly)
+        : undefined;
+      // Keep the local cache aligned with the database so later loads surface
+      // the same DB-generated job ids instead of the empty ones just posted.
+      if (savedHourly) writeCaches({ ...hc, [dateKey]: savedHourly }, nextShifts);
+      return { ok: true, persisted: true, hourly: savedHourly };
     } catch {
       // Endpoint not deployed yet — the localStorage cache is authoritative.
       return { ok: true, persisted: false };

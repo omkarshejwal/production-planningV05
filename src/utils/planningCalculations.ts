@@ -230,11 +230,27 @@ export const VALID_SECTIONS = (mIdx: number): number[] => {
 };
 
 /**
- * Returns valid sections for a specific bottle on a specific machine.
- * Sections are machine-level, so this delegates to getMachineSections.
+ * Returns the sections that actually have a bottle_configuration row for the
+ * exact machine + bottle pair, intersected with the machine's valid sections.
+ *
+ * The Planning table's Section dropdown uses this so that every selectable
+ * section maps to a real saved speed for that bottle + machine + section.
+ * Falls back to the machine's valid sections only when the bottle has no
+ * configuration at all.
  */
-export const VALID_SECTIONS_FOR_BOTTLE = (mIdx: number, _bottleId: string): number[] => {
-  return VALID_SECTIONS(mIdx);
+export const VALID_SECTIONS_FOR_BOTTLE = (mIdx: number, bottleId: string): number[] => {
+  const machineSections = VALID_SECTIONS(mIdx);
+  if (!bottleId) return machineSections;
+
+  const machineId = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+  const configured = planningRepository
+    .getBottleConfigurations(machineId, bottleId)
+    .filter((c) => c.machine_no === machineId)
+    .map((c) => c.section)
+    .filter((s) => machineSections.includes(s));
+
+  const unique = [...new Set(configured)].sort((a, b) => a - b);
+  return unique.length > 0 ? unique : machineSections;
 };
 
 /**
@@ -262,7 +278,8 @@ export const lookupSpeed = (machineNo: number, bottleName: string, section: numb
   if (machines.length === 0) return 0;
   const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
   const bottles = planningRepository.getBottles();
-  const bottle = bottles.find((b) => b.bottle_name === bottleName);
+  const normalized = bottleName.trim().toLowerCase();
+  const bottle = bottles.find((b) => b.bottle_name.trim().toLowerCase() === normalized);
   if (!bottle) return 0;
   const config = planningRepository.getBottleConfiguration(machineId, bottle.bottle_id, section);
   return config?.speeds ?? 0;
@@ -302,12 +319,20 @@ export function getMachineBottles(machineNo: number): BottleEntry[] {
   return bottles
     .filter((b) => bottleIds.has(b.bottle_id))
     .map((b) => {
-      const configs = machineConfigs.filter((c) => c.bottle_id === b.bottle_id);
-      const defaultConfig = configs[configs.length - 1] ?? configs[0];
+      // Sort ascending by section so the representative config is deterministic
+      // (getAllConfigurations preserves DB/insertion order, which is not sorted).
+      const configs = machineConfigs
+        .filter((c) => c.bottle_id === b.bottle_id)
+        .sort((a, c) => a.section - c.section);
+      // Weight is shared across a bottle's sections; take it from the highest
+      // section. The cut speed is deliberately NOT taken from any single
+      // section — callers must resolve it per section via lookupSpeed so one
+      // section's speed is never copied onto another.
+      const representative = configs[configs.length - 1] ?? configs[0];
       return {
         name: b.bottle_name,
-        wt: defaultConfig?.weight ?? 0,
-        speeds: defaultConfig?.speeds ?? 0,
+        wt: representative?.weight ?? 0,
+        speeds: 0,
       };
     });
 }
