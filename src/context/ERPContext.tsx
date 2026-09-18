@@ -388,6 +388,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return {
         id: jobIdFromRow(row),
+        jobId: row.job_id,
         jobNumber: `JOB-${row.plan_date}-${row.machine_no}-${row.start_time}`,
         machineId: row.machine_no,
         bottleId: row.bottle_id,

@@ -128,6 +128,7 @@ const mapJobRow = (raw: Record<string, unknown>): ProductionJobRow => {
   const bottleId = toStr(raw.bottle_id);
 
   return {
+  job_id: raw.job_id != null ? toStr(raw.job_id) : undefined,
   plan_date: toStr(raw.plan_date),
   machine_no: machineId,
   bottle_id: bottleId,

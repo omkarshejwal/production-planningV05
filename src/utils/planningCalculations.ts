@@ -341,6 +341,12 @@ export function getMachineBottles(machineNo: number): BottleEntry[] {
 let _eid = 1;
 export const nextEid = () => _eid++;
 
+// Module-level job ID sequence. Used ONLY when creating a brand-new job
+// (bottle changed) or as a fallback for legacy rows — never inside the
+// "+"/extend logic, where the source job's ID must be inherited.
+let _jobIdSeq = 1;
+export const nextJobId = (): string => `JOB-${Date.now()}-${_jobIdSeq++}`;
+
 export function calcQty(cut: number, machineNo: number): number {
   return calculateProductionMetrics(cut, 0, machineNo).totalQuantity;
 }

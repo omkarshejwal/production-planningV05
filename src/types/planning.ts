@@ -8,6 +8,9 @@ export interface BottleEntry {
 
 export interface MachineEntry {
   eid: number;
+  // Logical job grouping ID. Continuation rows created with "+" inherit the
+  // source job's jobId; it only changes when the bottle is swapped (new job).
+  jobId?: string;
   product: string;
   wt: number;
   speeds: number;

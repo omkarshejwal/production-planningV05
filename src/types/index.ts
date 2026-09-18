@@ -55,6 +55,8 @@ export interface ISMachine {
 
 export interface ProductionJob {
   id: string;
+  // DB primary key (production_job.job_id) when loaded from the backend.
+  jobId?: string;
   jobNumber: string; // e.g. JOB-2026-089
   machineId: string;
   bottleId: string;

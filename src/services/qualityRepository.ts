@@ -1,14 +1,14 @@
 /**
- * qualityRepository.ts — persistence layer for the Production Quality Monitor.
- *
- * Follows the same pattern as planningRepository.ts: data is stored per
- * production date, keyed by machine and hour slot. Writes go to the FastAPI
- * backend when the endpoint is available; a localStorage cache guarantees the
- * entered data survives navigation and refreshes even while offline.
+ * qualityRepository.ts — API-backed persistence layer for the Production
+ * Quality Monitor. The database is the single source of truth: the module
+ * always reads from (and writes to) the FastAPI backend, which connects to
+ * AWS PostgreSQL. No localStorage / offline cache is kept for Quality Monitor
+ * records, so deleted or externally-changed DB rows can never be resurrected
+ * as stale UI state.
  *
  * Record structure (preserves data by date + machine + shift + hour):
- *   hourly:  { [dateISO]: { [machineNo]: { [time]: QualityHourlyEntry } } }
- *   shifts:  { [dateISO]: { [shiftId]: { supervisor, executive } } }
+ *   hourly:  { [machineNo]: { [time]: QualityHourlyEntry } }  (one date)
+ *   shifts:  { [shiftId]: { supervisor, executive } }         (one date)
  *
  * The component works with a string-based form model (inputs are string
  * driven). At the API boundary entries are mapped to `QualityEntryPayload`,
@@ -18,17 +18,11 @@
  *   - defects stay attached to their entry (hourly_production_defect is a
  *     join of entry_id + defect_id that the backend persists)
  *
- * Caching notes:
- *   - The whole store is parsed from localStorage exactly once (lazily) and
- *     kept in an in-memory cache, so navigating dates never re-parses it.
- *   - `load()` never discards rows that already exist locally: the locally
- *     persisted rows are the authoritative copy, and the API result is merged
- *     in for slots the local cache has nothing for. This keeps next-day job
- *     continuations created with "+" (and any other local-only rows) alive
- *     across saves and reloads even if their individual backend POST is
- *     delayed or offline.
- *   - `load()` deduplicates concurrent requests per date, and `getDefects()`
- *     caches the master defect list, so the same data is never fetched twice.
+ * Concurrency notes:
+ *   - `load()` deduplicates concurrent requests per date (StrictMode
+ *     double-effects, rapid date navigation) via one shared in-flight promise.
+ *   - `getDefects()` caches only the static defect master list, never Quality
+ *     Monitor records.
  */
 
 import { apiFetch } from '../utils/api';
@@ -115,46 +109,6 @@ export type QualityHourlyStore =
 export type QualityDayHourly =
   Record<string, Record<string, QualityHourlyEntry>>;
 
-const HOURLY_KEY = 'vitrum.quality.hourly.v1';
-const SHIFT_KEY = 'vitrum.quality.shift.v1';
-
-export { HOURLY_KEY as QUALITY_HOURLY_KEY };
-
-const readStore = <T>(key: string, fallback: T): T => {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return { ...fallback, ...JSON.parse(raw) as Partial<T> };
-  } catch {
-    return fallback;
-  }
-};
-
-const writeStore = (key: string, value: unknown) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Ignore storage quota / privacy-mode failures — in-memory copy still works.
-  }
-};
-
-// ─── In-memory store cache (loaded lazily, updated on every save/load) ─────
-let hourlyCache: QualityHourlyStore | undefined;
-let shiftCache: Record<string, QualityShiftMap> | undefined;
-
-const ensureCache = (): { hourly: QualityHourlyStore; shifts: Record<string, QualityShiftMap> } => {
-  if (!hourlyCache) hourlyCache = readStore<QualityHourlyStore>(HOURLY_KEY, {});
-  if (!shiftCache) shiftCache = readStore<Record<string, QualityShiftMap>>(SHIFT_KEY, {});
-  return { hourly: hourlyCache, shifts: shiftCache };
-};
-
-const writeCaches = (hourly: QualityHourlyStore, shifts: Record<string, QualityShiftMap>) => {
-  hourlyCache = hourly;
-  shiftCache = shifts;
-  writeStore(HOURLY_KEY, hourly);
-  writeStore(SHIFT_KEY, shifts);
-};
-
 // A row counts as "content" when any meaningful field is filled. Empty
 // default-shape slots (the API returns a full 24 x 4 grid) are ignored, so
 // they never shadow real local rows and never bloat a save payload.
@@ -170,37 +124,9 @@ export const hasMeaningfulData = (e?: QualityHourlyEntry | null): boolean => {
   return false;
 };
 
-// Merges an API snapshot with the locally persisted rows so a row that only
-// exists locally (e.g. a just-created next-day continuation that has not been
-// POSTed yet) is never dropped by a reload. For slots the local cache has no
-// content for, the API row wins (so DB rows created elsewhere still appear).
-const mergeLoadedHourly = (
-  api: QualityDayHourly | undefined,
-  cached: QualityDayHourly | undefined
-): QualityDayHourly => {
-  const out: QualityDayHourly = {};
-  const machines = new Set<string>([
-    ...Object.keys(api ?? {}),
-    ...Object.keys(cached ?? {}),
-  ]);
-  for (const machineKey of machines) {
-    const apiTimes = api?.[machineKey] ?? {};
-    const cachedTimes = cached?.[machineKey] ?? {};
-    const byTime: Record<string, QualityHourlyEntry> = {};
-    const times = new Set<string>([...Object.keys(apiTimes), ...Object.keys(cachedTimes)]);
-    for (const timeKey of times) {
-      const local = cachedTimes[timeKey];
-      const remote = apiTimes[timeKey];
-      byTime[timeKey] = local && hasMeaningfulData(local) ? local : (remote ?? local);
-    }
-    out[machineKey] = byTime;
-  }
-  return out;
-};
-
 // Deduplicates concurrent load requests per date (StrictMode double-effects,
 // rapid date navigation, etc. all share one in-flight request).
-const inFlightLoads = new Map<string, Promise<{ hourly: QualityDayHourly; shifts: QualityShiftMap }>>();
+const inFlightLoads = new Map<string, Promise<{ hourly: QualityDayHourly; shifts: QualityShiftMap; ok?: boolean }>>();
 
 const defectNamesCache: {
   resolved: DefectMasterItem[] | null;
@@ -335,14 +261,6 @@ const normalizeDbHourly = (raw: Record<string, Record<string, Record<string, unk
 };
 
 export const qualityRepository = {
-  getHourlyForDate(dateKey: string): QualityDayHourly {
-    return ensureCache().hourly[dateKey] ?? {};
-  },
-
-  getShiftsForDate(dateKey: string): QualityShiftMap {
-    return ensureCache().shifts[dateKey] ?? {};
-  },
-
   /**
    * Fetches active defects from GET /api/production/quality/defects/?active_only=true.
    * The result is cached so master data is never fetched more than once, and
@@ -373,18 +291,22 @@ export const qualityRepository = {
   },
 
   /**
-   * Loads the hourly + shift assignment data for a single production date.
-   * Tries the API first, falling back to the persisted localStorage cache.
+   * Loads the hourly + shift assignment data for a single production date
+   * straight from the backend. The returned state is exactly what the database
+   * currently holds for that date — no local cache or previously loaded rows
+   * are merged in, so records deleted from the DB never reappear.
    *
-   * The API result is MERGED with the persisted local rows — local rows are
-   * authoritative (a next-day continuation created with "+" that the backend
-   * has not received yet is never dropped), while API rows fill the slots the
-   * local cache has nothing for. Concurrent calls for the same date share one
-   * request.
+   * `ok` is true only when the API responded successfully. On any failure the
+   * result is an empty store with `ok: false` so the caller can surface an
+   * error state instead of silently reusing stale data. The backend always
+   * returns the full 24 x 4 grid for a reachable date (even when the day has
+   * no records), so the UI correctly shows an empty grid when no rows exist.
+   * Concurrent calls for the same date share one request.
    */
   async load(dateKey: string): Promise<{
     hourly: QualityDayHourly;
     shifts: QualityShiftMap;
+    ok?: boolean;
   }> {
     const pending = inFlightLoads.get(dateKey);
     if (pending) return pending;
@@ -398,10 +320,8 @@ export const qualityRepository = {
   async _load(dateKey: string): Promise<{
     hourly: QualityDayHourly;
     shifts: QualityShiftMap;
+    ok?: boolean;
   }> {
-    const { hourly, shifts } = ensureCache();
-    const cachedHourly = hourly[dateKey] ?? {};
-    const cachedShifts = shifts[dateKey] ?? {};
     try {
       const res = await apiFetch(`/api/production/quality/daily/?date=${dateKey}`);
       if (res && typeof res === 'object') {
@@ -410,49 +330,34 @@ export const qualityRepository = {
           shift_assignments?: QualityShiftMap;
         };
         if (body.hourly && typeof body.hourly === 'object') {
-          const apiHourly = normalizeDbHourly(body.hourly);
-          const apiShifts = body.shift_assignments ?? {};
-          const mergedHourly = mergeLoadedHourly(apiHourly, cachedHourly);
-          const mergedShifts = { ...cachedShifts, ...apiShifts };
-          writeCaches(
-            { ...hourly, [dateKey]: mergedHourly },
-            { ...shifts, [dateKey]: mergedShifts }
-          );
-          return { hourly: mergedHourly, shifts: mergedShifts };
+          return {
+            hourly: normalizeDbHourly(body.hourly),
+            shifts: body.shift_assignments ?? {},
+            ok: true,
+          };
         }
       }
     } catch {
-      // API endpoint unavailable (e.g. offline dev) — use local cache below.
+      // API endpoint unavailable — report the failure; never fall back to a
+      // local cache that may hold rows deleted from the database.
     }
-    return {
-      hourly: cachedHourly,
-      shifts: cachedShifts,
-    };
+    return { hourly: {}, shifts: {}, ok: false };
   },
 
   /**
-   * Persists one day of hourly production + shift assignments.
-   * Always writes the localStorage cache; best-effort POST to the backend
-   * mirrors the existing repository write flow. The request body uses the
-   * exact database field names and numeric/null types defined by the schema.
-   *
-   * Only the given date's key is written, so saving today never touches a
-   * next-day continuation stored under its own date key.
+   * Persists one day of hourly production + shift assignments to the backend.
+   * No local cache is written: the database is the source of truth, so a
+   * failed POST fails loudly instead of pretending the data was saved.
    *
    * The backend owns job_id: on success it returns the full day's state with
-   * the DB-generated job ids, which are persisted back to the cache and
-   * returned to the caller so the frontend can reuse them verbatim.
+   * the DB-generated job ids, which are returned to the caller so the frontend
+   * can reuse them verbatim.
    */
   async save(
     dateKey: string,
     hourly: QualityDayHourly,
     shifts: QualityShiftMap
   ): Promise<{ ok: boolean; persisted: boolean; hourly?: QualityDayHourly }> {
-    const { hourly: hc, shifts: sc } = ensureCache();
-    const nextHourly = { ...hc, [dateKey]: hourly };
-    const nextShifts = { ...sc, [dateKey]: shifts };
-    writeCaches(nextHourly, nextShifts);
-
     try {
       const res = await apiFetch('/api/production/quality/daily/', {
         method: 'POST',
@@ -465,16 +370,14 @@ export const qualityRepository = {
       const body = res as {
         hourly?: Record<string, Record<string, Record<string, unknown>>>;
       } | null;
-      const savedHourly = body?.hourly
-        ? normalizeDbHourly(body.hourly)
-        : undefined;
-      // Keep the local cache aligned with the database so later loads surface
-      // the same DB-generated job ids instead of the empty ones just posted.
-      if (savedHourly) writeCaches({ ...hc, [dateKey]: savedHourly }, nextShifts);
-      return { ok: true, persisted: true, hourly: savedHourly };
+      return {
+        ok: true,
+        persisted: true,
+        hourly: body?.hourly ? normalizeDbHourly(body.hourly) : undefined,
+      };
     } catch {
-      // Endpoint not deployed yet — the localStorage cache is authoritative.
-      return { ok: true, persisted: false };
+      // API unreachable — nothing was persisted.
+      return { ok: false, persisted: false };
     }
   },
 };

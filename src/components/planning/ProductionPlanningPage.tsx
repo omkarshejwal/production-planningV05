@@ -42,6 +42,7 @@ import {
   calculateQuantityForProductionDay,
   lookupSpeed,
   makeNoneEntry,
+  nextJobId,
 } from '../../utils/planningCalculations';
 import { addCalendarDays } from '../../utils/calculations';
 import { buildExportData } from '../../utils/exportData';
@@ -425,6 +426,10 @@ export const ProductionPlanningPage: React.FC = () => {
       const entry: MachineEntry = {
         eid: Math.random(),
 
+        // Use the database job_id when the backend provides one; otherwise
+        // generate a stable one. Continuations created with "+" inherit it.
+        jobId: job.jobId || nextJobId(),
+
         product,
 
         wt: Number(
@@ -496,6 +501,8 @@ export const ProductionPlanningPage: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
   const [showSection, setShowSection] = useState(true);
+  const [showWt, setShowWt] = useState(true);
+  const [showCut, setShowCut] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
 
   // Wrap setMachineLists to mark dirty on every change
@@ -1037,10 +1044,14 @@ export const ProductionPlanningPage: React.FC = () => {
       return;
     }
 
-    // 1. Build continuation entries (same bottle/specs, new day slots)
+    // 1. Build continuation entries (same bottle/specs, new day slots).
+    // Every continuation row inherits the SOURCE job's exact jobId — no new
+    // ID is ever generated here, so "+" can never split a job across rows.
+    const continuationJobId = sourceEntry.jobId;
     const continuations: MachineEntry[] = Array.from({ length: daysToAdd }, () => ({
       ...sourceEntry,
       eid: Math.random(),
+      jobId: continuationJobId,
       startTime: sourceEntry.startTime,
       endTime: '',
       status: 'running' as const,
@@ -1215,6 +1226,19 @@ export const ProductionPlanningPage: React.FC = () => {
       startTime: startTime || undefined,
     };
 
+    // Changing the Bottle Name starts a brand-new job → assign a fresh jobId.
+    // Unchanged bottles keep their existing jobId (and all "+" continuations).
+    let updatedFieldsFinal = updatedFields;
+    if (bottle.name && bottle.name !== 'None') {
+      const key = `${editModal.mIdx}-${editModal.rowIdx}`;
+      const prevEntry = editModal.completedIndex !== undefined
+        ? completedJobMap[key]?.[editModal.completedIndex]
+        : machineLists[editModal.mIdx]?.[editModal.rowIdx];
+      if (prevEntry?.product !== bottle.name) {
+        updatedFieldsFinal = { ...updatedFields, jobId: nextJobId() };
+      }
+    }
+
     if (editModal.completedIndex !== undefined) {
       // Editing a COMPLETED job entry — write back to the completed map
       const key = `${editModal.mIdx}-${editModal.rowIdx}`;
@@ -1222,7 +1246,7 @@ export const ProductionPlanningPage: React.FC = () => {
         const list = prev[key] ?? [];
         const nextList = list.map((entry, idx) =>
           idx === editModal.completedIndex
-            ? { ...entry, ...updatedFields, status: 'completed' as const }
+            ? { ...entry, ...updatedFieldsFinal, status: 'completed' as const }
             : entry
         );
         return { ...prev, [key]: nextList };
@@ -1233,7 +1257,7 @@ export const ProductionPlanningPage: React.FC = () => {
         const list = [...next[editModal.mIdx]];
         list[editModal.rowIdx] = {
           ...list[editModal.rowIdx],
-          ...updatedFields,
+          ...updatedFieldsFinal,
         };
         next[editModal.mIdx] = list;
         return next;
@@ -1477,17 +1501,41 @@ export const ProductionPlanningPage: React.FC = () => {
         {/* Toolbar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
           <span className="text-xs font-medium text-[#6B7280]">Production Register</span>
-          <button
-            onClick={() => setShowSection(s => !s)}
-            className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
-              ${showSection
-                ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
-                : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
-              }`}
-          >
-            <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showSection ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
-            Section {showSection ? 'ON' : 'OFF'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowSection(s => !s)}
+              className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
+                ${showSection
+                  ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                  : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+                }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showSection ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+              Section {showSection ? 'ON' : 'OFF'}
+            </button>
+            <button
+              onClick={() => setShowWt(s => !s)}
+              className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
+                ${showWt
+                  ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                  : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+                }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showWt ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+              Wt {showWt ? 'ON' : 'OFF'}
+            </button>
+            <button
+              onClick={() => setShowCut(s => !s)}
+              className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
+                ${showCut
+                  ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                  : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+                }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showCut ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+              Cut {showCut ? 'ON' : 'OFF'}
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
@@ -1499,7 +1547,7 @@ export const ProductionPlanningPage: React.FC = () => {
                     Date
                   </th>
                   {[1, 2, 3, 4].map(n => (
-                    <th key={n} colSpan={showSection ? 6 : 5} className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE]">
+                    <th key={n} colSpan={3 + (showSection ? 1 : 0) + (showWt ? 1 : 0) + (showCut ? 1 : 0)} className="px-3 py-2.5 text-center text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE]">
                       Machine No {n}
                     </th>
                   ))}
@@ -1518,8 +1566,12 @@ export const ProductionPlanningPage: React.FC = () => {
                       {showSection && (
                         <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Sec</th>
                       )}
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Wt</th>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Cut</th>
+                      {showWt && (
+                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Wt</th>
+                      )}
+                      {showCut && (
+                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Cut</th>
+                      )}
                       <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Qty</th>
                       <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Draw</th>
                     </React.Fragment>
@@ -1607,8 +1659,8 @@ export const ProductionPlanningPage: React.FC = () => {
                               <React.Fragment key={mIdx}>
                                 <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
                                 {showSection && <td className={`border-r border-[#E5E7EB] ${baseBg}`} />}
-                                <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
-                                <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
+                                {showWt && <td className={`border-r border-[#E5E7EB] ${baseBg}`} />}
+                                {showCut && <td className={`border-r border-[#E5E7EB] ${baseBg}`} />}
                                 <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
                                 <td className={`border-r border-[#E5E7EB] ${baseBg}`} />
                               </React.Fragment>
@@ -1693,13 +1745,17 @@ export const ProductionPlanningPage: React.FC = () => {
                                   </td>
                                 )}
                                 {/* Wt */}
-                                <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                  <span className={txt}>{completedJob.wt || '—'}</span>
-                                </td>
+                                {showWt && (
+                                  <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                    <span className={txt}>{completedJob.wt || '—'}</span>
+                                  </td>
+                                )}
                                 {/* Cut */}
-                                <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                  <span className={txt}>{completedJob.speeds || '—'}</span>
-                                </td>
+                                {showCut && (
+                                  <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                    <span className={txt}>{completedJob.speeds || '—'}</span>
+                                  </td>
+                                )}
                                 {/* Qty */}
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                   <span className="text-sm font-medium text-[#111827]">
@@ -1850,13 +1906,17 @@ export const ProductionPlanningPage: React.FC = () => {
                                 </td>
                               )}
                               {/* Wt */}
-                              <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                <span className="text-sm text-[#6B7280]">{hasProduct ? (entry.wt || '—') : ''}</span>
-                              </td>
+                              {showWt && (
+                                <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                  <span className="text-sm text-[#6B7280]">{hasProduct ? (entry.wt || '—') : ''}</span>
+                                </td>
+                              )}
                               {/* Cut */}
-                              <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
-                                <span className="text-sm text-[#6B7280]">{hasProduct ? (entry.speeds || '—') : ''}</span>
-                              </td>
+                              {showCut && (
+                                <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
+                                  <span className="text-sm text-[#6B7280]">{hasProduct ? (entry.speeds || '—') : ''}</span>
+                                </td>
+                              )}
                               {/* Qty */}
                               <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                 <span className="text-sm font-medium text-[#111827]">
