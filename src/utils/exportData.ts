@@ -26,7 +26,8 @@ export interface ExportRow {
 export async function buildExportData(
   fromDateIso: string,
   toDateIso: string,
-  bottles: any[]
+  bottles: any[],
+  visibleDateIsos?: string[]
 ): Promise<ExportRow[]> {
   // 1. Fetch Option B: Get target range + most recent previous job per machine
   // Parse inputs as LOCAL midnight to avoid UTC timezone shifts
@@ -187,11 +188,14 @@ export async function buildExportData(
 
   // 4. Transform into flattened array (filtered down to strictly fromDate -> toDate)
   const results: ExportRow[] = [];
+  const visibleDateSet = new Set<string>(visibleDateIsos ?? []);
 
   for (let rowIdx = 0; rowIdx < allDateRows.length; rowIdx++) {
       const dateInfo = allDateRows[rowIdx];
       // Skip if date is strictly outside appliedFromDate / appliedToDate
       if (dateInfo.iso < fromDateIso || dateInfo.iso > toDateIso) continue;
+      // Skip dates not currently visible in the Production Planning table
+      if (visibleDateSet.size > 0 && !visibleDateSet.has(dateInfo.iso)) continue;
 
       const machineJobs = machineLists.map((list, mIdx) => ({
           completed: completedJobMap[`${mIdx}-${rowIdx}`] ?? [],

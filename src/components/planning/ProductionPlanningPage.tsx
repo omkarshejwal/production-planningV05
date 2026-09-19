@@ -896,7 +896,11 @@ export const ProductionPlanningPage: React.FC = () => {
       const startIso = appliedFromDate || monthStart;
       const endIso = appliedToDate || monthEnd;
 
-      const exportRows = await buildExportData(startIso, endIso, bottles);
+      const visibleDateIsos = filteredRowIndices
+        .map(rowIdx => dateRows[rowIdx]?.isoDate ?? '')
+        .filter(Boolean);
+
+      const exportRows = await buildExportData(startIso, endIso, bottles, visibleDateIsos);
 
       if (exportRows.length === 0) {
         toast.info('No data available to export for this date range.');
@@ -1067,7 +1071,11 @@ export const ProductionPlanningPage: React.FC = () => {
       const startIso = appliedFromDate || monthStart;
       const endIso = appliedToDate || monthEnd;
 
-      const exportRows = await buildExportData(startIso, endIso, bottles);
+      const visibleDateIsos = filteredRowIndices
+        .map(rowIdx => dateRows[rowIdx]?.isoDate ?? '')
+        .filter(Boolean);
+
+      const exportRows = await buildExportData(startIso, endIso, bottles, visibleDateIsos);
 
       if (exportRows.length === 0) {
         toast.info('No data available to print for this date range.');
