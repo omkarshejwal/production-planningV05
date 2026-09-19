@@ -329,7 +329,42 @@ export const planningRepository = {
 
   async createProductionJobsBatch(payloads: ProductionJobRow[]): Promise<{ ok: boolean; error?: string }> {
     try {
-      await Promise.all(payloads.map((p) => this._postJob(p)));
+      // Each logical job (same machine/bottle/section/start_time) shares one
+      // job_id across its date-spanning rows. Different logical jobs must
+      // each get their own job_id from the backend.
+      //
+      // Track the shared job_id per logical-job key so only continuation rows
+      // within the same job inherit it.
+      const sharedJobIds = new Map<string, number>();
+
+      for (const p of payloads) {
+        const jobKey = `${p.machine_no}|${p.bottle_id}|${p.section}|${p.start_time}`;
+
+        // If this row already has a job_id (from DB), preserve it and track it
+        if (p.job_id) {
+          const parsedId = parseInt(p.job_id, 10);
+          if (Number.isFinite(parsedId) && parsedId > 0) {
+            sharedJobIds.set(jobKey, parsedId);
+          }
+        }
+
+        // If this row has no job_id but the same logical job already got one,
+        // reuse it (continuation row within the same multi-day job).
+        const existing = sharedJobIds.get(jobKey);
+        if (existing && !p.job_id) {
+          p.job_id = String(existing);
+        }
+
+        const result = await this._postJob(p);
+
+        // Capture the backend-assigned job_id for new jobs
+        if (result && typeof result === 'object' && 'job_id' in result) {
+          const returnedId = (result as { job_id?: number }).job_id;
+          if (returnedId && !sharedJobIds.has(jobKey)) {
+            sharedJobIds.set(jobKey, returnedId);
+          }
+        }
+      }
       return { ok: true };
     } catch (err: any) {
       console.error('createProductionJobsBatch failed:', err);
@@ -862,12 +897,13 @@ export const planningRepository = {
   /**
    * Posts a single ProductionJobRow to the backend API.
    * Translates frontend format (MAC-01, BOT-001 strings) to backend format (integers).
+   * Returns the API response including the backend-generated job_id.
    */
-  async _postJob(payload: ProductionJobRow): Promise<void> {
+  async _postJob(payload: ProductionJobRow): Promise<Record<string, unknown> | null> {
     const machineInt = this._machineIdToInt(payload.machine_no);
     const bottleInt = parseInt(payload.bottle_id, 10);
 
-    const body = {
+    const body: Record<string, unknown> = {
       plan_date: payload.plan_date,
       machine_no: machineInt,
       bottle_id: bottleInt,
@@ -891,7 +927,16 @@ export const planningRepository = {
       })) : [],
     };
 
-    await apiFetch('/api/production/jobs/', {
+    // Pass the DB job_id through to the backend so it can be preserved
+    // on upsert instead of being auto-generated.
+    if (payload.job_id) {
+      const parsedId = parseInt(payload.job_id, 10);
+      if (Number.isFinite(parsedId) && parsedId > 0) {
+        body.job_id = parsedId;
+      }
+    }
+
+    return await apiFetch('/api/production/jobs/', {
       method: 'POST',
       body: JSON.stringify(body),
     });

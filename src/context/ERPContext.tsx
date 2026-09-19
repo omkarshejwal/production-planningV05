@@ -531,6 +531,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const segmentCompletion = formatTimeOnly(segmentEnd);
 
       return {
+        job_id: editingJob?.jobId,
         plan_date: segmentDate,
         machine_no,
         bottle_id,

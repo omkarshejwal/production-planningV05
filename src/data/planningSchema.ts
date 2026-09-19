@@ -29,7 +29,7 @@ export interface BottleConfigurationRow {
 }
 
 export interface ProductionJobRow {
-  job_id?: string;                      // DB primary key (production_job.job_id)
+  job_id?: string;                      // FK to job_master.job_id (backend-generated, never frontend-generated)
   plan_date: string;              // "YYYY-MM-DD"
   machine_no: string;             // "MAC-01"
   bottle_id: string;              // "123"

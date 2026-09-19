@@ -23,7 +23,7 @@ from app.db.base import Base
 from app.models.user import User
 from app.models.machine import MachineMaster
 from app.models.product import BottleMaster, BottleConfiguration
-from app.models.job import ProductionJob, JobPackaging
+from app.models.job import JobMaster, ProductionJob, JobPackaging, MachineJobSequence
 from app.models.audit_log import AuditLog
 from app.models.holiday import HolidayMaster
 from app.models.quality import DefectMaster, HourlyProductionReport, ShiftMaster, ShiftAssignment, HourlyProduction, HourlyProductionDefect

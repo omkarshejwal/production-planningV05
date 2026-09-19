@@ -10,6 +10,7 @@ class JobPackagingCreate(BaseModel):
     pallet_quantity: Optional[Decimal] = None
 
 class ProductionJobCreate(BaseModel):
+    job_id: Optional[int] = None
     plan_date: date
     machine_no: int
     start_time: datetime

@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
-from app.models.job import ProductionJob, JobPackaging
+from app.models.job import JobMaster, ProductionJob, JobPackaging, MachineJobSequence, generate_next_job_id
 from app.models.machine import MachineMaster
 from app.models.product import BottleMaster, BottleConfiguration
 from app.api.production.jobs import extend_job
@@ -43,13 +43,21 @@ def _reset():
     try:
         db.query(JobPackaging).delete()
         db.query(ProductionJob).delete()
+        db.query(JobMaster).delete()
+        db.query(MachineJobSequence).delete()
         db.commit()
     finally:
         db.close()
 
 
 def make_job(db, plan_date, start_hour, bottle_id=111, qty=500000):
+    machine_no = 1
+    resolved_job_id = generate_next_job_id(db, machine_no)
+    jm = JobMaster(job_id=resolved_job_id)
+    db.add(jm)
+    db.flush()
     job = ProductionJob(
+        job_id=jm.job_id,
         plan_date=date.fromisoformat(plan_date),
         machine_no=1,
         start_time=datetime.fromisoformat(f"{plan_date}T{start_hour}:00:00"),

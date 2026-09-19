@@ -42,7 +42,6 @@ import {
   calculateQuantityForProductionDay,
   lookupSpeed,
   makeNoneEntry,
-  nextJobId,
 } from '../../utils/planningCalculations';
 import { addCalendarDays } from '../../utils/calculations';
 import { buildExportData } from '../../utils/exportData';
@@ -426,9 +425,9 @@ export const ProductionPlanningPage: React.FC = () => {
       const entry: MachineEntry = {
         eid: Math.random(),
 
-        // Use the database job_id when the backend provides one; otherwise
-        // generate a stable one. Continuations created with "+" inherit it.
-        jobId: job.jobId || nextJobId(),
+        // Use the database job_id when the backend provides one.
+        // job_id is always sourced from the backend (job_master table).
+        jobId: job.jobId || '',
 
         product,
 
@@ -488,6 +487,7 @@ export const ProductionPlanningPage: React.FC = () => {
         newLists[mIdx][rowIdx] = entry;
       }
     }
+
     setMachineLists(newLists);
     setCompletedJobMap(newCompleted);
   }, [jobs, bottles, dateRows, selectedMonth]);
@@ -604,6 +604,7 @@ export const ProductionPlanningPage: React.FC = () => {
             }
 
             payloadRows.push({
+              job_id: entry.jobId,
               plan_date,
               machine_no,
               bottle_id: bottle.id,
@@ -625,7 +626,7 @@ export const ProductionPlanningPage: React.FC = () => {
         }
       }
 
-      console.log("[SAVE] Full payloadRows being sent:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time })), null, 2));
+      console.log("[SAVE] Full payloadRows being sent:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time, job_id: (r as any).job_id })), null, 2));
 
       const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
       console.log("[SAVE] createProductionJobsBatch result:", batchResult);
@@ -1226,7 +1227,8 @@ export const ProductionPlanningPage: React.FC = () => {
       startTime: startTime || undefined,
     };
 
-    // Changing the Bottle Name starts a brand-new job → assign a fresh jobId.
+    // Changing the Bottle Name starts a brand-new job — clear the jobId so
+    // the backend creates a new job_master row and returns the real job_id.
     // Unchanged bottles keep their existing jobId (and all "+" continuations).
     let updatedFieldsFinal = updatedFields;
     if (bottle.name && bottle.name !== 'None') {
@@ -1235,7 +1237,7 @@ export const ProductionPlanningPage: React.FC = () => {
         ? completedJobMap[key]?.[editModal.completedIndex]
         : machineLists[editModal.mIdx]?.[editModal.rowIdx];
       if (prevEntry?.product !== bottle.name) {
-        updatedFieldsFinal = { ...updatedFields, jobId: nextJobId() };
+        updatedFieldsFinal = { ...updatedFields, jobId: '' };
       }
     }
 
@@ -1729,6 +1731,12 @@ export const ProductionPlanningPage: React.FC = () => {
                                     className={`text-[11px] font-semibold truncate leading-tight cursor-default ${completedJob.product && completedJob.product !== 'None' ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                     {completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—'}
                                   </p>
+                                  {/* Job ID badge for completed jobs */}
+                                  {completedJob.product && completedJob.product !== 'None' && completedJob.jobId && (
+                                    <span className="text-[8px] font-mono text-[#6B7280] leading-none">
+                                      Job {completedJob.jobId}
+                                    </span>
+                                  )}
                                   {/* Job-wide cumulative total */}
                                   {(completedJob.cumulativeQty ?? 0) > 0 && (
                                     <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
@@ -1819,6 +1827,12 @@ export const ProductionPlanningPage: React.FC = () => {
                                         className={`text-[11px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                         {hasProduct ? entry.product : 'No bottle set'}
                                       </p>
+                                      {/* Job ID badge under bottle name */}
+                                      {hasProduct && entry.jobId && (
+                                        <span className="text-[8px] font-mono text-[#6B7280] leading-none">
+                                          Job {entry.jobId}
+                                        </span>
+                                      )}
                                       {/* Quick-edit shortcut beside "No bottle set" */}
                                       {!hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"

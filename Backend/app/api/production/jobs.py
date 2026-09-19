@@ -9,7 +9,7 @@ from decimal import Decimal
 from datetime import timedelta, datetime
 
 from app.db.session import get_db
-from app.models.job import ProductionJob, JobPackaging
+from app.models.job import JobMaster, ProductionJob, JobPackaging, generate_next_job_id
 from app.models.machine import MachineMaster
 from app.models.product import BottleConfiguration
 from app.models.audit_log import AuditLog
@@ -51,10 +51,25 @@ def create_job(
 ):
     """
     Add a new job. The Backend Calculation Engine automatically computes Quantity and Tonnage.
-    Supports upsert: if a job with the same date/machine/start_time exists, it will be updated.
+    Supports upsert: if a job with the same date/machine/start_time/section exists, it will be updated.
     """
     try:
-        # 1. Fetch Machine and Bottle Configuration from the DB
+        # 1. Resolve or create the logical job_id via job_master
+        if job_in.job_id is not None:
+            # Frontend supplies an existing job_id — validate it exists
+            jm = db.query(JobMaster).filter(JobMaster.job_id == job_in.job_id).first()
+            if not jm:
+                raise HTTPException(status_code=404, detail=f"job_master.job_id={job_in.job_id} not found")
+            resolved_job_id = job_in.job_id
+        else:
+            # Genuinely new logical job — generate machine-specific job_id
+            # Format: machine_no * 100 + sequence (e.g. Machine 1 → 101, 102, ...)
+            resolved_job_id = generate_next_job_id(db, job_in.machine_no)
+            jm = JobMaster(job_id=resolved_job_id)
+            db.add(jm)
+            db.flush()
+
+        # 2. Fetch Machine and Bottle Configuration from the DB
         machine = db.query(MachineMaster).filter(MachineMaster.machine_no == job_in.machine_no).first()
         bottle_config = db.query(BottleConfiguration).filter(
             BottleConfiguration.machine_no == job_in.machine_no,
@@ -81,23 +96,24 @@ def create_job(
         # Use the resolved section from the config to ensure foreign keys match
         resolved_section = bottle_config.section
 
-        # 2. Execute Factory Formula (The Calculation Engine)
+        # 3. Execute Factory Formula (The Calculation Engine)
         running_minutes = 1440 - job_in.changeover_minutes
         speed = bottle_config.speeds
         gob = machine.gob_type if machine else (3 if job_in.machine_no in (1, 4) else 2)
         calculated_qty = speed * gob * running_minutes
         calculated_draw = (calculated_qty * bottle_config.weight) / Decimal("1000000")
 
-        # 3. Create or Update the Job (Upsert)
+        # 4. Create or Update the Job (Upsert by plan_date + machine_no + start_time + section)
         existing_job = db.query(ProductionJob).filter_by(
             plan_date=job_in.plan_date,
             machine_no=job_in.machine_no,
-            start_time=job_in.start_time
+            start_time=job_in.start_time,
+            section=resolved_section,
         ).first()
 
         if existing_job:
+            existing_job.job_id = resolved_job_id
             existing_job.bottle_id = job_in.bottle_id
-            existing_job.section = resolved_section
             existing_job.weight = bottle_config.weight
             existing_job.speeds = speed
             existing_job.draw = job_in.draw if job_in.draw else calculated_draw
@@ -109,14 +125,18 @@ def create_job(
             if job_in.status:
                 existing_job.status = job_in.status
 
-            # Clear old packaging for this job
+            # Clear old packaging for this job row
             db.query(JobPackaging).filter_by(
-                job_id=existing_job.job_id
+                job_id=existing_job.job_id,
+                plan_date=existing_job.plan_date,
+                machine_no=existing_job.machine_no,
+                start_time=existing_job.start_time,
             ).delete()
             db.flush()  # Force DELETE to execute before INSERTS
             new_job = existing_job
         else:
             new_job = ProductionJob(
+                job_id=resolved_job_id,
                 plan_date=job_in.plan_date,
                 machine_no=job_in.machine_no,
                 start_time=job_in.start_time,
@@ -130,16 +150,16 @@ def create_job(
                 estimated_completion=job_in.estimated_completion,
                 completion_time=job_in.completion_time,
                 changeover_minutes=job_in.changeover_minutes,
-                status=job_in.status or "Planned"
+                status=job_in.status or "Planned",
             )
             db.add(new_job)
             db.flush()
-            db.refresh(new_job)  # Populate the auto-generated job_id
+            db.refresh(new_job)
 
-        # 4. Handle Packaging (if provided)
+        # 5. Handle Packaging (if provided)
         for pack in job_in.packaging:
             db.add(JobPackaging(
-                job_id=new_job.job_id,
+                job_id=resolved_job_id,
                 plan_date=job_in.plan_date,
                 machine_no=job_in.machine_no,
                 bottle_id=job_in.bottle_id,
@@ -160,6 +180,36 @@ def create_job(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
+
+
+@router.get("/next-id/{machine_no}")
+def get_next_job_id(
+    machine_no: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Return the next available job_id for a machine WITHOUT consuming it.
+
+    Format: machine_no * 100 + next_sequence
+    Useful for frontend preview or diagnostics.
+    """
+    from app.models.job import MachineJobSequence
+
+    seq = db.query(MachineJobSequence).filter(
+        MachineJobSequence.machine_no == machine_no
+    ).first()
+
+    if seq is None:
+        next_seq = 1
+    else:
+        next_seq = seq.next_sequence
+
+    return {
+        "machine_no": machine_no,
+        "next_sequence": next_seq,
+        "job_id": machine_no * 100 + next_seq,
+    }
+
 
 @router.post("/extend/", response_model=List[ProductionJobResponse])
 def extend_job(
@@ -194,6 +244,7 @@ def extend_job(
     # never a hardcoded time.
     src_end = source.estimated_completion or source.completion_time
     src = {
+        "job_id": source.job_id,
         "bottle_id": source.bottle_id,
         "section": source.section,
         "weight": source.weight,
@@ -234,7 +285,10 @@ def extend_job(
         new_start = job.start_time + timedelta(days=days)
 
         db.query(JobPackaging).filter_by(
-            job_id=job.job_id
+            job_id=job.job_id,
+            plan_date=job.plan_date,
+            machine_no=job.machine_no,
+            start_time=job.start_time,
         ).update(
             {"plan_date": new_plan, "start_time": new_start},
             synchronize_session=False,
@@ -242,7 +296,10 @@ def extend_job(
         db.flush()
 
         db.query(ProductionJob).filter_by(
-            job_id=job.job_id
+            plan_date=job.plan_date,
+            machine_no=job.machine_no,
+            start_time=job.start_time,
+            section=job.section,
         ).update(
             {
                 "plan_date": new_plan,
@@ -280,6 +337,7 @@ def extend_job(
             continue
 
         db.add(ProductionJob(
+            job_id=src["job_id"],
             plan_date=new_plan,
             machine_no=req.machine_no,
             start_time=new_start,
@@ -348,7 +406,10 @@ def delete_job(
 
     # ── 1. Delete the job to vacate its slot ──────────────────────────────────
     db.query(JobPackaging).filter_by(
-        job_id=existing_job.job_id
+        job_id=existing_job.job_id,
+        plan_date=existing_job.plan_date,
+        machine_no=existing_job.machine_no,
+        start_time=existing_job.start_time,
     ).delete()
     db.flush()
 
@@ -381,35 +442,41 @@ def delete_job(
         # the deleted job used to start.
         delta = subsequent[0].start_time - deleted_start
 
-        for job in subsequent:
-            new_start = job.start_time - delta
-            new_plan = new_start.date()
+    for job in subsequent:
+        new_start = job.start_time - delta
+        new_plan = new_start.date()
 
-            db.query(JobPackaging).filter_by(
-                job_id=job.job_id
-            ).update(
-                {"plan_date": new_plan, "start_time": new_start},
-                synchronize_session=False,
-            )
-            db.flush()
+        db.query(JobPackaging).filter_by(
+            job_id=job.job_id,
+            plan_date=job.plan_date,
+            machine_no=job.machine_no,
+            start_time=job.start_time,
+        ).update(
+            {"plan_date": new_plan, "start_time": new_start},
+            synchronize_session=False,
+        )
+        db.flush()
 
-            db.query(ProductionJob).filter_by(
-                job_id=job.job_id
-            ).update(
-                {
-                    "plan_date": new_plan,
-                    "start_time": new_start,
-                    "estimated_completion": (
-                        (job.estimated_completion - delta)
-                        if job.estimated_completion else None
-                    ),
-                    "completion_time": (
-                        (job.completion_time - delta)
-                        if job.completion_time else None
-                    ),
-                },
-                synchronize_session=False,
-            )
-            db.flush()
+        db.query(ProductionJob).filter_by(
+            plan_date=job.plan_date,
+            machine_no=job.machine_no,
+            start_time=job.start_time,
+            section=job.section,
+        ).update(
+            {
+                "plan_date": new_plan,
+                "start_time": new_start,
+                "estimated_completion": (
+                    (job.estimated_completion - delta)
+                    if job.estimated_completion else None
+                ),
+                "completion_time": (
+                    (job.completion_time - delta)
+                    if job.completion_time else None
+                ),
+            },
+            synchronize_session=False,
+        )
+        db.flush()
 
     db.commit()
