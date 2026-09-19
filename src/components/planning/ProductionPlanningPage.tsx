@@ -1343,6 +1343,20 @@ export const ProductionPlanningPage: React.FC = () => {
     return `${(qty / 100000).toFixed(2)}L`;
   };
 
+  // Cumulative produced quantity for a job spanning multiple dates on the same machine.
+  // Walks backward from `rowIdx` through consecutive entries sharing the same jobId,
+  // summing each day's produced quantity. Resets when jobId changes.
+  const getCumulativeQty = (rowIdx: number, entry: MachineEntry | null | undefined, mIdx: number): number => {
+    if (!entry || entry.isBlank || !entry.product || entry.product === 'None' || !entry.jobId) return 0;
+    let cumulative = 0;
+    for (let r = rowIdx; r >= 0; r--) {
+      const e = machineLists[mIdx][r];
+      if (!e || e.isBlank || e.jobId !== entry.jobId) break;
+      cumulative += getDailyProducedQty(r, e, mIdx);
+    }
+    return cumulative;
+  };
+
 
   // Total draw for a visual row: sum tons/day across all machines.
   // During changeover (running entry has no bottle set) we continue
@@ -1785,7 +1799,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                 <td className={`px-2 text-center border-r border-[#E5E7EB] ${cellBg}`}>
                                   <span className="text-sm font-medium text-[#111827]">
                                     {(() => {
-                                      const cQty = getDailyProducedQty(rowIdx, completedJob, mIdx);
+                                      const cQty = getCumulativeQty(rowIdx, completedJob, mIdx);
                                       return formatLakh(cQty);
                                     })()}
                                   </span>
@@ -1953,7 +1967,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                 <span className="text-sm font-medium text-[#111827]">
                                   {hasProduct
                                     ? (() => {
-                                      const rQty = getDailyProducedQty(rowIdx, entry, mIdx);
+                                      const rQty = getCumulativeQty(rowIdx, entry, mIdx);
                                       return formatLakh(rQty);
                                     })()
                                     : ''}
