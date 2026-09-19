@@ -341,6 +341,15 @@ export const ProductionPlanningPage: React.FC = () => {
   const [machineLists, setMachineLists] = useState<MachineLists>(INITIAL_MACHINE_LISTS);
   const [completedJobMap, setCompletedJobMap] = useState<CompletedJobMap>({});
 
+  // Pending extend: queued when the target date is outside the current dateRows
+  // and the range needs expanding + data reloading before the extend can proceed.
+  const pendingExtendRef = React.useRef<{
+    mIdx: number;
+    sourceRowIdx: number;
+    daysToAdd: number;
+    completedIndex?: number;
+  } | null>(null);
+
   // Fetch initial data from DB instead of localStorage
   React.useEffect(() => {
     const newLists: typeof INITIAL_MACHINE_LISTS = [
@@ -491,6 +500,94 @@ export const ProductionPlanningPage: React.FC = () => {
     setMachineLists(newLists);
     setCompletedJobMap(newCompleted);
   }, [jobs, bottles, dateRows, selectedMonth]);
+
+  // Process a queued extend after the date range expanded and machineLists rebuilt.
+  React.useEffect(() => {
+    const pending = pendingExtendRef.current;
+    if (!pending) return;
+    pendingExtendRef.current = null;
+
+    const { mIdx, sourceRowIdx, daysToAdd, completedIndex } = pending;
+    const list = machineLists[mIdx];
+    if (!list || sourceRowIdx < 0 || sourceRowIdx >= list.length) return;
+
+    const sourceEntry = completedIndex !== undefined
+      ? completedJobMap[`${mIdx}-${sourceRowIdx}`]?.[completedIndex]
+      : list[sourceRowIdx];
+    if (!sourceEntry || sourceEntry.product === 'None') return;
+
+    const continuationJobId = sourceEntry.jobId;
+
+    // Find the last consecutive row belonging to the same job
+    let effectiveRowIdx = sourceRowIdx;
+    while (effectiveRowIdx + 1 < list.length) {
+      const nextEntry = list[effectiveRowIdx + 1];
+      if (!nextEntry || nextEntry.isBlank || nextEntry.product === 'None') break;
+      if (nextEntry.jobId !== continuationJobId) break;
+      effectiveRowIdx++;
+    }
+
+    let filledCount = 0;
+    let blockedDate = '';
+
+    for (let d = 1; d <= daysToAdd; d++) {
+      const targetRowIdx = effectiveRowIdx + d;
+      if (targetRowIdx >= dateRows.length) break;
+
+      const targetEntry = list[targetRowIdx];
+      const targetCompleted = completedJobMap[`${mIdx}-${targetRowIdx}`];
+      const isTargetBlank =
+        (!targetEntry || targetEntry.product === 'None') &&
+        (!targetCompleted || targetCompleted.length === 0);
+
+      if (isTargetBlank) {
+        filledCount++;
+        continue;
+      }
+
+      const targetJobId = targetEntry?.jobId;
+      if (targetJobId != null && targetJobId === continuationJobId) {
+        filledCount++;
+        continue;
+      }
+
+      blockedDate = dateRows[targetRowIdx].date;
+      break;
+    }
+
+    if (filledCount === 0 && blockedDate) {
+      toast.error(`Cannot extend job. A different job already exists on ${blockedDate}.`);
+      return;
+    }
+
+    updateMachineLists(prev => {
+      const next = [...prev] as MachineLists;
+      const currentList = [...next[mIdx]];
+
+      for (let d = 1; d <= filledCount; d++) {
+        const targetRowIdx = effectiveRowIdx + d;
+        currentList[targetRowIdx] = {
+          ...sourceEntry,
+          eid: Math.random(),
+          jobId: continuationJobId,
+          startTime: sourceEntry.startTime,
+          endTime: '',
+          status: 'running' as const,
+        };
+      }
+
+      next[mIdx] = currentList;
+      return next;
+    });
+
+    setIsDirty(true);
+
+    if (filledCount < daysToAdd && blockedDate) {
+      toast.error(`Cannot extend job. A different job already exists on ${blockedDate}.`);
+    } else {
+      toast.success(`Job extended by ${filledCount} day${filledCount === 1 ? '' : 's'}.`);
+    }
+  }, [machineLists, completedJobMap, dateRows]);
 
   // Date rows are fixed; each machine owns an independent flat array.
 
@@ -1066,13 +1163,64 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const continuationJobId = sourceEntry.jobId;
 
+    // Find the last consecutive row belonging to the same job
+    let effectiveRowIdx = rowIdx;
+    while (effectiveRowIdx + 1 < list.length) {
+      const nextEntry = list[effectiveRowIdx + 1];
+      if (!nextEntry || nextEntry.isBlank || nextEntry.product === 'None') break;
+      if (nextEntry.jobId !== continuationJobId) break;
+      effectiveRowIdx++;
+    }
+
     // Classify each target row: blank, same-job, or different-job.
+    // If a target falls outside the current dateRows, attempt to expand
+    // the date range automatically (month-boundary support).
     let filledCount = 0;
     let blockedDate = '';
 
     for (let d = 1; d <= daysToAdd; d++) {
-      const targetRowIdx = rowIdx + d;
-      if (targetRowIdx >= dateRows.length) break;
+      const targetRowIdx = effectiveRowIdx + d;
+
+      // Target is beyond the current date range — try to expand.
+      if (targetRowIdx >= dateRows.length) {
+        const sourceIso = dateRows[effectiveRowIdx]?.isoDate;
+        if (!sourceIso) break;
+
+        // Compute the target ISO date by offsetting `d` days from the source date.
+        const [sy, sm, sd] = sourceIso.split('-').map(Number);
+        const targetDate = new Date(sy, sm - 1, sd + d);
+        const targetIso = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
+
+        // Respect the 65-day planning limit.
+        if (dateRows.length >= 65) {
+          toast.error('Cannot extend: maximum 65-day planning range reached.');
+          return;
+        }
+
+        // Compute expanded end date (just enough to include the target day).
+        const currentEndIso = appliedToDate || (() => {
+          const { monthEnd } = getMonthRange(selectedMonth);
+          return monthEnd;
+        })();
+        const [ey, em, ed] = currentEndIso.split('-').map(Number);
+        const currentEndDate = new Date(ey, em - 1, ed);
+        const newEndIso = targetIso > currentEndIso ? targetIso : currentEndIso;
+
+        // Expand date range and trigger data reload.
+        setAppliedToDate(newEndIso);
+        setDraftToDate(newEndIso);
+        setToDate(newEndIso);
+
+        // Queue the extend to run after dateRows + machineLists rebuild.
+        pendingExtendRef.current = { mIdx, sourceRowIdx: effectiveRowIdx, daysToAdd, completedIndex };
+        reloadJobsForWindow(appliedFromDate || (() => {
+          const { monthStart } = getMonthRange(selectedMonth);
+          return monthStart;
+        })(), newEndIso);
+
+        toast.success('Extending planning range to include the next date…');
+        return;
+      }
 
       const targetEntry = list[targetRowIdx];
       const targetCompleted = completedJobMap[`${mIdx}-${targetRowIdx}`];
@@ -1107,7 +1255,7 @@ export const ProductionPlanningPage: React.FC = () => {
       const currentList = [...next[mIdx]];
 
       for (let d = 1; d <= filledCount; d++) {
-        const targetRowIdx = rowIdx + d;
+        const targetRowIdx = effectiveRowIdx + d;
         currentList[targetRowIdx] = {
           ...sourceEntry,
           eid: Math.random(),
@@ -1838,7 +1986,7 @@ export const ProductionPlanningPage: React.FC = () => {
                             !!nextEntry && !nextEntry.isBlank &&
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay = !isContinuing;
-                          const canExtend = hasProduct && rowIdx + 1 < machineLists[mIdx].length;
+                          const canExtend = hasProduct;
                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                           const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
