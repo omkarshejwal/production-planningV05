@@ -350,8 +350,147 @@ export const ProductionPlanningPage: React.FC = () => {
     completedIndex?: number;
   } | null>(null);
 
-  // Fetch initial data from DB instead of localStorage
+  // Track previous dateRows to detect incremental growth (extend) vs full rebuild (month nav).
+  const prevDateRowsRef = React.useRef<DateRow[]>(dateRows);
+
+  // Hydrate machineLists + completedJobMap from DB jobs.
+  // When dateRows only grew (extend across month boundary), preserve existing
+  // entries and append new ones from DB instead of rebuilding from scratch.
+  // This prevents the extend expansion from wiping local/unsaved state.
   React.useEffect(() => {
+    const prevRows = prevDateRowsRef.current;
+    const currRows = dateRows;
+    prevDateRowsRef.current = currRows;
+
+    const isGrowth =
+      currRows.length > prevRows.length &&
+      prevRows.length > 0 &&
+      currRows[0].isoDate === prevRows[0].isoDate &&
+      currRows.length - prevRows.length <= 10;
+
+    const buildEntryFromJob = (job: any): MachineEntry => {
+      const packagingRows = (job as any).packaging || [];
+      const packAllocations: Record<string, number> = {};
+      let packCat = '';
+      let palletPacking = false;
+      let palletQty = null;
+
+      if (packagingRows.length >= 1) {
+        for (const p of packagingRows) {
+          packAllocations[p.packaging_type] = p.quantity;
+          if (p.pallet_packing) {
+            palletPacking = true;
+            palletQty = p.pallet_quantity;
+          }
+        }
+        packCat = packagingRows[0].packaging_type;
+      }
+
+      const isCompleted = job.lifecycleStatus === 'COMPLETED' || (job as any).status === 'Completed';
+      const completionClock = job.completionTime
+        ? (job.completionTime.includes('T')
+          ? job.completionTime.split('T')[1].substring(0, 5)
+          : job.completionTime.substring(0, 5))
+        : '';
+
+      const backendQuantity = Number(
+        (job as any).quantity ??
+        (job as any).productionQuantity ??
+        (job as any).grossQuantity ??
+        0
+      );
+      const backendRequiredBottles = Number(
+        (job as any).requiredBottles ??
+        (job as any).required_bottles ??
+        0
+      );
+      const backendSpeed = Number(
+        (job as any).speeds ??
+        (job as any).speed ??
+        job.cutPerMin ??
+        0
+      );
+      const backendStartTime =
+        (job as any).start_time ??
+        job.startTime ??
+        '07:00';
+
+      const bottle = bottles.find(b => b.id === job.bottleId || b.id === (job as any).bottle_id);
+      const product = bottle ? bottle.name : (job.bottleId ? `Bottle ${job.bottleId}` : '');
+
+      return {
+        eid: Math.random(),
+        jobId: job.jobId || '',
+        product,
+        wt: Number((job as any).weight ?? job.weightGrams ?? 0),
+        speeds: backendSpeed,
+        cut: backendSpeed,
+        draw: Number((job as any).draw ?? job.drawTonsPerDay ?? 0),
+        qty: backendQuantity,
+        section: Number((job as any).section ?? job.sectionCount ?? 0),
+        startTime: backendStartTime,
+        endTime: isCompleted ? completionClock : '',
+        requiredBottles: backendRequiredBottles > 0 ? backendRequiredBottles : backendQuantity,
+        estimatedCompletion:
+          (job as any).estimated_completion ??
+          (job as any).estimatedCompletion ??
+          '',
+        status: isCompleted ? 'completed' : 'running',
+        packingAllocations: packAllocations,
+        packingCategory: packCat as any,
+        palletPacking,
+        palletPackingQty: palletQty
+      };
+    };
+
+    if (isGrowth) {
+      // Incremental: preserve existing machineLists, append new rows from DB.
+      const prevLen = prevRows.length;
+
+      setMachineLists(prev => {
+        if (prev[0].length !== prevLen) return prev;
+
+        const next = prev.map((list, mIdx) => {
+          const extended = [...list];
+          for (let i = prevLen; i < currRows.length; i++) {
+            const isoDate = currRows[i].isoDate;
+            const job = jobs.find(j => {
+              if (!j.machineId || !(j.date || j.startDate)) return false;
+              return (j.date || j.startDate) === isoDate &&
+                parseInt(j.machineId.replace('MAC-', '')) - 1 === mIdx;
+            });
+            extended.push(job ? buildEntryFromJob(job) : makeNoneEntry(mIdx));
+          }
+          return extended;
+        }) as MachineLists;
+
+        return next;
+      });
+
+      setCompletedJobMap(prev => {
+        const next = { ...prev };
+        for (let i = prevLen; i < currRows.length; i++) {
+          for (let m = 0; m < 4; m++) {
+            const isoDate = currRows[i].isoDate;
+            const matchingJobs = jobs.filter(j => {
+              if (!j.machineId || !(j.date || j.startDate)) return false;
+              const isCompleted = j.lifecycleStatus === 'COMPLETED' || (j as any).status === 'Completed';
+              return (j.date || j.startDate) === isoDate &&
+                parseInt(j.machineId.replace('MAC-', '')) - 1 === m &&
+                isCompleted;
+            });
+            if (matchingJobs.length > 0) {
+              next[`${m}-${i}`] = matchingJobs.map(j => buildEntryFromJob(j));
+            }
+          }
+        }
+        return next;
+      });
+
+      return;
+    }
+
+    // Full rebuild: dateRows changed completely (month nav, filter, initial load).
     const newLists: typeof INITIAL_MACHINE_LISTS = [
       Array.from({ length: dateRows.length }, () => makeNoneEntry(0)),
       Array.from({ length: dateRows.length }, () => makeNoneEntry(1)),
@@ -370,123 +509,7 @@ export const ProductionPlanningPage: React.FC = () => {
       const rowIdx = dateRows.findIndex(r => r.isoDate === planDateStr);
       if (rowIdx === -1) continue;
 
-      const bottle = bottles.find(b => b.id === job.bottleId || b.id === (job as any).bottle_id);
-      const product = bottle ? bottle.name : (job.bottleId ? `Bottle ${job.bottleId}` : '');
-
-
-      const packagingRows = (job as any).packaging || [];
-      const packAllocations: Record<string, number> = {};
-      let packCat = '';
-      let palletPacking = false;
-      let palletQty = null;
-
-      if (packagingRows.length >= 1) {
-        // Populate packAllocations so the tooltip always has data to display
-        for (const p of packagingRows) {
-          packAllocations[p.packaging_type] = p.quantity;
-          if (p.pallet_packing) {
-            palletPacking = true;
-            palletQty = p.pallet_quantity;
-          }
-        }
-        packCat = packagingRows[0].packaging_type;
-      }
-
-      const isCompleted = job.lifecycleStatus === 'COMPLETED' || (job as any).status === 'Completed';
-      // Completed jobs use their actual completion time (HH:MM) — same as the End Job flow.
-      // Running jobs have no end time yet (same as local mode), so the existing draw
-      // calculation covers the production-day window instead of a zero-length interval.
-      const completionClock = job.completionTime
-        ? (job.completionTime.includes('T')
-          ? job.completionTime.split('T')[1].substring(0, 5)
-          : job.completionTime.substring(0, 5))
-        : '';
-
-      // Backend/database field mapping.
-      // `quantity`, `start_time` and `speeds` are the actual production fields.
-      const backendQuantity = Number(
-        (job as any).quantity ??
-        (job as any).productionQuantity ??
-        (job as any).grossQuantity ??
-        0
-      );
-
-      // User-entered Required Bottles — the exact value saved to the database
-      // (never the bottle's 24-hour production quantity).
-      const backendRequiredBottles = Number(
-        (job as any).requiredBottles ??
-        (job as any).required_bottles ??
-        0
-      );
-
-      const backendSpeed = Number(
-        (job as any).speeds ??
-        (job as any).speed ??
-        job.cutPerMin ??
-        0
-      );
-
-      const backendStartTime =
-        (job as any).start_time ??
-        job.startTime ??
-        '07:00';
-
-      const entry: MachineEntry = {
-        eid: Math.random(),
-
-        // Use the database job_id when the backend provides one.
-        // job_id is always sourced from the backend (job_master table).
-        jobId: job.jobId || '',
-
-        product,
-
-        wt: Number(
-          (job as any).weight ??
-          job.weightGrams ??
-          0
-        ),
-
-        speeds: backendSpeed,
-        cut: backendSpeed,
-
-        draw: Number(
-          (job as any).draw ??
-          job.drawTonsPerDay ??
-          0
-        ),
-
-        // Keep the actual database quantity.
-        qty: backendQuantity,
-
-        section: Number(
-          (job as any).section ??
-          job.sectionCount ??
-          0
-        ),
-
-        // Use the actual database start_time when available.
-        startTime: backendStartTime,
-
-        endTime: isCompleted ? completionClock : '',
-
-        // IMPORTANT:
-        // quantity is the source of Total Required Bottles.
-        requiredBottles: backendRequiredBottles > 0 ? backendRequiredBottles : backendQuantity,
-
-        // Keep backend estimated value if available.
-        // Tooltip will calculate it when this is missing.
-        estimatedCompletion:
-          (job as any).estimated_completion ??
-          (job as any).estimatedCompletion ??
-          '',
-
-        status: isCompleted ? 'completed' : 'running',
-
-        packingAllocations: packAllocations,
-        packingCategory: packCat as any,
-        palletPacking,
-        palletPackingQty: palletQty
-      };
+      const entry = buildEntryFromJob(job);
 
       if (entry.status === 'completed') {
         const key = mIdx + "-" + rowIdx;
@@ -1214,17 +1237,14 @@ export const ProductionPlanningPage: React.FC = () => {
         const currentEndDate = new Date(ey, em - 1, ed);
         const newEndIso = targetIso > currentEndIso ? targetIso : currentEndIso;
 
-        // Expand date range and trigger data reload.
+        // Expand date range. The hydration effect will preserve existing
+        // machineLists and append new rows incrementally (no full DB reload).
         setAppliedToDate(newEndIso);
         setDraftToDate(newEndIso);
         setToDate(newEndIso);
 
-        // Queue the extend to run after dateRows + machineLists rebuild.
+        // Queue the extend to run after dateRows grows and new row is appended.
         pendingExtendRef.current = { mIdx, sourceRowIdx: effectiveRowIdx, daysToAdd, completedIndex };
-        reloadJobsForWindow(appliedFromDate || (() => {
-          const { monthStart } = getMonthRange(selectedMonth);
-          return monthStart;
-        })(), newEndIso);
 
         toast.success('Extending planning range to include the next date…');
         return;
