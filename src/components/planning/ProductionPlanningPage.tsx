@@ -296,7 +296,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const diffTime = endDate.getTime() - startDate.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    const totalDays = diffDays > 0 ? diffDays : 1;
+    const totalDays = Math.min(diffDays > 0 ? diffDays : 1, 65);
 
     return Array.from({ length: totalDays }, (_, i) => {
       const d = new Date(startYear, startMonth - 1, startDay + i);
@@ -500,9 +500,9 @@ export const ProductionPlanningPage: React.FC = () => {
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
-  const [showSection, setShowSection] = useState(true);
-  const [showWt, setShowWt] = useState(true);
-  const [showCut, setShowCut] = useState(true);
+  const [showSection, setShowSection] = useState(false);
+  const [showWt, setShowWt] = useState(false);
+  const [showCut, setShowCut] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
   // Wrap setMachineLists to mark dirty on every change
@@ -638,9 +638,9 @@ export const ProductionPlanningPage: React.FC = () => {
       }
 
       // Clean up stale DB rows: jobs that exist in the DB but are no longer
-      // in the current grid state (e.g. user deleted a job, or extend shifted
-      // a job to a new position).  Without this step, deleted jobs would
-      // reappear on the next refresh because the upsert only creates/updates.
+      // in the current grid state (e.g. user deleted a job).  Without this
+      // step, deleted jobs would reappear on the next refresh because the
+      // upsert only creates/updates.
       const currentKeys = new Set(
         payloadRows.map(r => `${r.plan_date}|${r.machine_no}|${r.start_time}`)
       );
@@ -676,15 +676,24 @@ export const ProductionPlanningPage: React.FC = () => {
     [dateRows.length]);
 
   const filteredRowIndices = useMemo(() => {
-    const { year, month, monthStart, monthEnd } = getMonthRange(selectedMonth);
+    const hasCustomFilter = Boolean(appliedFromDate || appliedToDate);
 
+    if (hasCustomFilter) {
+      return allRowIndices.filter((rowIdx) => {
+        const rowIso = dateRowToIso(dateRows[rowIdx]?.date || '');
+        if (!rowIso) return false;
+        if (appliedFromDate && rowIso < appliedFromDate) return false;
+        if (appliedToDate && rowIso > appliedToDate) return false;
+        return true;
+      });
+    }
+
+    const { monthStart, monthEnd } = getMonthRange(selectedMonth);
     return allRowIndices.filter((rowIdx) => {
       const rowIso = dateRowToIso(dateRows[rowIdx]?.date || '');
       if (!rowIso) return false;
       if (rowIso < monthStart) return false;
       if (rowIso > monthEnd) return false;
-      if (appliedFromDate && rowIso < appliedFromDate) return false;
-      if (appliedToDate && rowIso > appliedToDate) return false;
       return true;
     });
   }, [allRowIndices, appliedFromDate, appliedToDate, dateRows, selectedMonth]);
@@ -694,6 +703,16 @@ export const ProductionPlanningPage: React.FC = () => {
     if (draftFromDate && draftToDate && draftFromDate > draftToDate) {
       toast.error('From Date cannot be greater than To Date.');
       return;
+    }
+    if (draftFromDate && draftToDate) {
+      const [fY, fM, fD] = draftFromDate.split('-').map(Number);
+      const [tY, tM, tD] = draftToDate.split('-').map(Number);
+      const rangeMs = new Date(tY, tM - 1, tD).getTime() - new Date(fY, fM - 1, fD).getTime();
+      const rangeDays = Math.round(rangeMs / (1000 * 60 * 60 * 24)) + 1;
+      if (rangeDays > 65) {
+        toast.error('Date range cannot be more than 65 days.');
+        return;
+      }
     }
     if (isDirty) {
       const ok = window.confirm(
@@ -1027,16 +1046,16 @@ export const ProductionPlanningPage: React.FC = () => {
   };
 
   // Extend the selected job by N days entirely in local state.
-  // Creates continuation rows for the job on subsequent days and shifts every
-  // following job on the same machine forward — preserving order, quantity,
-  // machine, bottle, section and speed. The changes are persisted when the
-  // user clicks Save. `completedIndex` targets an ended job in the completed list.
+  // Fills existing blank rows on subsequent dates with a continuation of the
+  // same job. If the next date already holds the SAME Job ID, allow
+  // continuation through it (same job, no error). If it holds a DIFFERENT
+  // job, stop and show an error. Never shifts, inserts, or removes any rows.
+  // `completedIndex` targets an ended job in the completed list.
   const handleExtendJob = (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
     const daysToAdd = Math.max(1, Math.min(10, Math.floor(days) || 1));
     const list = machineLists[mIdx];
     if (!list || rowIdx < 0 || rowIdx >= list.length) return;
 
-    // Identify the source entry
     const sourceEntry = completedIndex !== undefined
       ? completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]
       : list[rowIdx];
@@ -1045,73 +1064,71 @@ export const ProductionPlanningPage: React.FC = () => {
       return;
     }
 
-    // 1. Build continuation entries (same bottle/specs, new day slots).
-    // Every continuation row inherits the SOURCE job's exact jobId — no new
-    // ID is ever generated here, so "+" can never split a job across rows.
     const continuationJobId = sourceEntry.jobId;
-    const continuations: MachineEntry[] = Array.from({ length: daysToAdd }, () => ({
-      ...sourceEntry,
-      eid: Math.random(),
-      jobId: continuationJobId,
-      startTime: sourceEntry.startTime,
-      endTime: '',
-      status: 'running' as const,
-    }));
 
-    // 2. Shift machineLists entries forward by daysToAdd
+    // Classify each target row: blank, same-job, or different-job.
+    let filledCount = 0;
+    let blockedDate = '';
+
+    for (let d = 1; d <= daysToAdd; d++) {
+      const targetRowIdx = rowIdx + d;
+      if (targetRowIdx >= dateRows.length) break;
+
+      const targetEntry = list[targetRowIdx];
+      const targetCompleted = completedJobMap[`${mIdx}-${targetRowIdx}`];
+      const isTargetBlank =
+        (!targetEntry || targetEntry.product === 'None') &&
+        (!targetCompleted || targetCompleted.length === 0);
+
+      if (isTargetBlank) {
+        filledCount++;
+        continue;
+      }
+
+      // Target row is occupied – check if it belongs to the same job.
+      const targetJobId = targetEntry?.jobId;
+      if (targetJobId != null && targetJobId === continuationJobId) {
+        filledCount++;
+        continue;
+      }
+
+      // Different job or no matching ID – block extension here.
+      blockedDate = dateRows[targetRowIdx].date;
+      break;
+    }
+
+    if (filledCount === 0 && blockedDate) {
+      toast.error(`Cannot extend job. A different job already exists on ${blockedDate}.`);
+      return;
+    }
+
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
-      const origList = [...next[mIdx]];
-      const newList: MachineEntry[] = new Array(origList.length);
+      const currentList = [...next[mIdx]];
 
-      // Copy unchanged prefix (including the source job itself)
-      for (let i = 0; i <= rowIdx && i < origList.length; i++) {
-        newList[i] = origList[i];
-      }
-      // Insert continuation entries
-      for (let d = 0; d < daysToAdd; d++) {
-        const targetIdx = rowIdx + 1 + d;
-        if (targetIdx < newList.length) {
-          newList[targetIdx] = continuations[d];
-        }
-      }
-      // Shift remaining entries forward
-      for (let i = rowIdx + 1; i < origList.length; i++) {
-        const targetIdx = i + daysToAdd;
-        if (targetIdx < newList.length) {
-          newList[targetIdx] = origList[i];
-        }
-      }
-      // Fill any unassigned slots with blanks
-      for (let i = 0; i < newList.length; i++) {
-        if (!newList[i]) newList[i] = makeNoneEntry(mIdx);
+      for (let d = 1; d <= filledCount; d++) {
+        const targetRowIdx = rowIdx + d;
+        currentList[targetRowIdx] = {
+          ...sourceEntry,
+          eid: Math.random(),
+          jobId: continuationJobId,
+          startTime: sourceEntry.startTime,
+          endTime: '',
+          status: 'running' as const,
+        };
       }
 
-      next[mIdx] = newList;
+      next[mIdx] = currentList;
       return next;
     });
 
-    // 3. Shift completedJobMap keys forward by daysToAdd
-    setCompletedJobMap(prev => {
-      const nextMap: CompletedJobMap = {};
-      for (const [key, entries] of Object.entries(prev)) {
-        const [kMIdx, kRowIdx] = key.split('-').map(Number);
-        if (kMIdx !== mIdx || kRowIdx <= rowIdx) {
-          nextMap[key] = entries; // unchanged
-        } else {
-          const newRowIdx = kRowIdx + daysToAdd;
-          if (newRowIdx < dateRows.length) {
-            nextMap[`${mIdx}-${newRowIdx}`] = entries;
-          }
-        }
-      }
-      return nextMap;
-    });
-
     setIsDirty(true);
-    toast.success(
-      `Job extended by ${daysToAdd} day${daysToAdd === 1 ? '' : 's'}. All following jobs were shifted.`
-    );
+
+    if (filledCount < daysToAdd && blockedDate) {
+      toast.error(`Cannot extend job. A different job already exists on ${blockedDate}.`);
+    } else {
+      toast.success(`Job extended by ${filledCount} day${filledCount === 1 ? '' : 's'}.`);
+    }
   };
 
   // Remove blank entry at rowIdx from machine mIdx only
@@ -1701,7 +1718,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                       </button>
                                       <button
                                         onClick={() => handleExtendJob(mIdx, rowIdx, 1, completedIdx)}
-                                        title="Extend this ended job by one day and shift all following jobs"
+                                        title="Extend this ended job by one day to the next blank date"
                                         className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors"
                                       >
                                         <Plus size={8} />
@@ -1875,7 +1892,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                       )}
                                       {canExtend && (
                                         <button onClick={() => handleExtendJob(mIdx, rowIdx, 1)}
-                                          title="Extend this job by one day and shift all following jobs"
+                                          title="Extend this job by one day to the next blank date"
                                           className="w-5 h-5 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors">
                                           <Plus size={8} />
                                         </button>
@@ -2049,90 +2066,19 @@ export const ProductionPlanningPage: React.FC = () => {
               return { ...prev, [key]: nextList };
             });
           } else {
-            // Remove the running job and shift all subsequent jobs
-            // backward to close the gap, preserving schedule continuity.
+            // Remove the running job by blanking the row.
+            // Upcoming jobs remain on their original dates – never shift.
             updateMachineLists(prev => {
               const next = [...prev] as MachineLists;
               const list = [...next[mIdx]];
-
-              const deletedEntry = list[rowIdx];
-              const deletedStartTime = deletedEntry.startTime || '07:00';
-
-              // Find the first subsequent entry that actually has a product
-              let firstSubsequentRowIdx = -1;
-              for (let i = rowIdx + 1; i < list.length; i++) {
-                if (list[i].product !== 'None' && !list[i].isBlank) {
-                  firstSubsequentRowIdx = i;
-                  break;
-                }
-              }
-
-              if (firstSubsequentRowIdx === -1) {
-                // No subsequent jobs – just blank the slot
-                list[rowIdx] = makeNoneEntry(mIdx);
-                next[mIdx] = list;
-                return next;
-              }
-
-              // Time delta (minutes) between the deleted job and the next job
-              const subsequentStartTime = list[firstSubsequentRowIdx].startTime || '07:00';
-              const deltaMinutes = calculateTimeDeltaMinutes(
-                dateRows[rowIdx].isoDate, deletedStartTime,
-                dateRows[firstSubsequentRowIdx].isoDate, subsequentStartTime
-              );
-
-              // Shift every entry after the deleted one backward by one slot
-              for (let i = rowIdx; i < list.length - 1; i++) {
-                list[i] = { ...list[i + 1] };
-              }
-              list[list.length - 1] = makeNoneEntry(mIdx);
-
-              // Recalculate start time and estimated completion for every
-              // shifted entry that carries a real product
-              for (let i = rowIdx; i < list.length - 1; i++) {
-                const entry = list[i];
-                if (entry.product === 'None' || entry.isBlank) continue;
-
-                const newStartTime = subtractMinutesFromTime(entry.startTime || '07:00', deltaMinutes);
-                const newEstComp = calculateEstimatedCompletion(
-                  dateRows[i].isoDate,
-                  newStartTime,
-                  entry.requiredBottles || 0,
-                  entry.cut,
-                  entry.wt,
-                  mIdx + 1
-                );
-                list[i] = { ...entry, startTime: newStartTime, estimatedCompletion: newEstComp };
-              }
-
+              list[rowIdx] = makeNoneEntry(mIdx);
               next[mIdx] = list;
               return next;
-            });
-
-            // Also shift completed-job records so they stay aligned
-            // with the rows they belong to after the shift.
-            setCompletedJobMap(prev => {
-              const nextMap: CompletedJobMap = {};
-              for (const [key, entries] of Object.entries(prev)) {
-                const [kMIdx, kRowIdx] = key.split('-').map(Number);
-                if (kMIdx !== mIdx || kRowIdx < rowIdx) {
-                  nextMap[key] = entries;          // unchanged
-                } else if (kRowIdx === rowIdx) {
-                  nextMap[key] = entries;          // keep on the same row
-                } else {
-                  const newRow = kRowIdx - 1;
-                  if (newRow >= 0) {
-                    const target = `${mIdx}-${newRow}`;
-                    nextMap[target] = [...(nextMap[target] ?? []), ...entries];
-                  }
-                }
-              }
-              return nextMap;
             });
           }
 
           setIsDirty(true);
-          toast.success('Job removed. Subsequent jobs shifted to fill the gap.');
+          toast.success('Job removed.');
           setDeleteModal(null);
         }}
         onCancel={() => setDeleteModal(null)}
