@@ -34,6 +34,9 @@ class ExtendJobRequest(BaseModel):
     start_time: datetime
     days: int = 1
 
+class ProductionJobBulkRequest(BaseModel):
+    jobs: List[ProductionJobCreate]
+
 class ProductionJobResponse(BaseModel):
     job_id: int
     plan_date: date

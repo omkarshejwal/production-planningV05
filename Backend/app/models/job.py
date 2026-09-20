@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from sqlalchemy import Column, BigInteger, Integer, String, Numeric, Date, DateTime, Boolean, ForeignKey, UniqueConstraint, func, text, and_
+from sqlalchemy import Column, BigInteger, Integer, String, Numeric, Date, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, text, and_
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import relationship, Session
 from app.db.base import Base, production_fk, production_table_args
@@ -90,6 +90,8 @@ class ProductionJob(Base):
 
     __table_args__ = (
         UniqueConstraint('plan_date', 'machine_no', 'start_time', 'section', name='uix_production_job'),
+        Index('ix_production_job_job_id', 'job_id'),
+        Index('ix_production_job_machine_plan', 'machine_no', 'plan_date'),
         production_table_args(),
     )
 
@@ -108,4 +110,7 @@ class JobPackaging(Base):
     pallet_packing = Column(Boolean, default=False)
     pallet_quantity = Column(Numeric(12, 2))
 
-    __table_args__ = (production_table_args(),)
+    __table_args__ = (
+        Index('ix_job_packaging_lookup', 'job_id', 'plan_date', 'machine_no', 'start_time'),
+        production_table_args(),
+    )
