@@ -90,7 +90,6 @@ class ProductionJob(Base):
 
     __table_args__ = (
         UniqueConstraint('plan_date', 'machine_no', 'start_time', 'section', name='uix_production_job'),
-        Index('ix_production_job_job_id', 'job_id'),
         Index('ix_production_job_machine_plan', 'machine_no', 'plan_date'),
         production_table_args(),
     )
