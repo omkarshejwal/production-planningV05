@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   ClipboardPlus,
   Clock,
   Download,
@@ -623,6 +624,7 @@ export const ProductionPlanningPage: React.FC = () => {
   const [showSection, setShowSection] = useState(false);
   const [showWt, setShowWt] = useState(false);
   const [showCut, setShowCut] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
 
   // Wrap setMachineLists to mark dirty on every change
@@ -1358,14 +1360,36 @@ export const ProductionPlanningPage: React.FC = () => {
     const key = `${mIdx}-${rowIdx}`;
     const product = currentEntry.product;
 
-    // Sum qty across all consecutive linked rows (same product, walking backward)
+    // Sum actual daily produced quantity across all consecutive rows
+    // belonging to the SAME logical job.
+    // Bottle/product identity must NOT determine job continuity.
     let cumulativeQty = 0;
-    if (product && product !== 'None') {
+    const currentJobId = currentEntry.jobId;
+
+    if (currentJobId) {
+      const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
       let r = rowIdx;
+
       while (r >= 0) {
         const e = machineLists[mIdx][r];
-        if (!e || e.isBlank || e.product !== product) break;
-        cumulativeQty += e.cut > 0 ? calcQty(e.cut, mIdx + 1) : 0;
+
+        if (!e || e.isBlank || e.jobId !== currentJobId) break;
+
+        const rowDate = dateRows[r]?.isoDate;
+
+        if (rowDate) {
+          const entryForCalc =
+            r === rowIdx
+              ? { ...e, endTime }
+              : e;
+
+          cumulativeQty += calculateQuantityForProductionDay(
+            rowDate,
+            entryForCalc,
+            machineNo
+          );
+        }
+
         r--;
       }
     }
@@ -1420,19 +1444,12 @@ export const ProductionPlanningPage: React.FC = () => {
       startTime: startTime || undefined,
     };
 
-    // Changing the Bottle Name starts a brand-new job — clear the jobId so
-    // the backend creates a new job_master row and returns the real job_id.
-    // Unchanged bottles keep their existing jobId (and all "+" continuations).
-    let updatedFieldsFinal = updatedFields;
-    if (bottle.name && bottle.name !== 'None') {
-      const key = `${editModal.mIdx}-${editModal.rowIdx}`;
-      const prevEntry = editModal.completedIndex !== undefined
-        ? completedJobMap[key]?.[editModal.completedIndex]
-        : machineLists[editModal.mIdx]?.[editModal.rowIdx];
-      if (prevEntry?.product !== bottle.name) {
-        updatedFieldsFinal = { ...updatedFields, jobId: '' };
-      }
-    }
+    // jobId is NEVER cleared based on bottle identity.
+    // A new job_id is generated only when the user explicitly starts a NEW job
+    // (via "End Job" → blank entry → save), where the entry's jobId is undefined
+    // from makeNoneEntry. Editing an existing job (even with a different bottle)
+    // preserves its jobId. The "+" button also preserves the source jobId.
+    const updatedFieldsFinal = { ...updatedFields };
 
     if (editModal.completedIndex !== undefined) {
       // Editing a COMPLETED job entry — write back to the completed map
@@ -1522,12 +1539,23 @@ export const ProductionPlanningPage: React.FC = () => {
   // Cumulative produced quantity for a job spanning multiple dates on the same machine.
   // Walks backward from `rowIdx` through consecutive entries sharing the same jobId,
   // summing each day's produced quantity. Resets when jobId changes.
+  // Checks BOTH completedJobMap and machineLists so that ended jobs' production
+  // from previous days is included in the cumulative total.
   const getCumulativeQty = (rowIdx: number, entry: MachineEntry | null | undefined, mIdx: number): number => {
     if (!entry || entry.isBlank || !entry.product || entry.product === 'None' || !entry.jobId) return 0;
+    const targetJobId = entry.jobId;
     let cumulative = 0;
     for (let r = rowIdx; r >= 0; r--) {
+      // Check completedJobMap first — completed jobs have endTime for accurate partial-day calc
+      const completed = completedJobMap[`${mIdx}-${r}`] ?? [];
+      const completedMatch = completed.find(j => j.jobId === targetJobId);
+      if (completedMatch) {
+        cumulative += getDailyProducedQty(r, completedMatch, mIdx);
+        continue;
+      }
+      // Check running entry in machineLists
       const e = machineLists[mIdx][r];
-      if (!e || e.isBlank || e.jobId !== entry.jobId) break;
+      if (!e || e.isBlank || e.jobId !== targetJobId) break;
       cumulative += getDailyProducedQty(r, e, mIdx);
     }
     return cumulative;
@@ -1598,153 +1626,181 @@ export const ProductionPlanningPage: React.FC = () => {
   };
   const hideTooltip = () => setTooltip(null);
 
-  const dateRangeLabel = useMemo(() => {
-    if (dateRows.length === 0) return '';
-    const firstDate = new Date(dateRows[0].isoDate);
-    const lastDate = new Date(dateRows[dateRows.length - 1].isoDate);
+  const monthLabel = useMemo(() => {
+    const { year, month } = getMonthRange(selectedMonth);
+    return new Date(year, month - 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  }, [selectedMonth]);
 
-    const isSameMonth = firstDate.getMonth() === lastDate.getMonth() && firstDate.getFullYear() === lastDate.getFullYear();
-    const daysInMonth = new Date(firstDate.getFullYear(), firstDate.getMonth() + 1, 0).getDate();
-
-    if (isSameMonth && dateRows.length === daysInMonth) {
-      return firstDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-    }
-
-    const formatOpts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' };
-    return `${firstDate.toLocaleDateString('en-GB', formatOpts)} — ${lastDate.toLocaleDateString('en-GB', formatOpts)}`;
-  }, [dateRows]);
+  const isSelectedMonthCurrentMonth = useMemo(() => {
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    return normalizeMonthKey(selectedMonth) === currentMonthKey;
+  }, [selectedMonth]);
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-[22px] font-bold text-[#111827]">Production Planning</h1>
-          <p className="text-sm text-[#6B7280] mt-0.5">
-            {dateRangeLabel}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              const [currentYear, currentMonth] = normalizeMonthKey(selectedMonth).split('-').map(Number);
-              const previousDate = new Date(currentYear, currentMonth - 2, 1);
-              const previousMonth = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, '0')}`;
-              switchToMonth(previousMonth);
-            }}
-            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-            <ChevronLeft size={14} /> Previous Month
-          </button>
-          <button
-            onClick={() => {
-              const today = new Date();
-              const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-              switchToMonth(currentMonth);
-            }}
-            className="h-9 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-            Current Month
-          </button>
-          <button
-            onClick={() => {
-              const [currentYear, currentMonth] = normalizeMonthKey(selectedMonth).split('-').map(Number);
-              const nextDate = new Date(currentYear, currentMonth, 1);
-              const nextMonth = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`;
-              switchToMonth(nextMonth);
-            }}
-            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-            Next Month <ChevronRight size={14} />
-          </button>
-          <button
-            onClick={handlePrint}
-            disabled={isPrinting}
-            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
-            <Printer size={14} /> {isPrinting ? 'Printing...' : 'Print'}
-          </button>
-          <button
-            onClick={handleExport}
-            disabled={isExporting}
-            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
-            <Download size={14} /> {isExporting ? 'Exporting...' : 'Export'}
-          </button>
+      {/* Filters Card */}
+      <div className="bg-white border border-[#D1D5DB] rounded-lg">
+        {/* Card Header */}
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Filter size={14} className="text-[#6B7280]" />
+            <span className="text-sm font-semibold text-[#374151]">Filters</span>
+          </div>
           <button
             type="button"
-            onClick={() => { console.log('CLICKED REFRESH'); reloadJobsForWindow(appliedFromDate, appliedToDate); }}
-            className="h-9 flex items-center gap-1.5 px-3 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-            <RefreshCw size={14} /> Refresh
+            onClick={() => setShowFilters(v => !v)}
+            className="flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium text-[#6B7280] border border-[#E5E7EB] rounded bg-white hover:bg-[#F8FAFC] transition-colors">
+            {showFilters ? 'Hide Filters' : 'Show Filters'}
+            {showFilters ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </button>
         </div>
-      </div>
 
-      {/* Filters */}
-      <div className="bg-white border border-[#E5E7EB] rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Filter size={14} className="text-[#6B7280]" />
-          <span className="text-sm font-semibold text-[#374151]">Filters</span>
-        </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="block text-xs font-medium text-[#6B7280] mb-1">From Date</label>
-            <input type="date" value={draftFromDate} onChange={e => setDraftFromDate(e.target.value)}
-              className="h-9 px-2.5 text-sm border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-[#6B7280] mb-1">To Date</label>
-            <input type="date" value={draftToDate} onChange={e => setDraftToDate(e.target.value)}
-              className="h-9 px-2.5 text-sm border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
-          </div>
-          <div className="flex items-end gap-2">
-            <button type="button" onClick={handleApply}
-              className="h-9 px-4 text-sm font-semibold bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors">
-              Apply
-            </button>
-            <button type="button" onClick={handleReset}
-              className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-              Clear Filter
-            </button>
-          </div>
-        </div>
+        {showFilters && (
+          <>
+            <div className="border-t border-[#E5E7EB]" />
+            <div className="px-4 py-3 flex flex-wrap items-center gap-3">
+              {/* Left: Title + Month */}
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">Production Planning</h1>
+                <span className="text-sm font-semibold text-[#2563EB] whitespace-nowrap">{monthLabel}</span>
+              </div>
+
+              {/* Date filters */}
+              <div className="flex items-center gap-2">
+                <div>
+                  <label className="block text-[11px] font-medium text-[#6B7280] mb-0.5">From Date</label>
+                  <input type="date" value={draftFromDate} onChange={e => setDraftFromDate(e.target.value)}
+                    className="h-8 px-2 text-xs border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-[#6B7280] mb-0.5">To Date</label>
+                  <input type="date" value={draftToDate} onChange={e => setDraftToDate(e.target.value)}
+                    className="h-8 px-2 text-xs border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
+                </div>
+                <div className="flex items-end gap-1.5">
+                  <button type="button" onClick={handleApply}
+                    className="h-8 px-3 text-xs font-semibold bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors">
+                    Apply
+                  </button>
+                  <button type="button" onClick={handleReset}
+                    className="h-8 px-3 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+                    Clear Filter
+                  </button>
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div className="w-px h-6 bg-[#E5E7EB] hidden sm:block" />
+
+              {/* Month nav buttons */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    const [currentYear, currentMonth] = normalizeMonthKey(selectedMonth).split('-').map(Number);
+                    const previousDate = new Date(currentYear, currentMonth - 2, 1);
+                    const previousMonth = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, '0')}`;
+                    switchToMonth(previousMonth);
+                  }}
+                  className="h-8 flex items-center gap-1 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+                  <ChevronLeft size={12} /> Previous Month
+                </button>
+                <button
+                  onClick={() => {
+                    const today = new Date();
+                    const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                    switchToMonth(currentMonth);
+                  }}
+                  className={`h-8 px-2.5 text-xs font-medium border rounded transition-colors ${
+                    isSelectedMonthCurrentMonth
+                      ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
+                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
+                  }`}>
+                  Current Month
+                </button>
+                <button
+                  onClick={() => {
+                    const [currentYear, currentMonth] = normalizeMonthKey(selectedMonth).split('-').map(Number);
+                    const nextDate = new Date(currentYear, currentMonth, 1);
+                    const nextMonth = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`;
+                    switchToMonth(nextMonth);
+                  }}
+                  className="h-8 flex items-center gap-1 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+                  Next Month <ChevronRight size={12} />
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-[#E5E7EB]" />
+            <div className="px-4 py-2 flex flex-wrap items-center justify-between gap-2">
+              {/* Left: Column toggles */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowSection(s => !s)}
+                  className={`flex items-center gap-1.5 h-7 px-2.5 text-xs font-semibold rounded-full border transition-all
+                    ${showSection
+                      ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                      : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+                    }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showSection ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+                  Section {showSection ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  onClick={() => setShowWt(s => !s)}
+                  className={`flex items-center gap-1.5 h-7 px-2.5 text-xs font-semibold rounded-full border transition-all
+                    ${showWt
+                      ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                      : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+                    }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showWt ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+                  Wt {showWt ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  onClick={() => setShowCut(s => !s)}
+                  className={`flex items-center gap-1.5 h-7 px-2.5 text-xs font-semibold rounded-full border transition-all
+                    ${showCut
+                      ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
+                      : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
+                    }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showCut ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
+                  Cut {showCut ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              {/* Right: Action buttons */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePrint}
+                  disabled={isPrinting}
+                  className="h-7 flex items-center gap-1.5 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+                  <Printer size={12} /> {isPrinting ? 'Printing...' : 'Print'}
+                </button>
+                <button
+                  onClick={handleExport}
+                  disabled={isExporting}
+                  className="h-7 flex items-center gap-1.5 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+                  <Download size={12} /> {isExporting ? 'Exporting...' : 'Export'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { reloadJobsForWindow(appliedFromDate, appliedToDate); }}
+                  className="h-7 flex items-center gap-1.5 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+                  <RefreshCw size={12} /> Refresh
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Table Container */}
       <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
+        <div className="flex items-center px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
           <span className="text-xs font-medium text-[#6B7280]">Production Register</span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowSection(s => !s)}
-              className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
-                ${showSection
-                  ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
-                  : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
-                }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showSection ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
-              Section {showSection ? 'ON' : 'OFF'}
-            </button>
-            <button
-              onClick={() => setShowWt(s => !s)}
-              className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
-                ${showWt
-                  ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
-                  : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
-                }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showWt ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
-              Wt {showWt ? 'ON' : 'OFF'}
-            </button>
-            <button
-              onClick={() => setShowCut(s => !s)}
-              className={`flex items-center gap-2 h-7 px-3 text-xs font-semibold rounded-full border transition-all
-                ${showCut
-                  ? 'bg-[#7C3AED] text-white border-[#7C3AED] shadow-sm'
-                  : 'bg-white text-[#6B7280] border-[#E5E7EB] hover:border-[#7C3AED] hover:text-[#7C3AED]'
-                }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showCut ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
-              Cut {showCut ? 'ON' : 'OFF'}
-            </button>
-          </div>
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
