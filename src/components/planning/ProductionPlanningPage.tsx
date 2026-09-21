@@ -1504,7 +1504,7 @@ export const ProductionPlanningPage: React.FC = () => {
     setEditModal({ mIdx, rowIdx, newJobStartTime: newStartTime });
   };
 
-  const handleSave = (payload: EditSavePayload) => {
+  const handleSave = async (payload: EditSavePayload) => {
     if (!editModal) return;
     const { mIdx, rowIdx, completedIndex } = editModal;
     const prevEntry = completedIndex !== undefined
@@ -1532,12 +1532,30 @@ export const ProductionPlanningPage: React.FC = () => {
       startTime: startTime || undefined,
     };
 
+    // A brand-new job has no job_id yet (blank entry from the End Job flow).
+    // Assign its business Job ID immediately — BEFORE anything is saved — so
+    // the id lives in local state and any rows later created with "+" inherit
+    // the exact same id instead of receiving a separate id on save.
+    const isNewJob = completedIndex === undefined && !prevEntry?.jobId;
+
+    let allocatedJobId: string | undefined;
+    if (isNewJob) {
+      const reserve = await planningRepository.reserveNextJobId(editModal.mIdx + 1);
+      if (!reserve.ok || !reserve.jobId) {
+        toast.error(reserve.error || 'Failed to allocate a Job ID for the new job.');
+        return;
+      }
+      allocatedJobId = reserve.jobId;
+    }
+
     // jobId is NEVER cleared based on bottle identity.
     // A new job_id is generated only when the user explicitly starts a NEW job
     // (via "End Job" → blank entry → save), where the entry's jobId is undefined
     // from makeNoneEntry. Editing an existing job (even with a different bottle)
     // preserves its jobId. The "+" button also preserves the source jobId.
-    const updatedFieldsFinal = { ...updatedFields };
+    const updatedFieldsFinal = allocatedJobId
+      ? { ...updatedFields, jobId: allocatedJobId }
+      : { ...updatedFields };
 
     if (editModal.completedIndex !== undefined) {
       // Editing a COMPLETED job entry — write back to the completed map
@@ -1569,7 +1587,7 @@ export const ProductionPlanningPage: React.FC = () => {
     // job marks its logical job_id dirty; if its start time changed the old
     // (plan_date, machine_no, start_time) DB row must be deleted on save.
     if (prevEntry) {
-      markJobIdsDirty([prevEntry.jobId]);
+      markJobIdsDirty(allocatedJobId ? [allocatedJobId] : [prevEntry.jobId]);
       if (prevEntry.startTime && startTime && prevEntry.startTime !== startTime) {
         const planDate = dateRows[rowIdx]?.isoDate;
         const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;

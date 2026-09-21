@@ -396,6 +396,32 @@ def get_next_job_id(
     }
 
 
+@router.post("/reserve-id/{machine_no}")
+def reserve_next_job_id(
+    machine_no: int,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_manager_role)
+):
+    """
+    Reserve the next job_id for a machine WITHOUT persisting a production job.
+
+    Uses the exact existing generation architecture (machine_no * 100 +
+    sequence, concurrency-safe SELECT ... FOR UPDATE) and registers the id in
+    job_master so it is a valid business Job ID that later saves can reuse.
+
+    The frontend calls this when a brand-new job is created so the Job ID is
+    available immediately (before anything is saved) and continuation rows
+    created with "+" inherit the same id.
+    """
+    resolved_job_id = generate_next_job_id(db, machine_no)
+    db.add(JobMaster(job_id=resolved_job_id))
+    db.commit()
+    return {
+        "machine_no": machine_no,
+        "job_id": resolved_job_id,
+    }
+
+
 @router.post("/extend/", response_model=List[ProductionJobResponse])
 def extend_job(
     req: ExtendJobRequest,

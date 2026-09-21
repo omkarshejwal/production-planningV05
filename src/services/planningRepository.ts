@@ -327,6 +327,27 @@ export const planningRepository = {
     }
   },
 
+  /**
+   * Reserves the next available job_id for a machine so a brand-new job can be
+   * assigned its business Job ID immediately (before the user saves anything).
+   *
+   * The backend registers the id in job_master (using the existing
+   * machine_no * 100 + sequence architecture) and advances the machine's
+   * sequence, so the returned id is a valid job_id that later saves reuse and
+   * different new jobs always receive different ids.
+   */
+  async reserveNextJobId(machineNo: number): Promise<{ ok: boolean; jobId?: string; error?: string }> {
+    try {
+      const result = await apiFetch(`/api/production/jobs/reserve-id/${machineNo}`, {
+        method: 'POST',
+      });
+      return { ok: true, jobId: toStr(result.job_id) };
+    } catch (err: any) {
+      console.error('reserveNextJobId failed:', err);
+      return { ok: false, error: err.message || 'Failed to reserve job id' };
+    }
+  },
+
   async createProductionJobsBatch(payloads: ProductionJobRow[]): Promise<{ ok: boolean; error?: string }> {
     try {
       // Send all changed rows in ONE request to the backend bulk endpoint.
