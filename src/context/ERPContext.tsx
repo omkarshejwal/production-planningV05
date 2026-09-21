@@ -596,8 +596,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     closeDrawer();
-    // Re-fetch from API scoped to the active window to sync with AWS after save
-    planningRepository.init(fetchWindowFrom, fetchWindowTo).then(() => refreshPlanner());
+    // The repository already merged the persisted rows into the in-memory
+    // cache, so we only need to re-render — no full-window API re-fetch.
+    refreshPlanner();
     return true;
   };
 

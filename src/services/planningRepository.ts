@@ -329,14 +329,18 @@ export const planningRepository = {
 
   async createProductionJobsBatch(payloads: ProductionJobRow[]): Promise<{ ok: boolean; error?: string }> {
     try {
-      // Send all rows in ONE request to the backend bulk endpoint.
+      // Send all changed rows in ONE request to the backend bulk endpoint.
       // The backend processes rows in order so job_id assignment is
-      // identical to the old sequential POST-per-row behaviour.
+      // identical to the old sequential POST-per-row behaviour, and it only
+      // touches the rows that were actually sent.
       const jobs = payloads.map((p) => this._buildJobBody(p));
-      await apiFetch('/api/production/jobs/bulk/', {
+      const results = await apiFetch('/api/production/jobs/bulk/', {
         method: 'POST',
         body: JSON.stringify({ jobs }),
       });
+      // Merge the rows the backend persisted into the in-memory cache so the
+      // caller can refresh the grid without re-fetching the full dataset.
+      this._applyRowsToCache((results as Record<string, unknown>[]).map(mapJobRow));
       return { ok: true };
     } catch (err: any) {
       console.error('createProductionJobsBatch failed:', err);
@@ -431,6 +435,15 @@ export const planningRepository = {
       await apiFetch(`/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(start_time)}`, {
         method: 'DELETE',
       });
+      // Drop the deleted row(s) from the in-memory cache so the grid reflects
+      // the deletion without a full dataset re-fetch.
+      const machineId = this._machineIdToStr(machineInt);
+      const normStart = start_time.includes('T') ? start_time.split('T')[1].substring(0, 5) : start_time;
+      const prevLen = _jobs.length;
+      _jobs = _jobs.filter(
+        (j) => !(j.plan_date === plan_date && j.machine_no === machineId && j.start_time === normStart)
+      );
+      if (_jobs.length !== prevLen) _cacheVersion++;
       return { ok: true };
     } catch (err: any) {
       console.error('deleteProductionJob failed:', err);
@@ -911,11 +924,39 @@ export const planningRepository = {
   /**
    * Posts a single ProductionJobRow to the backend API.
    * Returns the API response including the backend-generated job_id.
+   * On success the persisted row is merged into the in-memory cache.
    */
   async _postJob(payload: ProductionJobRow): Promise<Record<string, unknown> | null> {
-    return await apiFetch('/api/production/jobs/', {
+    const resp = await apiFetch('/api/production/jobs/', {
       method: 'POST',
       body: JSON.stringify(this._buildJobBody(payload)),
     });
+    this._applyRowsToCache([mapJobRow(resp as Record<string, unknown>)]);
+    return resp;
+  },
+
+  /**
+   * Merges persisted rows into the in-memory jobs cache so the caller can
+   * refresh the grid without re-fetching the entire planning dataset.
+   * Rows are matched by DB identity (plan_date + machine_no + start_time +
+   * section); an existing match is replaced, anything new is appended.
+   */
+  _applyRowsToCache(rows: ProductionJobRow[]): void {
+    if (rows.length === 0) return;
+    let changed = false;
+    for (const row of rows) {
+      const key = `${row.plan_date}|${row.machine_no}|${row.start_time}|${row.section}`;
+      const idx = _jobs.findIndex(
+        (j) => `${j.plan_date}|${j.machine_no}|${j.start_time}|${j.section}` === key
+      );
+      if (idx >= 0) {
+        _jobs[idx] = row;
+        changed = true;
+      } else {
+        _jobs.push(row);
+        changed = true;
+      }
+    }
+    if (changed) _cacheVersion++;
   },
 };

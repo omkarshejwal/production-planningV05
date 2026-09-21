@@ -541,6 +541,7 @@ export const ProductionPlanningPage: React.FC = () => {
     if (!sourceEntry || sourceEntry.product === 'None') return;
 
     const continuationJobId = sourceEntry.jobId;
+    markJobIdsDirty([continuationJobId]);
 
     // Find the last consecutive row belonging to the same job
     let effectiveRowIdx = sourceRowIdx;
@@ -620,6 +621,15 @@ export const ProductionPlanningPage: React.FC = () => {
   const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Incremental-save tracking (only the records the user actually changed).
+  //   dirtyJobIds   — logical job_ids (job_master) whose rows were modified and
+  //                   must be re-sent to the backend. Rows without a job_id are
+  //                   brand-new jobs and are always included in the save payload.
+  //   deletedJobKeys— DB rows the user removed, keyed by
+  //                   `${plan_date}|${machine_no}|${start_time}` (DELETEd on save).
+  const [dirtyJobIds, setDirtyJobIds] = useState<Set<string>>(new Set());
+  const [deletedJobKeys, setDeletedJobKeys] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
   const [showSection, setShowSection] = useState(false);
   const [showWt, setShowWt] = useState(false);
@@ -636,12 +646,31 @@ export const ProductionPlanningPage: React.FC = () => {
     });
   }, []);
 
+  // Mark logical jobs (by job_id) as changed. Undefined/null ids (brand-new
+  // rows) are ignored — new rows are always included in the save payload.
+  const markJobIdsDirty = useCallback((jobIds: (string | undefined)[]) => {
+    const affected = jobIds.filter((id): id is string => Boolean(id));
+    if (affected.length === 0) return;
+    setDirtyJobIds(prev => {
+      const next = new Set(prev);
+      affected.forEach(id => next.add(id));
+      return next;
+    });
+  }, []);
+
+  // Record a DB row (plan_date|machine_no|start_time) that the user deleted so
+  // it is DELETEd on save instead of being re-created by a full-dataset diff.
+  const markJobDeleted = useCallback((planDate: string, machineNo: string, startTime: string) => {
+    setDeletedJobKeys(prev => {
+      const next = new Set(prev);
+      next.add(`${planDate}|${machineNo}|${startTime}`);
+      return next;
+    });
+  }, []);
+
   const handleSaveToDb = async () => {
     setIsSaving(true);
     try {
-      const payloadRows: ProductionJobRow[] = [];
-      console.log("handleSaveToDb started. dateRows:", dateRows.length, "isDirty:", isDirty);
-
       const calculateChangeover = (mIdx: number, rowIdx: number, startTime: string) => {
         const key = `${mIdx}-${rowIdx}`;
         const completed = completedJobMap[key];
@@ -655,135 +684,175 @@ export const ProductionPlanningPage: React.FC = () => {
         return diff;
       };
 
+      // Collect ONLY the records that actually changed:
+      //   1) every grid row belonging to a dirty (user-modified) logical job,
+      //   2) every brand-new row (no job_id assigned yet).
+      // Deleted rows are DELETEd explicitly (deletedJobKeys), never derived
+      // from a full-dataset diff.
+      const rowsToSave: { entry: MachineEntry; mIdx: number; rowIdx: number }[] = [];
+      const seenRowKeys = new Set<string>();
+
+      const collectRow = (entry: MachineEntry, mIdx: number, rowIdx: number) => {
+        if (!entry || entry.product === 'None') return;
+        const plan_date = dateRows[rowIdx]?.isoDate;
+        if (!plan_date) return;
+        const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+        const rowKey = `${plan_date}|${machine_no}|${entry.startTime || '07:00'}|${entry.section ?? '-'}`;
+        if (seenRowKeys.has(rowKey)) return;
+        seenRowKeys.add(rowKey);
+        rowsToSave.push({ entry, mIdx, rowIdx });
+      };
+
       for (let mIdx = 0; mIdx < 4; mIdx++) {
         for (let rowIdx = 0; rowIdx < dateRows.length; rowIdx++) {
-          const plan_date = dateRows[rowIdx].isoDate;
-          const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-
-          const entriesToSave: MachineEntry[] = [];
-          const key = `${mIdx}-${rowIdx}`;
-          if (completedJobMap[key]) {
-            entriesToSave.push(...completedJobMap[key]);
+          const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+          for (const c of completed) {
+            if (c.jobId && dirtyJobIds.has(c.jobId)) collectRow(c, mIdx, rowIdx);
           }
-          const currentEntry = machineLists[mIdx][rowIdx];
-          if (currentEntry && currentEntry.product !== 'None') {
-            entriesToSave.push(currentEntry);
-          }
-
-          if (entriesToSave.length > 0) {
-            console.log(`Found ${entriesToSave.length} entries for MAC-${mIdx + 1} at row ${rowIdx} (${plan_date})`, entriesToSave);
-          }
-
-          for (const entry of entriesToSave) {
-            if (entry.product === 'None') continue;
-            const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-            const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
-            if (!bottle) {
-              console.error(`Bottle not found in DB: ${entry.product}`);
-              toast.error(`Save failed: Bottle "${entry.product}" not found in system.`);
-              continue;
-            }
-
-            // ✅ TypeScript safe
-            const packagingRows: any[] = [];
-            if (entry.packingAllocations && Object.keys(entry.packingAllocations).length > 0) {
-              for (const [type, qty] of Object.entries(entry.packingAllocations)) {
-                packagingRows.push({
-                  packaging_type: type,
-                  quantity: qty,
-                  pallet_packing: entry.palletPacking || false,
-                  pallet_quantity: entry.palletPackingQty || null
-                });
-              }
-            } else if (entry.packingCategory) {
-              // Removed the !== 'None' check to satisfy TypeScript
-              packagingRows.push({
-                packaging_type: entry.packingCategory,
-                quantity: entry.qty,
-                pallet_packing: entry.palletPacking || false,
-                pallet_quantity: entry.palletPackingQty || null
-              });
-            }
-
-            const changeover = entry.status === 'running' ? calculateChangeover(mIdx, rowIdx, entry.startTime || '07:00') : 0;
-
-            const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
-            const hourlyQty = metrics.totalQuantity / 24;
-            const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
-
-            const startParts = (entry.startTime || '07:00').split(':').map(Number);
-            const startMins = startParts[0] * 60 + startParts[1];
-            const totalMins = startMins + (segmentHours * 60);
-
-            let estCompletion = '';
-            if (entry.endTime) {
-              estCompletion = entry.endTime;
-            } else {
-              const roundedTotalMins = Math.round(totalMins);
-              const ch = Math.floor(roundedTotalMins / 60) % 24;
-              const cm = roundedTotalMins % 60;
-              estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
-            }
-
-            payloadRows.push({
-              job_id: entry.jobId,
-              plan_date,
-              machine_no,
-              bottle_id: bottle.id,
-              section: entry.section || MAX_SECTIONS(mIdx),
-              weight: entry.wt,
-              speeds: entry.cut,
-              draw: entry.draw,
-              quantity: entry.qty,
-              requiredBottles: entry.requiredBottles ?? undefined,
-              production_hours: Number(segmentHours.toFixed(2)),
-              start_time: entry.startTime || '07:00',
-              estimated_completion: estCompletion,
-              completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
-              changeover_minutes: changeover,
-              status: entry.status === 'completed' ? 'Completed' : 'Planned',
-              packaging: packagingRows
-            } as any);
-          }
+          const running = machineLists[mIdx][rowIdx];
+          if (running && running.jobId && dirtyJobIds.has(running.jobId)) collectRow(running, mIdx, rowIdx);
         }
       }
 
-      console.log("[SAVE] Full payloadRows being sent:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time, job_id: (r as any).job_id })), null, 2));
+      for (let mIdx = 0; mIdx < 4; mIdx++) {
+        for (let rowIdx = 0; rowIdx < dateRows.length; rowIdx++) {
+          const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+          for (const c of completed) {
+            if (!c.jobId) collectRow(c, mIdx, rowIdx);
+          }
+          const running = machineLists[mIdx][rowIdx];
+          if (running && !running.jobId) collectRow(running, mIdx, rowIdx);
+        }
+      }
 
-      const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
-      console.log("[SAVE] createProductionJobsBatch result:", batchResult);
+      const deletedNow = Array.from(deletedJobKeys);
 
-      if (!batchResult.ok) {
-        toast.error(batchResult.error || 'Save failed. Please try again.', { duration: 5000 });
-        setIsSaving(false);
+      if (rowsToSave.length === 0 && deletedNow.length === 0) {
+        // Nothing changed — make zero save API requests.
+        setIsDirty(false);
+        toast.info('No changes to save.');
         return;
       }
 
-      // Clean up stale DB rows: jobs that exist in the DB but are no longer
-      // in the current grid state (e.g. user deleted a job).  Without this
-      // step, deleted jobs would reappear on the next refresh because the
-      // upsert only creates/updates.
-      const currentKeys = new Set(
-        payloadRows.map(r => `${r.plan_date}|${r.machine_no}|${r.start_time}`)
-      );
-      const dbJobs = planningRepository.getProductionJobs();
-      const staleJobs = dbJobs.filter(j => {
-        const key = `${j.plan_date}|${j.machine_no}|${j.start_time}`;
-        return !currentKeys.has(key);
-      });
-      if (staleJobs.length > 0) {
-        console.log(`[SAVE] Cleaning up ${staleJobs.length} stale job(s) from DB`);
-        await Promise.all(
-          staleJobs.map(j =>
-            planningRepository.deleteProductionJob(j.plan_date, j.machine_no, j.start_time)
-          )
-        );
+      const buildRow = (entry: MachineEntry, mIdx: number, rowIdx: number): ProductionJobRow | null => {
+        if (!entry || entry.product === 'None') return null;
+        const plan_date = dateRows[rowIdx]?.isoDate;
+        if (!plan_date) return null;
+        const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+        const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+        const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
+        if (!bottle) {
+          console.error(`Bottle not found in DB: ${entry.product}`);
+          toast.error(`Save failed: Bottle "${entry.product}" not found in system.`);
+          return null;
+        }
+
+        const packagingRows: any[] = [];
+        if (entry.packingAllocations && Object.keys(entry.packingAllocations).length > 0) {
+          for (const [type, qty] of Object.entries(entry.packingAllocations)) {
+            packagingRows.push({
+              packaging_type: type,
+              quantity: qty,
+              pallet_packing: entry.palletPacking || false,
+              pallet_quantity: entry.palletPackingQty || null
+            });
+          }
+        } else if (entry.packingCategory) {
+          packagingRows.push({
+            packaging_type: entry.packingCategory,
+            quantity: entry.qty,
+            pallet_packing: entry.palletPacking || false,
+            pallet_quantity: entry.palletPackingQty || null
+          });
+        }
+
+        const changeover = entry.status === 'running' ? calculateChangeover(mIdx, rowIdx, entry.startTime || '07:00') : 0;
+
+        const metrics = calcProductionMetrics(entry.cut, entry.wt, mIdx + 1);
+        const hourlyQty = metrics.totalQuantity / 24;
+        const segmentHours = hourlyQty > 0 ? entry.qty / hourlyQty : 0;
+
+        const startParts = (entry.startTime || '07:00').split(':').map(Number);
+        const startMins = startParts[0] * 60 + startParts[1];
+        const totalMins = startMins + (segmentHours * 60);
+
+        let estCompletion = '';
+        if (entry.endTime) {
+          estCompletion = entry.endTime;
+        } else {
+          const roundedTotalMins = Math.round(totalMins);
+          const ch = Math.floor(roundedTotalMins / 60) % 24;
+          const cm = roundedTotalMins % 60;
+          estCompletion = `${String(ch).padStart(2, '0')}:${String(cm).padStart(2, '0')}`;
+        }
+
+        return {
+          job_id: entry.jobId,
+          plan_date,
+          machine_no,
+          bottle_id: bottle.id,
+          section: entry.section || MAX_SECTIONS(mIdx),
+          weight: entry.wt,
+          speeds: entry.cut,
+          draw: entry.draw,
+          quantity: entry.qty,
+          requiredBottles: entry.requiredBottles ?? undefined,
+          production_hours: Number(segmentHours.toFixed(2)),
+          start_time: entry.startTime || '07:00',
+          estimated_completion: estCompletion,
+          completion_time: entry.status === 'completed' ? (entry.endTime || estCompletion) : undefined,
+          changeover_minutes: changeover,
+          status: entry.status === 'completed' ? 'Completed' : 'Planned',
+          packaging: packagingRows
+        } as any;
+      };
+
+      const payloadRows = rowsToSave
+        .map(({ entry, mIdx, rowIdx }) => buildRow(entry, mIdx, rowIdx))
+        .filter((row): row is ProductionJobRow => row !== null);
+
+      console.log("[SAVE] Sending only changed rows:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time, job_id: (r as any).job_id })), null, 2));
+
+      if (payloadRows.length > 0) {
+        // ONE bulk request containing only the changed jobs.
+        const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
+        console.log("[SAVE] createProductionJobsBatch result:", batchResult);
+
+        if (!batchResult.ok) {
+          // Save failed — keep the dirty trackers so the user can retry.
+          toast.error(batchResult.error || 'Save failed. Please try again.', { duration: 5000 });
+          setIsSaving(false);
+          return;
+        }
       }
 
-      // Re-fetch scoped to the active window so the grid reflects saved data
-      reloadJobsForWindow(appliedFromDate, appliedToDate);
-      setIsDirty(false);
-      toast.success('Production data saved successfully to AWS Database.', { duration: 3000 });
+      // Persist only the rows the user explicitly deleted.
+      const failedDeletes = new Set<string>();
+      await Promise.all(
+        deletedNow.map(async (key) => {
+          const [planDate, machineNo, startTime] = key.split('|');
+          const del = await planningRepository.deleteProductionJob(planDate, machineNo, startTime);
+          if (!del.ok) failedDeletes.add(key);
+        })
+      );
+
+      // Successful save: reset the dirty state for the saved records.  Rows
+      // that could not be deleted stay marked so the user can retry.
+      setDirtyJobIds(new Set());
+      setDeletedJobKeys(failedDeletes);
+
+      if (failedDeletes.size > 0) {
+        setIsDirty(true);
+        toast.error(`Saved changes, but ${failedDeletes.size} deleted job(s) could not be removed from the database. Please retry.`, { duration: 5000 });
+      } else {
+        setIsDirty(false);
+        toast.success('Production data saved successfully to AWS Database.', { duration: 3000 });
+      }
+
+      // The bulk save + deletes already updated the in-memory cache, so the
+      // grid is refreshed from the cache instead of re-fetching the entire
+      // planning dataset.
+      refreshPlanner();
     } catch (e) {
       console.error("[SAVE] ERROR:", e);
       toast.error('Save failed. Please try again.');
@@ -847,6 +916,8 @@ export const ProductionPlanningPage: React.FC = () => {
     setAppliedFromDate(draftFromDate);
     setAppliedToDate(draftToDate);
     setIsDirty(false);
+    setDirtyJobIds(new Set());
+    setDeletedJobKeys(new Set());
     // Trigger a fresh scoped fetch for the custom range
     if (draftFromDate && draftToDate) {
       reloadJobsForWindow(draftFromDate, draftToDate);
@@ -902,6 +973,8 @@ export const ProductionPlanningPage: React.FC = () => {
     setAppliedFromDate(monthStart);
     setAppliedToDate(monthEnd);
     setIsDirty(false);
+    setDirtyJobIds(new Set());
+    setDeletedJobKeys(new Set());
     // Trigger a fresh scoped fetch for the new month
     reloadJobsForWindow(monthStart, monthEnd);
   };
@@ -1195,6 +1268,7 @@ export const ProductionPlanningPage: React.FC = () => {
     }
 
     const continuationJobId = sourceEntry.jobId;
+    markJobIdsDirty([continuationJobId]);
 
     // Find the last consecutive row belonging to the same job
     let effectiveRowIdx = rowIdx;
@@ -1330,6 +1404,7 @@ export const ProductionPlanningPage: React.FC = () => {
   const isEditingCompleted = !!editModal && editModal.completedIndex !== undefined;
 
   const updateSection = (mIdx: number, rowIdx: number, val: number) => {
+    markJobIdsDirty([machineLists[mIdx]?.[rowIdx]?.jobId]);
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
       const list = [...next[mIdx]];
@@ -1396,6 +1471,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
     // Archive the current running job as completed, storing the job-wide total
     const completedJob: MachineEntry = { ...currentEntry, endTime, status: 'completed', cumulativeQty };
+    markJobIdsDirty([currentEntry?.jobId]);
     setCompletedJobMap(prev => ({ ...prev, [key]: [...(prev[key] ?? []), completedJob] }));
 
     // New job starts after machine changeover (minutes, shift-day aware: wraps at 24 h)
@@ -1422,6 +1498,10 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const handleSave = (payload: EditSavePayload) => {
     if (!editModal) return;
+    const { mIdx, rowIdx, completedIndex } = editModal;
+    const prevEntry = completedIndex !== undefined
+      ? completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]
+      : machineLists[mIdx]?.[rowIdx];
     const { bottle, packingCategory, packingAllocations, palletPacking, palletPackingQty, requiredBottles, section, startTime } = payload;
     const cut = bottle.speeds > 0 ? bottle.speeds : 0;
     const qty = calcQty(cut, editModal.mIdx + 1);
@@ -1476,6 +1556,19 @@ export const ProductionPlanningPage: React.FC = () => {
       });
     }
     setIsDirty(true);
+
+    // Track the edited record for the incremental save.  Editing an existing
+    // job marks its logical job_id dirty; if its start time changed the old
+    // (plan_date, machine_no, start_time) DB row must be deleted on save.
+    if (prevEntry) {
+      markJobIdsDirty([prevEntry.jobId]);
+      if (prevEntry.startTime && startTime && prevEntry.startTime !== startTime) {
+        const planDate = dateRows[rowIdx]?.isoDate;
+        const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+        if (planDate) markJobDeleted(planDate, machineNo, prevEntry.startTime);
+      }
+    }
+
     setEditModal(null);
   };
 
@@ -2301,6 +2394,12 @@ export const ProductionPlanningPage: React.FC = () => {
             toast.error('Could not locate the job in the grid.');
             setDeleteModal(null);
             return;
+          }
+
+          // Track the deletion so the save persists it via the DELETE endpoint
+          // instead of re-creating the row through a full-dataset diff.
+          if (startTime) {
+            markJobDeleted(planDate, machineNo, startTime);
           }
 
           if (isCompleted) {
