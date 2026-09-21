@@ -591,11 +591,15 @@ export const ProductionPlanningPage: React.FC = () => {
 
       for (let d = 1; d <= filledCount; d++) {
         const targetRowIdx = effectiveRowIdx + d;
+        const isOccupied =
+          (list[targetRowIdx] && list[targetRowIdx].product !== 'None') ||
+          (completedJobMap[`${mIdx}-${targetRowIdx}`]?.length ?? 0) > 0;
+        if (isOccupied) continue;
         currentList[targetRowIdx] = {
           ...sourceEntry,
           eid: Math.random(),
           jobId: continuationJobId,
-          startTime: sourceEntry.startTime,
+          startTime: '07:00',
           endTime: '',
           status: 'running' as const,
         };
@@ -1360,11 +1364,15 @@ export const ProductionPlanningPage: React.FC = () => {
 
       for (let d = 1; d <= filledCount; d++) {
         const targetRowIdx = effectiveRowIdx + d;
+        const isOccupied =
+          (list[targetRowIdx] && list[targetRowIdx].product !== 'None') ||
+          (completedJobMap[`${mIdx}-${targetRowIdx}`]?.length ?? 0) > 0;
+        if (isOccupied) continue;
         currentList[targetRowIdx] = {
           ...sourceEntry,
           eid: Math.random(),
           jobId: continuationJobId,
-          startTime: sourceEntry.startTime,
+          startTime: '07:00',
           endTime: '',
           status: 'running' as const,
         };
@@ -1630,25 +1638,41 @@ export const ProductionPlanningPage: React.FC = () => {
   };
 
   // Cumulative produced quantity for a job spanning multiple dates on the same machine.
-  // Walks backward from `rowIdx` through consecutive entries sharing the same jobId,
-  // summing each day's produced quantity. Resets when jobId changes.
+  // Walks backward from `rowIdx` through consecutive entries belonging to the same
+  // logical job, summing each day's produced quantity. Resets when the job changes.
   // Checks BOTH completedJobMap and machineLists so that ended jobs' production
   // from previous days is included in the cumulative total.
+  // Grouping: persisted rows group by their DB jobId. Unsaved (not yet saved) rows
+  // have no jobId until the backend assigns one on Save, so they group by machine +
+  // bottle name instead — the same identity "+"/extend propagates when it copies the
+  // source job into the continuation rows. This keeps the live cumulative identical
+  // to the value computed after the rows are saved and reloaded.
   const getCumulativeQty = (rowIdx: number, entry: MachineEntry | null | undefined, mIdx: number): number => {
-    if (!entry || entry.isBlank || !entry.product || entry.product === 'None' || !entry.jobId) return 0;
-    const targetJobId = entry.jobId;
+    if (!entry || entry.isBlank || !entry.product || entry.product === 'None') return 0;
+
+    const jobKey = (e: MachineEntry | null | undefined): string | null => {
+      if (!e || e.isBlank || !e.product || e.product === 'None') return null;
+      const id = e.jobId && String(e.jobId).trim() !== '' ? String(e.jobId) : '';
+      if (id) return `db:${id}`;
+      const name = e.product.toLowerCase();
+      return name ? `local:${mIdx}:${name}` : null;
+    };
+
+    const targetKey = jobKey(entry);
+    if (!targetKey) return 0;
+
     let cumulative = 0;
     for (let r = rowIdx; r >= 0; r--) {
       // Check completedJobMap first — completed jobs have endTime for accurate partial-day calc
       const completed = completedJobMap[`${mIdx}-${r}`] ?? [];
-      const completedMatch = completed.find(j => j.jobId === targetJobId);
+      const completedMatch = completed.find(j => jobKey(j) === targetKey);
       if (completedMatch) {
         cumulative += getDailyProducedQty(r, completedMatch, mIdx);
         continue;
       }
       // Check running entry in machineLists
       const e = machineLists[mIdx][r];
-      if (!e || e.isBlank || e.jobId !== targetJobId) break;
+      if (!e || e.isBlank || e.product === 'None' || jobKey(e) !== targetKey) break;
       cumulative += getDailyProducedQty(r, e, mIdx);
     }
     return cumulative;
