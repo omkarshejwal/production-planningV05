@@ -1696,6 +1696,34 @@ export const ProductionPlanningPage: React.FC = () => {
     return cumulative;
   };
 
+  // Determines whether `entry` at (mIdx, rowIdx) is a continuation row of the
+  // logical job that started on the immediately preceding row of the same machine.
+  // Uses the same grouping rules as getCumulativeQty: persisted rows group by DB
+  // jobId, unsaved rows group by machine + bottle name. Only the FIRST row of a
+  // job group displays the Bottle Name; continuation rows leave it empty.
+  const isContinuationEntry = (mIdx: number, rowIdx: number, entry: MachineEntry | null | undefined): boolean => {
+    if (!entry || entry.isBlank || !entry.product || entry.product === 'None' || rowIdx <= 0) return false;
+
+    const groupKey = (e: MachineEntry | null | undefined): string | null => {
+      if (!e || e.isBlank || !e.product || e.product === 'None') return null;
+      const id = e.jobId && String(e.jobId).trim() !== '' ? String(e.jobId) : '';
+      if (id) return `db:${id}`;
+      const name = e.product.toLowerCase();
+      return name ? `local:${mIdx}:${name}` : null;
+    };
+
+    const targetKey = groupKey(entry);
+    if (!targetKey) return false;
+
+    const prevCompleted = completedJobMap[`${mIdx}-${rowIdx - 1}`] ?? [];
+    if (prevCompleted.some(c => groupKey(c) === targetKey)) return true;
+
+    const prevRunning = machineLists[mIdx]?.[rowIdx - 1];
+    if (prevRunning && groupKey(prevRunning) === targetKey) return true;
+
+    return false;
+  };
+
 
   // Total draw for a visual row: sum tons/day across all machines.
   // During changeover (running entry has no bottle set) we continue
@@ -1795,74 +1823,113 @@ export const ProductionPlanningPage: React.FC = () => {
           <>
             <div className="border-t border-[#E5E7EB]" />
             <div className="px-4 py-3 flex flex-wrap items-center gap-3">
-              {/* Left: Title + Month */}
-              <div className="flex items-center gap-2 min-w-0">
-                <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">Production Planning</h1>
-                <span className="text-sm font-semibold text-[#2563EB] whitespace-nowrap">{monthLabel}</span>
-              </div>
 
-              {/* Date filters */}
-              <div className="flex items-center gap-2">
-                <div>
-                  <label className="block text-[11px] font-medium text-[#6B7280] mb-0.5">From Date</label>
-                  <input type="date" value={draftFromDate} onChange={e => setDraftFromDate(e.target.value)}
-                    className="h-8 px-2 text-xs border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
+              {/* Filter controls row */}
+              <div className="flex items-end w-full">
+                {/* Date filters */}
+                <div className="flex items-end gap-2">
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#6B7280] mb-0.5">
+                      From Date
+                    </label>
+                    <input
+                      type="date"
+                      value={draftFromDate}
+                      onChange={e => setDraftFromDate(e.target.value)}
+                      className="h-8 px-2 text-xs border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#6B7280] mb-0.5">
+                      To Date
+                    </label>
+                    <input
+                      type="date"
+                      value={draftToDate}
+                      onChange={e => setDraftToDate(e.target.value)}
+                      className="h-8 px-2 text-xs border border-[#E5E7EB] rounded bg-white text-[#111827]"
+                    />
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleApply}
+                      className="h-8 px-3 text-xs font-semibold bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors"
+                    >
+                      Apply
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleReset}
+                      className="h-8 px-3 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors"
+                    >
+                      Clear Filter
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-[#6B7280] mb-0.5">To Date</label>
-                  <input type="date" value={draftToDate} onChange={e => setDraftToDate(e.target.value)}
-                    className="h-8 px-2 text-xs border border-[#E5E7EB] rounded bg-white text-[#111827] focus:outline-none focus:border-[#2563EB]" />
-                </div>
-                <div className="flex items-end gap-1.5">
-                  <button type="button" onClick={handleApply}
-                    className="h-8 px-3 text-xs font-semibold bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors">
-                    Apply
+
+                {/* Month navigation - far right */}
+                <div className="ml-auto flex items-center gap-1.5">
+                  {/* Previous Month */}
+                  <button
+                    onClick={() => {
+                      const [currentYear, currentMonth] =
+                        normalizeMonthKey(selectedMonth).split('-').map(Number);
+
+                      const previousDate = new Date(currentYear, currentMonth - 2, 1);
+                      const previousMonth = `${previousDate.getFullYear()}-${String(
+                        previousDate.getMonth() + 1
+                      ).padStart(2, '0')}`;
+
+                      switchToMonth(previousMonth);
+                    }}
+                    className="h-8 flex items-center gap-1 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors"
+                  >
+                    <ChevronLeft size={12} />
+                    Previous Month
                   </button>
-                  <button type="button" onClick={handleReset}
-                    className="h-8 px-3 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-                    Clear Filter
+
+                  {/* Current Month */}
+                  <button
+                    onClick={() => {
+                      const today = new Date();
+                      const currentMonth = `${today.getFullYear()}-${String(
+                        today.getMonth() + 1
+                      ).padStart(2, '0')}`;
+
+                      switchToMonth(currentMonth);
+                    }}
+                    className={`h-8 px-2.5 text-xs font-medium border rounded transition-colors ${isSelectedMonthCurrentMonth
+                        ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
+                        : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
+                      }`}
+                  >
+                    Current Month
+                  </button>
+
+                  {/* Next Month */}
+                  <button
+                    onClick={() => {
+                      const [currentYear, currentMonth] =
+                        normalizeMonthKey(selectedMonth).split('-').map(Number);
+
+                      const nextDate = new Date(currentYear, currentMonth, 1);
+                      const nextMonth = `${nextDate.getFullYear()}-${String(
+                        nextDate.getMonth() + 1
+                      ).padStart(2, '0')}`;
+
+                      switchToMonth(nextMonth);
+                    }}
+                    className="h-8 flex items-center gap-1 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors"
+                  >
+                    Next Month
+                    <ChevronRight size={12} />
                   </button>
                 </div>
-              </div>
-
-              {/* Divider */}
-              <div className="w-px h-6 bg-[#E5E7EB] hidden sm:block" />
-
-              {/* Month nav buttons */}
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => {
-                    const [currentYear, currentMonth] = normalizeMonthKey(selectedMonth).split('-').map(Number);
-                    const previousDate = new Date(currentYear, currentMonth - 2, 1);
-                    const previousMonth = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, '0')}`;
-                    switchToMonth(previousMonth);
-                  }}
-                  className="h-8 flex items-center gap-1 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-                  <ChevronLeft size={12} /> Previous Month
-                </button>
-                <button
-                  onClick={() => {
-                    const today = new Date();
-                    const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-                    switchToMonth(currentMonth);
-                  }}
-                  className={`h-8 px-2.5 text-xs font-medium border rounded transition-colors ${
-                    isSelectedMonthCurrentMonth
-                      ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
-                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
-                  }`}>
-                  Current Month
-                </button>
-                <button
-                  onClick={() => {
-                    const [currentYear, currentMonth] = normalizeMonthKey(selectedMonth).split('-').map(Number);
-                    const nextDate = new Date(currentYear, currentMonth, 1);
-                    const nextMonth = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`;
-                    switchToMonth(nextMonth);
-                  }}
-                  className="h-8 flex items-center gap-1 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-                  Next Month <ChevronRight size={12} />
-                </button>
               </div>
             </div>
 
@@ -1935,7 +2002,22 @@ export const ProductionPlanningPage: React.FC = () => {
       <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden">
         {/* Toolbar */}
         <div className="flex items-center px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
-          <span className="text-xs font-medium text-[#6B7280]">Production Register</span>
+          <div className="flex flex-col">
+            <span className="text-xs font-medium text-[#6B7280]">
+              Production Register
+            </span>
+
+            {/* Left: Title + Month */}
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">
+                Production Planning
+              </h1>
+
+              <span className="text-sm font-semibold text-[#2563EB] whitespace-nowrap">
+                {monthLabel}
+              </span>
+            </div>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
@@ -2075,8 +2157,9 @@ export const ProductionPlanningPage: React.FC = () => {
                               validMachine.includes(completedJob.section) &&
                               completedJob.section < validMachine[validMachine.length - 1];
                             const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                            const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
+                            const cellBg = 'bg-[#DBEAFE]';
                             const txt = 'text-sm text-[#6B7280]';
+                            const isComplContinuation = isContinuationEntry(mIdx, rowIdx, completedJob);
                             return (
                               <React.Fragment key={mIdx}>
                                 {/* BN */}
@@ -2089,52 +2172,46 @@ export const ProductionPlanningPage: React.FC = () => {
                                         {fmtTime(completedJob.startTime)} → {fmtTime(completedJob.endTime)}
                                       </span>
                                     </div>
-                                    <div className="flex items-center gap-1">
-                                      <button
-                                        onClick={() => openEditCompleted(mIdx, rowIdx, completedIdx)}
-                                        title="Edit completed job"
-                                        className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors"
-                                      >
-                                        <Pencil size={8} />
-                                      </button>
-                                      <button
-                                        onClick={() => handleExtendJob(mIdx, rowIdx, 1, completedIdx)}
-                                        title="Extend this ended job by one day to the next blank date"
-                                        className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors"
-                                      >
-                                        <Plus size={8} />
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          if (!completedJob.startTime) {
-                                            toast.error("Cannot delete: job start time is missing");
-                                            return;
-                                          }
-                                          const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
-                                          if (!planDate) return;
-                                          const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-                                          setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, isCompleted: true });
-                                        }}
-                                        title="Delete historical job"
-                                        className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
-                                      >
-                                        <Minus size={8} />
-                                      </button>
-                                    </div>
                                   </div>
                                   <p
-                                    onMouseEnter={e => completedJob.product && completedJob.product !== 'None' ? showTooltip(e, completedJob, mIdx, rowIdx) : undefined}
+                                    onMouseEnter={e => !isComplContinuation && completedJob.product && completedJob.product !== 'None' ? showTooltip(e, completedJob, mIdx, rowIdx) : undefined}
                                     onMouseMove={moveTooltip}
                                     onMouseLeave={hideTooltip}
                                     className={`text-[11px] font-semibold truncate leading-tight cursor-default ${completedJob.product && completedJob.product !== 'None' ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
-                                    {completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—'}
+                                    {isComplContinuation ? '' : (completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—')}
                                   </p>
-                                  {/* Job ID badge for completed jobs */}
-                                  {completedJob.product && completedJob.product !== 'None' && completedJob.jobId && (
-                                    <span className="text-[8px] font-mono text-[#6B7280] leading-none">
-                                      Job {completedJob.jobId}
-                                    </span>
-                                  )}
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => openEditCompleted(mIdx, rowIdx, completedIdx)}
+                                      title="Edit completed job"
+                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors"
+                                    >
+                                      <Pencil size={8} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleExtendJob(mIdx, rowIdx, 1, completedIdx)}
+                                      title="Extend this ended job by one day to the next blank date"
+                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors"
+                                    >
+                                      <Plus size={8} />
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        if (!completedJob.startTime) {
+                                          toast.error("Cannot delete: job start time is missing");
+                                          return;
+                                        }
+                                        const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
+                                        if (!planDate) return;
+                                        const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+                                        setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, isCompleted: true });
+                                      }}
+                                      title="Delete historical job"
+                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
+                                    >
+                                      <Minus size={8} />
+                                    </button>
+                                  </div>
                                   {/* Job-wide cumulative total */}
                                   {(completedJob.cumulativeQty ?? 0) > 0 && (
                                     <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
@@ -2206,6 +2283,7 @@ export const ProductionPlanningPage: React.FC = () => {
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay = !isContinuing;
                           const canExtend = hasProduct;
+                          const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                           const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
@@ -2219,23 +2297,24 @@ export const ProductionPlanningPage: React.FC = () => {
                                   <>
                                     <div className="flex items-center justify-between gap-1 mb-0.5">
                                       <p
-                                        onMouseEnter={e => hasProduct ? showTooltip(e, entry, mIdx, rowIdx) : undefined}
+                                        onMouseEnter={e => hasProduct && !isRunContinuation ? showTooltip(e, entry, mIdx, rowIdx) : undefined}
                                         onMouseMove={hasProduct ? moveTooltip : undefined}
                                         onMouseLeave={hasProduct ? hideTooltip : undefined}
                                         className={`text-[11px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
-                                        {hasProduct ? entry.product : 'No bottle set'}
+                                        {hasProduct ? (isRunContinuation ? '' : entry.product) : 'No bottle set'}
                                       </p>
-                                      {/* Job ID badge under bottle name */}
+                                      {/* Job ID badge under bottle name
                                       {hasProduct && entry.jobId && (
                                         <span className="text-[8px] font-mono text-[#6B7280] leading-none">
                                           Job {entry.jobId}
                                         </span>
-                                      )}
+                                      )} */}
                                       {/* Quick-edit shortcut beside "No bottle set" */}
                                       {!hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"
-                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                          className="h-5 shrink-0 flex items-center gap-0.5 px-1.5 rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors whitespace-nowrap">
                                           <Pencil size={7} />
+                                          <span className="text-[9px] font-semibold leading-none">New Job</span>
                                         </button>
                                       )}
                                       <button
@@ -2290,8 +2369,9 @@ export const ProductionPlanningPage: React.FC = () => {
                                 ) : (
                                   <div className="flex items-center gap-1 py-0.5">
                                     <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
-                                      className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                      className="h-5 flex items-center gap-0.5 px-1.5 rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors whitespace-nowrap">
                                       <Pencil size={8} />
+                                      <span className="text-[9px] font-semibold leading-none">New Job</span>
                                     </button>
                                     {isBlank && (
                                       <button onClick={() => deleteBlankEntry(mIdx, rowIdx)} title="Remove row"

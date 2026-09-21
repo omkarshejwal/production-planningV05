@@ -120,6 +120,7 @@ export async function buildExportData(
         
       const entry: MachineEntry = {
           eid: Math.random(),
+          jobId: (job as any).job_id != null ? String((job as any).job_id) : undefined,
           product,
           wt: Number(job.weight) || 0,
           speeds: Number(job.speeds) || 0,
@@ -186,6 +187,30 @@ export async function buildExportData(
       return calculateDailyDrawForEntries(dayValue, perMachineEntries);
   };
 
+  // ── Logical-job continuation detection (mirrors the screen's logic) ───────
+  // Rows belonging to the same logical job share the DB job_id (continuation
+  // rows created by "+"/extend inherit the source job's job_id), so a row is a
+  // continuation when the previous day on the same machine holds an entry with
+  // the same group key. Rows without a job_id group by machine + bottle name —
+  // the same identity "+"/extend propagates locally before a save.
+  const entryGroupKey = (e: MachineEntry | null | undefined, mIdx: number): string | null => {
+    if (!e || e.isBlank || !e.product || e.product === 'None') return null;
+    const id = e.jobId && String(e.jobId).trim() !== '' ? String(e.jobId) : '';
+    if (id) return `db:${id}`;
+    const name = e.product.toLowerCase();
+    return name ? `local:${mIdx}:${name}` : null;
+  };
+
+  const isContinuationEntry = (mIdx: number, rowIdx: number, e: MachineEntry | null | undefined): boolean => {
+    if (!e || e.isBlank || !e.product || e.product === 'None' || rowIdx <= 0) return false;
+    const key = entryGroupKey(e, mIdx);
+    if (!key) return false;
+    const prevCompleted = completedJobMap[`${mIdx}-${rowIdx - 1}`] ?? [];
+    if (prevCompleted.some(c => entryGroupKey(c, mIdx) === key)) return true;
+    const prevRunning = machineLists[mIdx]?.[rowIdx - 1];
+    return !!prevRunning && entryGroupKey(prevRunning, mIdx) === key;
+  };
+
   // 4. Transform into flattened array (filtered down to strictly fromDate -> toDate)
   const results: ExportRow[] = [];
   const visibleDateSet = new Set<string>(visibleDateIsos ?? []);
@@ -234,7 +259,7 @@ export async function buildExportData(
                   rowData.machines.push({
                       mIdx,
                       isCompleted: true,
-                      product: completedJob.product && completedJob.product !== 'None' ? completedJob.product : '',
+                      product: isContinuationEntry(mIdx, rowIdx, completedJob) ? '' : (completedJob.product && completedJob.product !== 'None' ? completedJob.product : ''),
                       sec: completedJob.section ?? '',
                       wt: completedJob.wt || '',
                       cut: completedJob.speeds || '',
@@ -265,7 +290,7 @@ export async function buildExportData(
                       rowData.machines.push({
                           mIdx,
                           isCompleted: false,
-                          product: hasProduct ? entry.product : '',
+                          product: hasProduct && !isContinuationEntry(mIdx, rowIdx, entry) ? entry.product : '',
                           sec: hasProduct ? (entry.section ?? '') : '',
                           wt: hasProduct ? (entry.wt || '') : '',
                           cut: hasProduct ? (entry.speeds || '') : '',
