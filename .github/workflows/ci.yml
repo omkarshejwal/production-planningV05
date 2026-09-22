@@ -65,17 +65,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set lowercase repository owner
+        id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_OUTPUT
+
       - name: Build and push Backend Image
         uses: docker/build-push-action@v5
         with:
           context: ./Backend
           push: true
           # Note: Docker tags must be entirely lowercase!
-          tags: ghcr.io/omkarshejwal/vitrumappsv01-backend:latest
+          tags: ghcr.io/${{ steps.repo.outputs.owner }}/vitrumappsv01-backend:latest
 
       - name: Build and push Frontend Image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/omkarshejwal/vitrumappsv01-frontend:latest
+          tags: ghcr.io/${{ steps.repo.outputs.owner }}/vitrumappsv01-frontend:latest
