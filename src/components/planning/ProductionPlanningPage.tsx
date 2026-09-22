@@ -865,6 +865,23 @@ export const ProductionPlanningPage: React.FC = () => {
     }
   };
 
+  // Keyboard shortcut: Ctrl+S (Windows/Linux) or Cmd+S (Mac) to trigger Save
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
+        event.preventDefault();
+        if (isDirty && !isSaving) {
+          handleSaveToDb();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isDirty, isSaving, handleSaveToDb]);
+
 
   const allRowIndices = useMemo(() =>
     Array.from({ length: dateRows.length }, (_, i) => i),
