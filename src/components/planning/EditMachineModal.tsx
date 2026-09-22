@@ -26,7 +26,7 @@ export function EditMachineModal({
 }) {
   const mIdx = machineNo - 1;
   const bottles = useMemo(() => getMachineBottles(machineNo), [machineNo]);
-  
+
   const [selected, setSelected] = useState(currentEntry.product);
   const [bottleSearch, setBottleSearch] = useState('');
   const [bottleDropdownOpen, setBottleDropdownOpen] = useState(false);
@@ -63,9 +63,9 @@ export function EditMachineModal({
       const next = { ...prev };
       if (key in next) {
         delete next[key];
-        if (key === 'SN') { 
-          setPalletPacking(null); 
-          setPalletPackingQty(''); 
+        if (key === 'SN') {
+          setPalletPacking(null);
+          setPalletPackingQty('');
         }
       } else {
         next[key] = '';
@@ -78,10 +78,14 @@ export function EditMachineModal({
     setPackingAllocations(prev => ({ ...prev, [key]: val }));
 
   const filteredBottles = useMemo(() => {
-    const query = bottleSearch.trim().toLowerCase();
-    if (!query) return bottles;
-    return bottles.filter((b) => b.name.toLowerCase().includes(query));
-  }, [bottles, bottleSearch]);
+  const query = bottleSearch.trim().toLowerCase();
+
+  const filtered = query
+    ? bottles.filter((b) => b.name.toLowerCase().includes(query))
+    : bottles;
+
+  return [...filtered].sort((a, b) => Number(a.wt) - Number(b.wt));
+}, [bottles, bottleSearch]);
 
   const bottleRef = selected === 'None' ? NONE_ENTRY : bottles.find(b => b.name === selected) ?? NONE_ENTRY;
 
@@ -107,7 +111,7 @@ export function EditMachineModal({
   const allocKeys = Object.keys(packingAllocations) as PackCatKey[];
   const numericAllocs: Partial<Record<PackCatKey, number>> = {};
   let totalAlloc = 0;
-  
+
   for (const k of allocKeys) {
     const v = parseFloat(packingAllocations[k] || '0') || 0;
     numericAllocs[k] = v;
@@ -156,10 +160,10 @@ export function EditMachineModal({
           {/* Machine Number */}
           <div>
             <label className="block text-xs font-medium text-[#6B7280] mb-1.5">Machine Number</label>
-            <input 
-              readOnly 
+            <input
+              readOnly
               value={`Machine No ${machineNo}`}
-              className="w-full h-9 px-3 text-sm border border-[#E5E7EB] rounded-lg bg-[#F8FAFC] text-[#6B7280] cursor-not-allowed" 
+              className="w-full h-9 px-3 text-sm border border-[#E5E7EB] rounded-lg bg-[#F8FAFC] text-[#6B7280] cursor-not-allowed"
             />
           </div>
 
@@ -206,19 +210,22 @@ export function EditMachineModal({
                       None
                     </button>
                     {filteredBottles.map(b => (
-                      <button
-                        key={b.name}
-                        type="button"
-                        onClick={() => {
-                          setSelected(b.name);
-                          setBottleSearch('');
-                          setBottleDropdownOpen(false);
-                        }}
-                        className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${selected === b.name ? 'bg-[#EFF6FF] text-[#2563EB] font-medium' : 'text-[#374151]'}`}
-                      >
-                        {b.name}
-                      </button>
-                    ))}
+  <button
+    key={b.name}
+    type="button"
+    onClick={() => {
+      setSelected(b.name);
+      setBottleSearch('');
+      setBottleDropdownOpen(false);
+    }}
+    className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${selected === b.name ? 'bg-[#EFF6FF] text-[#2563EB] font-medium' : 'text-[#374151]'}`}
+  >
+    <div className="flex items-center justify-between w-full">
+      <span>{b.name}</span>
+      <span className="text-[#6B7280] font-medium">{b.wt}g</span>
+    </div>
+  </button>
+))}
                   </div>
                 </div>
               )}
@@ -293,12 +300,12 @@ export function EditMachineModal({
               {PACKING_OPTIONS.map(opt => {
                 const isSelected = opt.key in packingAllocations;
                 const qtyVal = packingAllocations[opt.key] ?? '';
-                
+
                 return (
                   <div key={opt.key} className={`rounded-lg border transition-colors ${isSelected ? 'border-[#2563EB] bg-[#EFF6FF]' : 'border-[#E5E7EB] bg-white'}`}>
                     <div className="flex items-center gap-3 px-3 py-2.5">
-                      <button 
-                        type="button" 
+                      <button
+                        type="button"
                         onClick={() => toggleCategory(opt.key)}
                         className={`w-4 h-4 shrink-0 rounded border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-[#2563EB] border-[#2563EB]' : 'border-[#D1D5DB] bg-white'}`}
                       >
@@ -366,10 +373,10 @@ export function EditMachineModal({
               </div>
               <div
                 className="overflow-hidden transition-all duration-200 ease-in-out"
-                style={{ 
-                  maxHeight: palletPacking === true ? '80px' : '0px', 
-                  opacity: palletPacking === true ? 1 : 0, 
-                  marginTop: palletPacking === true ? '12px' : '0px' 
+                style={{
+                  maxHeight: palletPacking === true ? '80px' : '0px',
+                  opacity: palletPacking === true ? 1 : 0,
+                  marginTop: palletPacking === true ? '12px' : '0px'
                 }}
               >
                 <label className="block text-xs font-medium text-[#374151] mb-1.5">Pallet Packing Quantity</label>
@@ -387,19 +394,20 @@ export function EditMachineModal({
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-[#E5E7EB] shrink-0">
-          <button 
-            onClick={onClose}
-            className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded-lg text-[#374151] bg-white hover:bg-[#F8FAFC] transition-colors"
-          >
-            Cancel
-          </button>
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-[#E5E7EB] shrink-0">
           <button
             disabled={!isAllocationValid}
             onClick={handleSave}
             className="h-9 px-4 text-sm font-semibold rounded-lg text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Save Changes
+            Save
+          </button>
+
+          <button
+            onClick={onClose}
+            className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded-lg text-[#374151] bg-white hover:bg-[#F8FAFC] transition-colors"
+          >
+            Cancel
           </button>
         </div>
       </div>

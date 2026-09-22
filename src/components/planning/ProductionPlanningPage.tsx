@@ -1904,8 +1904,8 @@ export const ProductionPlanningPage: React.FC = () => {
                       switchToMonth(currentMonth);
                     }}
                     className={`h-8 px-2.5 text-xs font-medium border rounded transition-colors ${isSelectedMonthCurrentMonth
-                        ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
-                        : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
+                      ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
+                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
                       }`}
                   >
                     Current Month
@@ -2001,23 +2001,35 @@ export const ProductionPlanningPage: React.FC = () => {
       {/* Table Container */}
       <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
           <div className="flex flex-col">
             <span className="text-xs font-medium text-[#6B7280]">
-              Production Register
+              Production Planning
             </span>
 
-            {/* Left: Title + Month */}
             <div className="flex items-center gap-2 min-w-0">
-              <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">
+              {/* <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">
                 Production Planning
-              </h1>
+              </h1> */}
 
-              <span className="text-sm font-semibold text-[#2563EB] whitespace-nowrap">
+              <span className="text-sm font-semibold text-[#1e5be1] whitespace-nowrap">
                 {monthLabel}
               </span>
             </div>
           </div>
+
+          {/* <button
+            onClick={handleSaveToDb}
+            disabled={!isDirty || isSaving}
+            className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
+      ${isDirty && !isSaving
+                ? 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
+                : 'bg-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed'
+              }`}
+          >
+            <Save size={15} />
+            {isSaving ? 'Saving…' : 'Save'}
+          </button> */}
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
@@ -2110,9 +2122,9 @@ export const ProductionPlanningPage: React.FC = () => {
                             className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}>
                             <div>{dateRow?.date ?? ''}</div>
                             <div className="text-[10px] font-normal text-[#6B7280]">{dateRow?.weekday ?? ''}</div>
-                            {isHoliday && holidayName && (
+                            {/* {isHoliday && holidayName && (
                               <div className="text-[9px] font-medium text-red-600 mt-0.5">{holidayName}</div>
-                            )}
+                            )} */}
                           </td>
                         )}
 
@@ -2213,13 +2225,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                     </button>
                                   </div>
                                   {/* Job-wide cumulative total */}
-                                  {(completedJob.cumulativeQty ?? 0) > 0 && (
+                                  {/* {(completedJob.cumulativeQty ?? 0) > 0 && (
                                     <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
                                       <span className="text-[8px] text-[#1D4ED8] font-semibold">
                                         Good: {calcGoodBottles(completedJob.cumulativeQty ?? 0).toLocaleString()} bottles
                                       </span>
                                     </div>
-                                  )}
+                                  )} */}
                                 </td>
                                 {/* Sec */}
                                 {showSection && (
@@ -2303,18 +2315,17 @@ export const ProductionPlanningPage: React.FC = () => {
                                         className={`text-[11px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                         {hasProduct ? (isRunContinuation ? '' : entry.product) : 'No bottle set'}
                                       </p>
-                                      {/* Job ID badge under bottle name
+                                      {/* Job ID badge under bottle name */}
                                       {hasProduct && entry.jobId && (
                                         <span className="text-[8px] font-mono text-[#6B7280] leading-none">
                                           Job {entry.jobId}
                                         </span>
-                                      )} */}
+                                      )}
                                       {/* Quick-edit shortcut beside "No bottle set" */}
                                       {!hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"
-                                          className="h-5 shrink-0 flex items-center gap-0.5 px-1.5 rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors whitespace-nowrap">
+                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={7} />
-                                          <span className="text-[9px] font-semibold leading-none">New Job</span>
                                         </button>
                                       )}
                                       <button
@@ -2369,9 +2380,8 @@ export const ProductionPlanningPage: React.FC = () => {
                                 ) : (
                                   <div className="flex items-center gap-1 py-0.5">
                                     <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
-                                      className="h-5 flex items-center gap-0.5 px-1.5 rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors whitespace-nowrap">
+                                      className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                       <Pencil size={8} />
-                                      <span className="text-[9px] font-semibold leading-none">New Job</span>
                                     </button>
                                     {isBlank && (
                                       <button onClick={() => deleteBlankEntry(mIdx, rowIdx)} title="Remove row"
@@ -2477,7 +2487,7 @@ export const ProductionPlanningPage: React.FC = () => {
             }`}
         >
           <Save size={15} />
-          {isSaving ? 'Saving…' : 'Save Changes'}
+          {isSaving ? 'Saving…' : 'Save'}
         </button>
       </div>
 
