@@ -2224,13 +2224,27 @@ export const ProductionPlanningPage: React.FC = () => {
 
                         {/* Date — rowSpan across all sub-rows for this date */}
                         {isFirstSlot && (
-                          <td rowSpan={maxSlots}
-                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}>
-                            <div>{dateRow?.date ?? ''}</div>
-                            <div className="text-[10px] font-normal text-[#6B7280]">{dateRow?.weekday ?? ''}</div>
-                            {/* {isHoliday && holidayName && (
-                              <div className="text-[9px] font-medium text-red-600 mt-0.5">{holidayName}</div>
-                            )} */}
+                          <td
+                            rowSpan={maxSlots}
+                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}
+                          >
+                            <div
+                              className="relative group cursor-default"
+                              title={isHoliday && holidayName ? holidayName : undefined}
+                            >
+                              <div>{dateRow?.date ?? ''}</div>
+                              <div className="text-[10px] font-normal text-[#6B7280]">
+                                {dateRow?.weekday ?? ''}
+                              </div>
+
+                              {isHoliday && holidayName && (
+                                <div className="absolute left-full top-0 ml-2 z-50 hidden group-hover:block">
+                                  <div className="bg-[#111827] text-white text-[10px] font-medium px-2 py-1 rounded shadow-lg whitespace-nowrap">
+                                    {holidayName}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </td>
                         )}
 
