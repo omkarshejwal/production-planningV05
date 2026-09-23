@@ -1406,7 +1406,7 @@ export const ProductionPlanningPage: React.FC = () => {
           ...sourceEntry,
           eid: Math.random(),
           jobId: continuationJobId,
-          startTime: '09:00',
+          startTime: '07:00',
           endTime: '',
           status: 'running' as const,
         };
