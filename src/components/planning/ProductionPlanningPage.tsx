@@ -2160,7 +2160,7 @@ export const ProductionPlanningPage: React.FC = () => {
                   <th className="px-3 py-2 text-left text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] sticky left-0 bg-[#EFF6FF]"></th>
                   {[0, 1, 2, 3].map(mIdx => (
                     <React.Fragment key={mIdx}>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#2563EB] border-r border-[#E5E7EB] w-40 bg-[#EFF6FF]">
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-black border-r border-[#E5E7EB] w-40 bg-[#EFF6FF]">
                         Bottle Name
                       </th>
                       {showSection && (
@@ -2475,7 +2475,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                       </div>
                                     )}
                                     <div className="flex items-center gap-1 flex-wrap">
-                                      {hasProduct && !isRunContinuation && (
+                                      {hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
                                           className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={8} />
