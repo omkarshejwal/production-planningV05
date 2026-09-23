@@ -10,6 +10,7 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const hourColRef = useRef<HTMLDivElement>(null);
   const minColRef = useRef<HTMLDivElement>(null);
 
   // Parse 24-h "HH:MM" → { h12, m, meridiem }
@@ -28,6 +29,14 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
   const display = value
     ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ${mer}`
     : '';
+
+  // Scroll hour column to selected hour when opened
+  useEffect(() => {
+    if (open && hourColRef.current) {
+      const btn = hourColRef.current.children[h - 1] as HTMLButtonElement | undefined;
+      btn?.scrollIntoView({ block: 'center' });
+    }
+  }, [open, h]);
 
   // Scroll minute column to selected minute when opened
   useEffect(() => {
@@ -59,7 +68,7 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
       {open && (
         <div className="absolute top-full left-0 mt-1 z-200 bg-white border border-[#E5E7EB] rounded-lg shadow-xl flex overflow-hidden">
           {/* Hours 01–12 */}
-          <div className="flex flex-col overflow-y-auto max-h-49 py-1 w-11">
+          <div ref={hourColRef} className="flex flex-col overflow-y-auto max-h-49 py-1 w-11">
             {Array.from({ length: 12 }, (_, i) => i + 1).map(hr => (
               <button key={hr} type="button"
                 onClick={() => pick(hr, m, mer)}
@@ -69,9 +78,9 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
             ))}
           </div>
           <div className="w-px bg-[#E5E7EB]" />
-          {/* Minutes 00, 10, 15, 20, 30, 45 */}
+          {/* Minutes 00, 15, 30, 45 */}
           <div ref={minColRef} className="flex flex-col overflow-y-auto max-h-49 py-1 w-11">
-          {[0, 10, 15, 20, 30, 45].map(min => (
+          {[0, 15, 30, 45].map(min => (
             <button key={min} type="button"
              onClick={() => pick(h, min, mer)}
                 className={`py-1 text-xs font-medium text-center mx-1 rounded transition-colors ${m === min ? 'bg-[#2563EB] text-white' : 'hover:bg-[#EFF6FF] text-[#374151]'}`}>
