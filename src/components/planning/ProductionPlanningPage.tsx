@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
 import { planningRepository } from '../../services/planningRepository';
 import { ProductionJobRow } from '../../data/planningSchema';
+import { ProductionJob } from '../../types';
 import {
   ChevronDown,
   ChevronLeft,
@@ -221,6 +222,21 @@ const getMonthRange = (value: string) => {
   return { normalized, year, month, monthStart, monthEnd };
 };
 
+const DEFAULT_ROLLING_DAYS_BEFORE = 10;
+const DEFAULT_ROLLING_DAYS_AFTER = 20;
+
+const toIsoDateString = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+const getDefaultPlanningRange = (today = new Date()) => {
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - DEFAULT_ROLLING_DAYS_BEFORE);
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + DEFAULT_ROLLING_DAYS_AFTER);
+  return {
+    startIso: toIsoDateString(start),
+    endIso: toIsoDateString(end),
+  };
+};
+
 const buildExportFilename = (
   month: number,
   year: number,
@@ -266,13 +282,26 @@ function loadFromStorage(): { machineLists: MachineLists; completedJobMap: Compl
 }
 
 export const ProductionPlanningPage: React.FC = () => {
-  const { jobs, bottles, holidays, refreshPlanner, reloadJobsForWindow, selectedMonth, setSelectedMonth, fromDate, setFromDate, toDate, setToDate } = useERP();
+  const { jobs, bottles, holidays, productionHistory, refreshPlanner, reloadJobsForWindow, selectedMonth, setSelectedMonth, setFromDate, setToDate } = useERP();
 
   // Filters
-  const [draftFromDate, setDraftFromDate] = useState(fromDate);
-  const [draftToDate, setDraftToDate] = useState(toDate);
-  const [appliedFromDate, setAppliedFromDate] = useState(fromDate);
-  const [appliedToDate, setAppliedToDate] = useState(toDate);
+  const [dayTick, setDayTick] = useState(0);
+  useEffect(() => {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const timer = setTimeout(
+      () => setDayTick(t => t + 1),
+      nextMidnight.getTime() - now.getTime()
+    );
+    return () => clearTimeout(timer);
+  }, [dayTick]);
+
+  const defaultPlanningRange = useMemo(() => getDefaultPlanningRange(), [dayTick]);
+
+  const [draftFromDate, setDraftFromDate] = useState(() => defaultPlanningRange.startIso);
+  const [draftToDate, setDraftToDate] = useState(() => defaultPlanningRange.endIso);
+  const [appliedFromDate, setAppliedFromDate] = useState('');
+  const [appliedToDate, setAppliedToDate] = useState('');
 
   // Lowercase name → first matching bottle (for the per-cell product lookup)
   const bottleNameLookup = useMemo(() => {
@@ -285,9 +314,8 @@ export const ProductionPlanningPage: React.FC = () => {
   }, [bottles]);
 
   const dateRows = useMemo<DateRow[]>(() => {
-    const { monthStart, monthEnd } = getMonthRange(selectedMonth);
-    const startIso = appliedFromDate || monthStart;
-    const endIso = appliedToDate || monthEnd;
+    const startIso = appliedFromDate || defaultPlanningRange.startIso;
+    const endIso = appliedToDate || defaultPlanningRange.endIso;
 
     const [startYear, startMonth, startDay] = startIso.split('-').map(Number);
     const [endYear, endMonth, endDay] = endIso.split('-').map(Number);
@@ -308,7 +336,7 @@ export const ProductionPlanningPage: React.FC = () => {
         weekday: d.toLocaleDateString('en-GB', { weekday: 'long' }),
       };
     });
-  }, [selectedMonth, appliedFromDate, appliedToDate]);
+  }, [appliedFromDate, appliedToDate, defaultPlanningRange]);
 
   // Set of row indices whose date falls on a Sunday (day 0)
   const sundayRowIndices = useMemo(() => {
@@ -622,7 +650,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number } | null>(null);
   const [endJobModal, setEndJobModal] = useState<{ mIdx: number; rowIdx: number } | null>(null);
-  const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; isCompleted?: boolean } | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; jobId?: string; section?: number; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -631,7 +659,11 @@ export const ProductionPlanningPage: React.FC = () => {
   //                   must be re-sent to the backend. Rows without a job_id are
   //                   brand-new jobs and are always included in the save payload.
   //   deletedJobKeys— DB rows the user removed, keyed by
-  //                   `${plan_date}|${machine_no}|${start_time}` (DELETEd on save).
+  //                   `${plan_date}|${machine_no}|${start_time}|${job_id}|${section}`
+  //                   (DELETEd on save). The full row identity is stored because
+  //                   production_job.job_id is NOT unique: an extended job shares
+  //                   the same job_id across many dates, so job_id alone can not
+  //                   identify which day was removed.
   const [dirtyJobIds, setDirtyJobIds] = useState<Set<string>>(new Set());
   const [deletedJobKeys, setDeletedJobKeys] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
@@ -662,12 +694,15 @@ export const ProductionPlanningPage: React.FC = () => {
     });
   }, []);
 
-  // Record a DB row (plan_date|machine_no|start_time) that the user deleted so
-  // it is DELETEd on save instead of being re-created by a full-dataset diff.
-  const markJobDeleted = useCallback((planDate: string, machineNo: string, startTime: string) => {
+  // Record a DB row (plan_date|machine_no|start_time|job_id|section) that the
+  // user deleted so it is DELETEd on save instead of being re-created by a
+  // full-dataset diff. job_id + section disambiguate the exact DB row(s): the
+  // same job_id can belong to many dates (extended jobs) and the same
+  // (plan_date, machine_no, start_time) slot can hold several section rows.
+  const markJobDeleted = useCallback((planDate: string, machineNo: string, startTime: string, jobId?: string, section?: number) => {
     setDeletedJobKeys(prev => {
       const next = new Set(prev);
-      next.add(`${planDate}|${machineNo}|${startTime}`);
+      next.add(`${planDate}|${machineNo}|${startTime}|${jobId ?? '-'}|${section ?? '-'}`);
       return next;
     });
   }, []);
@@ -834,8 +869,10 @@ export const ProductionPlanningPage: React.FC = () => {
       const failedDeletes = new Set<string>();
       await Promise.all(
         deletedNow.map(async (key) => {
-          const [planDate, machineNo, startTime] = key.split('|');
-          const del = await planningRepository.deleteProductionJob(planDate, machineNo, startTime);
+          const [planDate, machineNo, startTime, jobIdRaw, sectionRaw] = key.split('|');
+          const jobId = jobIdRaw && jobIdRaw !== '-' ? jobIdRaw : undefined;
+          const sectionNum = sectionRaw && sectionRaw !== '-' ? Number(sectionRaw) : undefined;
+          const del = await planningRepository.deleteProductionJob(planDate, machineNo, startTime, jobId, sectionNum);
           if (!del.ok) failedDeletes.add(key);
         })
       );
@@ -900,15 +937,8 @@ export const ProductionPlanningPage: React.FC = () => {
       });
     }
 
-    const { monthStart, monthEnd } = getMonthRange(selectedMonth);
-    return allRowIndices.filter((rowIdx) => {
-      const rowIso = dateRowToIso(dateRows[rowIdx]?.date || '');
-      if (!rowIso) return false;
-      if (rowIso < monthStart) return false;
-      if (rowIso > monthEnd) return false;
-      return true;
-    });
-  }, [allRowIndices, appliedFromDate, appliedToDate, dateRows, selectedMonth]);
+    return allRowIndices;
+  }, [allRowIndices, appliedFromDate, appliedToDate, dateRows]);
 
   const handleApply = () => {
     console.log('CLICKED APPLY');
@@ -957,25 +987,17 @@ export const ProductionPlanningPage: React.FC = () => {
   const isDateFilterActive = Boolean(appliedFromDate || appliedToDate);
 
   React.useEffect(() => {
-    const { normalized, monthStart, monthEnd } = getMonthRange(selectedMonth);
+    const { normalized } = getMonthRange(selectedMonth);
     if (selectedMonth !== normalized) {
       setSelectedMonth(normalized);
     }
-    if (!fromDate) {
-      setFromDate(monthStart);
-    }
-    if (!toDate) {
-      setToDate(monthEnd);
-    }
     if (!draftFromDate) {
-      setDraftFromDate(monthStart);
-      setAppliedFromDate(monthStart);
+      setDraftFromDate(defaultPlanningRange.startIso);
     }
     if (!draftToDate) {
-      setDraftToDate(monthEnd);
-      setAppliedToDate(monthEnd);
+      setDraftToDate(defaultPlanningRange.endIso);
     }
-  }, [selectedMonth, fromDate, toDate, draftFromDate, draftToDate, appliedFromDate, setFromDate, setToDate, setSelectedMonth]);
+  }, [selectedMonth, draftFromDate, draftToDate, defaultPlanningRange, setSelectedMonth]);
 
   const switchToMonth = (targetMonth: string) => {
     if (isDirty) {
@@ -1011,9 +1033,8 @@ export const ProductionPlanningPage: React.FC = () => {
       const exceljsModule: any = await import('exceljs');
       const ExcelJS = exceljsModule.Workbook ? exceljsModule : exceljsModule.default;
 
-      const { monthStart, monthEnd } = getMonthRange(selectedMonth);
-      const startIso = appliedFromDate || monthStart;
-      const endIso = appliedToDate || monthEnd;
+      const startIso = appliedFromDate || defaultPlanningRange.startIso;
+      const endIso = appliedToDate || defaultPlanningRange.endIso;
 
       const visibleDateIsos = filteredRowIndices
         .map(rowIdx => dateRows[rowIdx]?.isoDate ?? '')
@@ -1186,9 +1207,8 @@ export const ProductionPlanningPage: React.FC = () => {
       const autoTableModule: any = await import('jspdf-autotable');
       const autoTable = autoTableModule.autoTable ?? autoTableModule.default;
 
-      const { monthStart, monthEnd } = getMonthRange(selectedMonth);
-      const startIso = appliedFromDate || monthStart;
-      const endIso = appliedToDate || monthEnd;
+      const startIso = appliedFromDate || defaultPlanningRange.startIso;
+      const endIso = appliedToDate || defaultPlanningRange.endIso;
 
       const visibleDateIsos = filteredRowIndices
         .map(rowIdx => dateRows[rowIdx]?.isoDate ?? '')
@@ -1326,10 +1346,7 @@ export const ProductionPlanningPage: React.FC = () => {
         }
 
         // Compute expanded end date (just enough to include the target day).
-        const currentEndIso = appliedToDate || (() => {
-          const { monthEnd } = getMonthRange(selectedMonth);
-          return monthEnd;
-        })();
+        const currentEndIso = appliedToDate || defaultPlanningRange.endIso;
         const [ey, em, ed] = currentEndIso.split('-').map(Number);
         const currentEndDate = new Date(ey, em - 1, ed);
         const newEndIso = targetIso > currentEndIso ? targetIso : currentEndIso;
@@ -1608,7 +1625,7 @@ export const ProductionPlanningPage: React.FC = () => {
       if (prevEntry.startTime && startTime && prevEntry.startTime !== startTime) {
         const planDate = dateRows[rowIdx]?.isoDate;
         const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-        if (planDate) markJobDeleted(planDate, machineNo, prevEntry.startTime);
+        if (planDate) markJobDeleted(planDate, machineNo, prevEntry.startTime, prevEntry.jobId, prevEntry.section);
       }
     }
 
@@ -1672,12 +1689,74 @@ export const ProductionPlanningPage: React.FC = () => {
     return `${(qty / 100000).toFixed(2)}L`;
   };
 
+  // Produced quantity for a persisted history job on its plan_date, mirroring
+  // getDailyProducedQty exactly (same production-hours model, same round-good
+  // step). Used to seed the cumulative running total for Job IDs whose first
+  // displayed day begins AFTER the selected date range.
+  const getHistoryDailyProducedQty = (jobForHistory: ProductionJob, mIdx: number): number => {
+    if (!jobForHistory || !jobForHistory.machineId) return 0;
+    const isoDate = jobForHistory.date || jobForHistory.startDate;
+    if (!isoDate) return 0;
+    const [y, m, d] = isoDate.split('-').map(Number);
+    if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return 0;
+    const dayValue = new Date(y, m - 1, d);
+    const completionClock = jobForHistory.completionTime
+      ? (jobForHistory.completionTime.includes('T')
+        ? jobForHistory.completionTime.split('T')[1].substring(0, 5)
+        : jobForHistory.completionTime.substring(0, 5))
+      : '';
+    const requiredQty = jobForHistory.requiredBottles && jobForHistory.requiredBottles > 0
+      ? jobForHistory.requiredBottles
+      : (jobForHistory.productionQuantity || jobForHistory.grossQuantity || 0);
+    const rawQty = calculateQuantityForProductionDay(
+      dayValue,
+      {
+        cut: jobForHistory.cutPerMin || 0,
+        wt: jobForHistory.weightGrams || 0,
+        qty: requiredQty,
+        requiredBottles: jobForHistory.requiredBottles || null,
+        startTime: jobForHistory.startTime || '07:00',
+        endTime: completionClock,
+      },
+      `MAC-${String(mIdx + 1).padStart(2, '0')}`
+    );
+    return calcGoodBottles(rawQty);
+  };
+
+  // Accumulated produced quantity BEFORE the currently displayed range, grouped
+  // by Machine No + Job ID (mIdx|jobId). Computed from the complete production
+  // history in chronological order so a Job ID that crosses the range boundary
+  // continues its cumulative from the previous range — the date filter only
+  // decides which rows are shown, never where the cumulative Qty starts.
+  const preWindowJobCarry = useMemo(() => {
+    const carry = new Map<string, number>();
+    if (!productionHistory || productionHistory.length === 0) return carry;
+    const windowStartIso = appliedFromDate || defaultPlanningRange.startIso;
+    if (!windowStartIso) return carry;
+
+    for (const jobForHistory of productionHistory) {
+      if (!jobForHistory.machineId) continue;
+      const mIdx = parseInt(jobForHistory.machineId.replace('MAC-', ''), 10) - 1;
+      if (mIdx < 0 || mIdx > 3) continue;
+      const isoDate = jobForHistory.date || jobForHistory.startDate;
+      if (!isoDate || isoDate >= windowStartIso) continue;
+      const jobId = jobForHistory.jobId ? String(jobForHistory.jobId).trim() : '';
+      if (!jobId) continue;
+      const key = `${mIdx}|${jobId}`;
+      carry.set(key, (carry.get(key) || 0) + getHistoryDailyProducedQty(jobForHistory, mIdx));
+    }
+    return carry;
+  }, [productionHistory, appliedFromDate, defaultPlanningRange]);
+
   // Cumulative produced quantity for a job spanning multiple dates on the same machine.
   // Walks backward from `rowIdx` through consecutive entries belonging to the same
   // logical job, summing each day's produced quantity. Resets when the job changes.
   // Checks BOTH completedJobMap and machineLists so that ended jobs' production
   // from previous days is included in the cumulative total.
-  // Grouping: persisted rows group by their DB jobId. Unsaved (not yet saved) rows
+  // Persisted rows (DB jobId) are additionally seeded with their full-history
+  // cumulative BEFORE the displayed range (preWindowJobCarry), so a Job ID that
+  // continues from a previous month keeps its running total across the range
+  // boundary. Grouping: persisted rows group by their DB jobId. Unsaved (not yet saved) rows
   // have no jobId until the backend assigns one on Save, so they group by machine +
   // bottle name instead — the same identity "+"/extend propagates when it copies the
   // source job into the continuation rows. This keeps the live cumulative identical
@@ -1696,7 +1775,17 @@ export const ProductionPlanningPage: React.FC = () => {
     const targetKey = jobKey(entry);
     if (!targetKey) return 0;
 
+    // Persisted rows (DB jobId) seed their running total from the complete
+    // production history: all produced qty of this Machine + Job ID strictly
+    // BEFORE the displayed range. The backward walk below then adds the rows
+    // inside the range, so a Job ID continuing from the previous month still
+    // starts from its previous accumulated value — the date filter only
+    // controls which rows are displayed, not where the cumulative starts.
     let cumulative = 0;
+    if (targetKey.startsWith('db:')) {
+      cumulative = preWindowJobCarry.get(`${mIdx}|${targetKey.slice(3)}`) || 0;
+    }
+
     for (let r = rowIdx; r >= 0; r--) {
       // Check completedJobMap first — completed jobs have endTime for accurate partial-day calc
       const completed = completedJobMap[`${mIdx}-${r}`] ?? [];
@@ -1921,8 +2010,8 @@ export const ProductionPlanningPage: React.FC = () => {
                       switchToMonth(currentMonth);
                     }}
                     className={`h-8 px-2.5 text-xs font-medium border rounded transition-colors ${isSelectedMonthCurrentMonth
-                        ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
-                        : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
+                      ? 'bg-[#2563EB] text-white border-[#2563EB] hover:bg-[#1D4ED8]'
+                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F8FAFC]'
                       }`}
                   >
                     Current Month
@@ -2018,23 +2107,35 @@ export const ProductionPlanningPage: React.FC = () => {
       {/* Table Container */}
       <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
           <div className="flex flex-col">
             <span className="text-xs font-medium text-[#6B7280]">
-              Production Register
+              Production Planning
             </span>
 
-            {/* Left: Title + Month */}
             <div className="flex items-center gap-2 min-w-0">
-              <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">
+              {/* <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">
                 Production Planning
-              </h1>
+              </h1> */}
 
-              <span className="text-sm font-semibold text-[#2563EB] whitespace-nowrap">
+              <span className="text-sm font-semibold text-[#1e5be1] whitespace-nowrap">
                 {monthLabel}
               </span>
             </div>
           </div>
+
+          {/* <button
+            onClick={handleSaveToDb}
+            disabled={!isDirty || isSaving}
+            className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
+      ${isDirty && !isSaving
+                ? 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
+                : 'bg-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed'
+              }`}
+          >
+            <Save size={15} />
+            {isSaving ? 'Saving…' : 'Save'}
+          </button> */}
         </div>
         <div className="overflow-x-auto">
           <div className="max-h-[calc(100vh-240px)] overflow-y-auto">
@@ -2123,13 +2224,27 @@ export const ProductionPlanningPage: React.FC = () => {
 
                         {/* Date — rowSpan across all sub-rows for this date */}
                         {isFirstSlot && (
-                          <td rowSpan={maxSlots}
-                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}>
-                            <div>{dateRow?.date ?? ''}</div>
-                            <div className="text-[10px] font-normal text-[#6B7280]">{dateRow?.weekday ?? ''}</div>
-                            {isHoliday && holidayName && (
-                              <div className="text-[9px] font-medium text-red-600 mt-0.5">{holidayName}</div>
-                            )}
+                          <td
+                            rowSpan={maxSlots}
+                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}
+                          >
+                            <div
+                              className="relative group cursor-default"
+                              title={isHoliday && holidayName ? holidayName : undefined}
+                            >
+                              <div>{dateRow?.date ?? ''}</div>
+                              <div className="text-[10px] font-normal text-[#6B7280]">
+                                {dateRow?.weekday ?? ''}
+                              </div>
+
+                              {isHoliday && holidayName && (
+                                <div className="absolute left-full top-0 ml-2 z-50 hidden group-hover:block">
+                                  <div className="bg-[#111827] text-white text-[10px] font-medium px-2 py-1 rounded shadow-lg whitespace-nowrap">
+                                    {holidayName}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </td>
                         )}
 
@@ -2221,7 +2336,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                         const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
                                         if (!planDate) return;
                                         const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-                                        setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, isCompleted: true });
+                                        setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, jobId: completedJob.jobId, section: completedJob.section, isCompleted: true });
                                       }}
                                       title="Delete historical job"
                                       className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
@@ -2230,13 +2345,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                     </button>
                                   </div>
                                   {/* Job-wide cumulative total */}
-                                  {(completedJob.cumulativeQty ?? 0) > 0 && (
+                                  {/* {(completedJob.cumulativeQty ?? 0) > 0 && (
                                     <div className="mt-1 px-1.5 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded text-center">
                                       <span className="text-[8px] text-[#1D4ED8] font-semibold">
                                         Good: {calcGoodBottles(completedJob.cumulativeQty ?? 0).toLocaleString()} bottles
                                       </span>
                                     </div>
-                                  )}
+                                  )} */}
                                 </td>
                                 {/* Sec */}
                                 {showSection && (
@@ -2320,18 +2435,17 @@ export const ProductionPlanningPage: React.FC = () => {
                                         className={`text-[11px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                         {hasProduct ? (isRunContinuation ? '' : entry.product) : 'No bottle set'}
                                       </p>
-                                      {/* Job ID badge under bottle name
+                                      {/* Job ID badge under bottle name */}
                                       {hasProduct && entry.jobId && (
                                         <span className="text-[8px] font-mono text-[#6B7280] leading-none">
                                           Job {entry.jobId}
                                         </span>
-                                      )} */}
+                                      )}
                                       {/* Quick-edit shortcut beside "No bottle set" */}
                                       {!hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"
-                                          className="h-5 shrink-0 flex items-center gap-0.5 px-1.5 rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors whitespace-nowrap">
+                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={7} />
-                                          <span className="text-[9px] font-semibold leading-none">New Job</span>
                                         </button>
                                       )}
                                       <button
@@ -2347,7 +2461,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                           // Consistent with how machine_no is built in handleSaveToDb (line 289)
                                           const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
 
-                                          setDeleteModal({ planDate, machineNo, startTime: entry.startTime });
+                                          setDeleteModal({ planDate, machineNo, startTime: entry.startTime, jobId: entry.jobId, section: entry.section });
                                         }}
                                         title="Remove this job"
                                         className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
@@ -2386,9 +2500,8 @@ export const ProductionPlanningPage: React.FC = () => {
                                 ) : (
                                   <div className="flex items-center gap-1 py-0.5">
                                     <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
-                                      className="h-5 flex items-center gap-0.5 px-1.5 rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors whitespace-nowrap">
+                                      className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                       <Pencil size={8} />
-                                      <span className="text-[9px] font-semibold leading-none">New Job</span>
                                     </button>
                                     {isBlank && (
                                       <button onClick={() => deleteBlankEntry(mIdx, rowIdx)} title="Remove row"
@@ -2494,7 +2607,7 @@ export const ProductionPlanningPage: React.FC = () => {
             }`}
         >
           <Save size={15} />
-          {isSaving ? 'Saving…' : 'Save Changes'}
+          {isSaving ? 'Saving…' : 'Save'}
         </button>
       </div>
 
@@ -2524,7 +2637,7 @@ export const ProductionPlanningPage: React.FC = () => {
         requireWord={deleteModal?.isCompleted ? "DELETE" : undefined}
         onConfirm={() => {
           if (!deleteModal) return;
-          const { planDate, machineNo, startTime, isCompleted } = deleteModal;
+          const { planDate, machineNo, startTime, jobId, section, isCompleted } = deleteModal;
 
           // Derive mIdx from machineNo (same convention used elsewhere)
           const mIdx = parseInt(machineNo.replace('MAC-', ''), 10) - 1;
@@ -2538,7 +2651,7 @@ export const ProductionPlanningPage: React.FC = () => {
           // Track the deletion so the save persists it via the DELETE endpoint
           // instead of re-creating the row through a full-dataset diff.
           if (startTime) {
-            markJobDeleted(planDate, machineNo, startTime);
+            markJobDeleted(planDate, machineNo, startTime, jobId, section);
           }
 
           if (isCompleted) {

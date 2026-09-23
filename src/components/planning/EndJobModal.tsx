@@ -94,13 +94,19 @@ export function EndJobModal({
           )}
         </div>
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-[#E5E7EB]">
-          <button onClick={onClose}
-            className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded-lg text-[#374151] bg-white hover:bg-[#F8FAFC] transition-colors">
-            Cancel
+          <button
+            onClick={() => onConfirm(endTime, validDelay ? delayMins : 0)}
+            disabled={!endTime || sameAsStart}
+            className="h-9 px-4 text-sm font-semibold rounded-lg text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+          >
+            <ClipboardPlus size={14} /> Save
           </button>
-          <button onClick={() => onConfirm(endTime, validDelay ? delayMins : 0)} disabled={!endTime || sameAsStart}
-            className="h-9 px-4 text-sm font-semibold rounded-lg text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2">
-            <ClipboardPlus size={14} /> Start New Job
+
+          <button
+            onClick={onClose}
+            className="h-9 px-4 text-sm font-medium border border-[#E5E7EB] rounded-lg text-[#374151] bg-white hover:bg-[#F8FAFC] transition-colors"
+          >
+            Cancel
           </button>
         </div>
       </div>

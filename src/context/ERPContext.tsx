@@ -27,6 +27,7 @@ interface ERPContextType {
   bottles: BottleMaster[];
   bottleMasterRecords: BottleMasterRecord[];
   jobs: ProductionJob[];
+  productionHistory: ProductionJob[];
   holidays: { holiday_date: string; holiday_name: string }[];
   planningEntries: DailyPlanningEntry[];
   totalRawMaterialConsumptionTons: number;
@@ -93,6 +94,92 @@ const schemaStatusToUiStatus = (status: JobStatusSchema): ProductionJob['status'
   if (status === 'Running') return 'Running';
   if (status === 'Completed') return 'Completed';
   return 'Hold';
+};
+
+/**
+ * Maps raw production-job rows into the UI ProductionJob objects the planning
+ * grid consumes. Shared by the window-scoped `jobs` (display) and the full
+ * `productionHistory` (cumulative Qty source) so both use identical mapping.
+ */
+const mapRowsToProductionJobs = (rows: ProductionJobRow[]): ProductionJob[] => {
+  if (rows.length === 0) return [];
+
+  // Pre-compute the per-day/machine sequence once (O(n log n)) instead of
+  // filtering + sorting the full row list for every job (O(n^2) before).
+  const sequenceById = new Map<string, number>();
+  const groups = new Map<string, ProductionJobRow[]>();
+  for (const row of rows) {
+    const key = `${row.plan_date}|${row.machine_no}`;
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.start_time.localeCompare(b.start_time));
+    group.forEach((job, index) => {
+      const id = jobIdFromRow(job);
+      // keep the first occurrence index, matching the original findIndex semantics
+      if (!sequenceById.has(id)) sequenceById.set(id, index + 1);
+    });
+  }
+
+  return rows.map((row) => {
+    const config = planningRepository.getBottleConfiguration(row.machine_no, row.bottle_id, row.section);
+    const resolvedWeight = config?.weight ?? row.weight;
+    const resolvedCutSpeed = config?.speeds ?? row.speeds;
+    const resolvedMetrics = calculateProductionMetrics(
+      resolvedCutSpeed,
+      resolvedWeight,
+      row.machine_no,
+      row.quantity
+    );
+    const resolvedEstimatedDays = calculateEstimatedCompletionDays(row.quantity, resolvedMetrics.totalQuantity);
+    const startDateTime = parseDateTime(row.plan_date, row.start_time);
+    const endDateTime = addCalendarDays(startDateTime, resolvedEstimatedDays);
+    const resolvedEndDate = endDateTime.toISOString().split('T')[0];
+    const resolvedEndTime = formatTimeOnly(endDateTime);
+    const resolvedProductionHours = row.production_hours && row.production_hours > 0
+      ? row.production_hours
+      : (resolvedMetrics.hourlyQuantity > 0 ? Number((row.quantity / resolvedMetrics.hourlyQuantity).toFixed(2)) : 0);
+
+    const sequenceNumber = sequenceById.get(jobIdFromRow(row)) ?? 0;
+
+    return {
+      id: jobIdFromRow(row),
+      jobId: row.job_id,
+      jobNumber: `JOB-${row.plan_date}-${row.machine_no}-${row.start_time}`,
+      machineId: row.machine_no,
+      bottleId: row.bottle_id,
+      customerName: '',
+      sectionCount: row.section,
+      weightGrams: resolvedWeight,
+      cutPerMin: resolvedCutSpeed,
+      grossQuantity: row.quantity,
+      producedQuantity: 0,
+      remainingQuantity: row.quantity,
+      drawTonsPerDay: resolvedMetrics.drawTons,
+      startDate: row.plan_date,
+      endDate: resolvedEndDate,
+      status: schemaStatusToUiStatus(row.status),
+      priority: 'Medium',
+      packingCategory: 'Palletized',
+      palletType: 'Wooden Standard (1200x1000)',
+      remarks: '',
+      date: row.plan_date,
+      startTime: row.start_time,
+      expectedEndTime: resolvedEndTime,
+      completionTime: row.completion_time,
+      productionQuantity: row.quantity,
+      productionHours: resolvedProductionHours,
+      requiredBottles: row.requiredBottles ?? null,
+      linkedJobGroupId: `${row.machine_no}|${row.bottle_id}|${row.section}|${row.start_time}`,
+      sequenceNumber,
+      lifecycleStatus: row.status === 'Completed' ? 'COMPLETED' : 'ACTIVE',
+      locked: row.status === 'Completed',
+      changeoverHours: (row.changeover_minutes || 0) / 60,
+      packaging: row.packaging,
+    };
+  });
 };
 
 const uiStatusToSchemaStatus = (status?: ProductionJob['status']): JobStatusSchema => {
@@ -188,23 +275,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Derive the current month dynamically so defaults are always today's month,
-  // not a hardcoded value that becomes stale over time.
+  // Derive the default planning range dynamically from the current date so
+  // defaults are always a rolling window around today (10 days before through
+  // 20 days after), never a hardcoded value that becomes stale over time.
   const _bootNow = new Date();
   const _bootMonth = `${_bootNow.getFullYear()}-${String(_bootNow.getMonth() + 1).padStart(2, '0')}`;
-  const _bootMonthStart = `${_bootMonth}-01`;
-  const _bootMonthEnd = `${_bootMonth}-${String(
-    new Date(_bootNow.getFullYear(), _bootNow.getMonth() + 1, 0).getDate()
-  ).padStart(2, '0')}`;
+  const _bootStartDate = new Date(_bootNow.getFullYear(), _bootNow.getMonth(), _bootNow.getDate() - 10);
+  const _bootEndDate = new Date(_bootNow.getFullYear(), _bootNow.getMonth(), _bootNow.getDate() + 20);
+  const _bootToIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const _bootRangeStart = _bootToIso(_bootStartDate);
+  const _bootRangeEnd = _bootToIso(_bootEndDate);
 
   const [selectedMonth, setSelectedMonth] = useState(_bootMonth);
-  const [fromDate, setFromDate] = useState(_bootMonthStart);
-  const [toDate, setToDate] = useState(_bootMonthEnd);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   // Tracks the date range that was passed to the last planningRepository.init() call.
   // All write-then-reinit paths use these to re-fetch the same window, not the full table.
-  const [fetchWindowFrom, setFetchWindowFrom] = useState(_bootMonthStart);
-  const [fetchWindowTo, setFetchWindowTo] = useState(_bootMonthEnd);
+  const [fetchWindowFrom, setFetchWindowFrom] = useState(_bootRangeStart);
+  const [fetchWindowTo, setFetchWindowTo] = useState(_bootRangeEnd);
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ProductionJob | null>(null);
@@ -238,11 +328,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     planningRepository.init(from, to).then(() => setPlannerVersion((v) => v + 1));
   }, []);
 
-  // Fetch master data + jobs scoped to the current month on app boot.
-  // Uses the same _bootMonthStart/_bootMonthEnd computed above so the initial
-  // fetch is always today's month regardless of when the app is deployed.
+  // Fetch master data + jobs scoped to the default rolling planning range on
+  // app boot. Uses the same _bootRangeStart/_bootRangeEnd computed above so the
+  // initial fetch is always today's window regardless of when the app is deployed.
   useEffect(() => {
-    planningRepository.init(_bootMonthStart, _bootMonthEnd).then(() => {
+    planningRepository.init(_bootRangeStart, _bootRangeEnd).then(() => {
       // Force a re-render once cache is populated so useMemo picks up real data
       setPlannerVersion((v) => v + 1);
     });
@@ -344,84 +434,18 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const jobs = useMemo<ProductionJob[]>(() => {
     void plannerVersion;
-    const rows = planningRepository.getProductionJobs();
+    return mapRowsToProductionJobs(planningRepository.getProductionJobs());
+  }, [plannerVersion]);
 
-    // Pre-compute the per-day/machine sequence once (O(n log n)) instead of
-    // filtering + sorting the full row list for every job (O(n^2) before).
-    const sequenceById = new Map<string, number>();
-    const groups = new Map<string, ProductionJobRow[]>();
-    for (const row of rows) {
-      const key = `${row.plan_date}|${row.machine_no}`;
-      const group = groups.get(key);
-      if (group) group.push(row);
-      else groups.set(key, [row]);
-    }
-    for (const group of groups.values()) {
-      group.sort((a, b) => a.start_time.localeCompare(b.start_time));
-      group.forEach((job, index) => {
-        const id = jobIdFromRow(job);
-        // keep the first occurrence index, matching the original findIndex semantics
-        if (!sequenceById.has(id)) sequenceById.set(id, index + 1);
-      });
-    }
-
-    return rows.map((row) => {
-      const config = planningRepository.getBottleConfiguration(row.machine_no, row.bottle_id, row.section);
-      const resolvedWeight = config?.weight ?? row.weight;
-      const resolvedCutSpeed = config?.speeds ?? row.speeds;
-      const resolvedMetrics = calculateProductionMetrics(
-        resolvedCutSpeed,
-        resolvedWeight,
-        row.machine_no,
-        row.quantity
-      );
-      const resolvedEstimatedDays = calculateEstimatedCompletionDays(row.quantity, resolvedMetrics.totalQuantity);
-      const startDateTime = parseDateTime(row.plan_date, row.start_time);
-      const endDateTime = addCalendarDays(startDateTime, resolvedEstimatedDays);
-      const resolvedEndDate = endDateTime.toISOString().split('T')[0];
-      const resolvedEndTime = formatTimeOnly(endDateTime);
-      const resolvedProductionHours = row.production_hours && row.production_hours > 0
-        ? row.production_hours
-        : (resolvedMetrics.hourlyQuantity > 0 ? Number((row.quantity / resolvedMetrics.hourlyQuantity).toFixed(2)) : 0);
-
-      const sequenceNumber = sequenceById.get(jobIdFromRow(row)) ?? 0;
-
-      return {
-        id: jobIdFromRow(row),
-        jobId: row.job_id,
-        jobNumber: `JOB-${row.plan_date}-${row.machine_no}-${row.start_time}`,
-        machineId: row.machine_no,
-        bottleId: row.bottle_id,
-        customerName: '',
-        sectionCount: row.section,
-        weightGrams: resolvedWeight,
-        cutPerMin: resolvedCutSpeed,
-        grossQuantity: row.quantity,
-        producedQuantity: 0,
-        remainingQuantity: row.quantity,
-        drawTonsPerDay: resolvedMetrics.drawTons,
-        startDate: row.plan_date,
-        endDate: resolvedEndDate,
-        status: schemaStatusToUiStatus(row.status),
-        priority: 'Medium',
-        packingCategory: 'Palletized',
-        palletType: 'Wooden Standard (1200x1000)',
-        remarks: '',
-        date: row.plan_date,
-        startTime: row.start_time,
-        expectedEndTime: resolvedEndTime,
-        completionTime: row.completion_time,
-        productionQuantity: row.quantity,
-        productionHours: resolvedProductionHours,
-        requiredBottles: row.requiredBottles ?? null,
-        linkedJobGroupId: `${row.machine_no}|${row.bottle_id}|${row.section}|${row.start_time}`,
-        sequenceNumber,
-        lifecycleStatus: row.status === 'Completed' ? 'COMPLETED' : 'ACTIVE',
-        locked: row.status === 'Completed',
-        changeoverHours: (row.changeover_minutes || 0) / 60,
-        packaging: row.packaging,
-      };
-    });
+  /**
+   * Complete production-job history (every job, every date) in chronological
+   * order. The planning table uses this only to seed the cumulative Qty column
+   * so a Job ID spanning a date-range boundary continues from its previous
+   * accumulated value instead of restarting at zero.
+   */
+  const productionHistory = useMemo<ProductionJob[]>(() => {
+    void plannerVersion;
+    return mapRowsToProductionJobs(planningRepository.getFullProductionJobs());
   }, [plannerVersion]);
 
   const planningEntries = useMemo<DailyPlanningEntry[]>(() => {
@@ -749,6 +773,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bottles,
         bottleMasterRecords,
         jobs,
+        productionHistory,
         holidays,
         planningEntries,
         totalRawMaterialConsumptionTons,

@@ -95,23 +95,7 @@ export function calculateDrawForProductionDay(
   entry: Pick<MachineEntry, 'cut' | 'wt' | 'qty' | 'requiredBottles' | 'startTime' | 'endTime'>,
   machineNo?: string | number
 ): number {
-  const { windowStart, windowEnd } = getProductionDayWindow(dayValue);
-  const productionStart = buildDateTime(dayValue, entry.startTime || '07:00');
-  const productionEnd = entry.endTime
-    ? buildDateTime(dayValue, entry.endTime)
-    : new Date(windowEnd);
-
-  // An overnight end time belongs to the next production day, not the prior calendar day.
-  while (productionEnd <= productionStart) {
-    productionEnd.setDate(productionEnd.getDate() + 1);
-  }
-
-  const productionHours = clampIntervalToWindow(productionStart, productionEnd, windowStart, windowEnd);
-  if (productionHours <= 0) return 0;
-
-  // Use actual production hours only — no hoursNeededToMeetQty cap.
-  // Partial Qty = Full 24-Hour Qty × Production Hours / 24
-  return calculateDrawForProductionHours(entry.cut, entry.wt, productionHours, machineNo);
+  return calculateDrawForProductionHours(entry.cut, entry.wt, PRODUCTION_DAY_DURATION_HOURS, machineNo);
 }
 
 export function calculateQuantityForProductionDay(
@@ -144,65 +128,11 @@ export function calculateDailyDrawForEntries(
   dayValue: Date | string,
   entries: Array<Pick<MachineEntry, 'cut' | 'wt' | 'qty' | 'requiredBottles' | 'startTime' | 'endTime'> & { machineNo?: string | number }>
 ): number {
-  const { windowStart, windowEnd } = getProductionDayWindow(dayValue);
-
-  // Group entries by machine — changeover only applies between consecutive
-  // jobs on the SAME machine. Entries from different machines are independent.
-  const byMachine = new Map<string, typeof entries>();
-  for (const entry of entries) {
-    const key = String(entry.machineNo ?? '__unknown__');
-    if (!byMachine.has(key)) byMachine.set(key, []);
-    byMachine.get(key)!.push(entry);
-  }
-
   let totalDraw = 0;
 
-  for (const machineEntries of byMachine.values()) {
-    const sortedEntries = machineEntries
-      .filter((entry) => entry && (entry.cut > 0 || entry.wt > 0 || entry.qty > 0))
-      .map((entry) => ({
-        ...entry,
-        productionStart: buildDateTime(dayValue, entry.startTime || '07:00'),
-        productionEnd: entry.endTime
-          ? buildDateTime(dayValue, entry.endTime)
-          : new Date(windowEnd),
-      }))
-      .map((entry) => {
-        while (entry.productionEnd <= entry.productionStart) {
-          entry.productionEnd.setDate(entry.productionEnd.getDate() + 1);
-        }
-        return entry;
-      })
-      .sort((a, b) => a.productionStart.getTime() - b.productionStart.getTime());
-
-    sortedEntries.forEach((entry, index) => {
-      const productionStart = entry.productionStart;
-      const productionEnd = entry.productionEnd;
-      const segmentStart = productionStart > windowStart ? productionStart : windowStart;
-      const segmentEnd = productionEnd < windowEnd ? productionEnd : windowEnd;
-
-      // Production draw — use actual production hours
-      if (segmentEnd > segmentStart) {
-        const productionHours = (segmentEnd.getTime() - segmentStart.getTime()) / (1000 * 60 * 60);
-        totalDraw += calculateDrawForProductionHours(entry.cut, entry.wt, productionHours, entry.machineNo);
-      }
-
-      // Changeover draw — only to the NEXT entry on the SAME machine.
-      // Changeover produces ZERO bottles but the furnace still pulls glass
-      // at the PREVIOUS job's weight and speed.
-      const nextEntry = sortedEntries[index + 1];
-      if (!nextEntry) return;
-
-      const nextStart = nextEntry.productionStart;
-      const changeoverStart = productionEnd > windowStart ? productionEnd : windowStart;
-      const changeoverEnd = nextStart < windowEnd ? nextStart : windowEnd;
-      if (changeoverEnd > changeoverStart) {
-        const changeoverHours = (changeoverEnd.getTime() - changeoverStart.getTime()) / (1000 * 60 * 60);
-        const previousMetrics = calculateProductionMetrics(entry.cut, entry.wt, entry.machineNo);
-        const previousDrawRatePer24Hours = previousMetrics.totalQuantity > 0 ? calculateDraw(previousMetrics.totalQuantity, entry.wt) : 0;
-        totalDraw += previousDrawRatePer24Hours > 0 ? previousDrawRatePer24Hours * (changeoverHours / PRODUCTION_DAY_DURATION_HOURS) : 0;
-      }
-    });
+  for (const entry of entries) {
+    if (!entry || (entry.cut <= 0 && entry.wt <= 0 && (entry.qty ?? 0) <= 0)) continue;
+    totalDraw += calculateDrawForProductionHours(entry.cut, entry.wt, PRODUCTION_DAY_DURATION_HOURS, entry.machineNo);
   }
 
   return Number(totalDraw.toFixed(2));

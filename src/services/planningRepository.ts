@@ -30,6 +30,14 @@ let _holidays: { holiday_date: string; holiday_name: string }[] = [];
 let _initialized = false;
 let _cacheVersion = 0;
 
+// Complete chronological production-job history, independent of the currently
+// filtered planning window (_jobs). The cumulative Qty column must continue a
+// Job ID from BEFORE the selected date range (e.g. a job spanning a month
+// boundary), so the full history is loaded once on boot and kept in sync on
+// writes instead of being scoped by from_date/to_date like the display window.
+let _allJobs: ProductionJobRow[] = [];
+let _allJobsLoaded = false;
+
 /**
  * Derived-config lookups for getBottleConfigurations / getBottleConfiguration /
  * getMachineSections.  These are re-computed lazily only when _configs or
@@ -98,6 +106,13 @@ export const getCacheVersion = () => _cacheVersion;
 // ─── Type Guards ───────────────────────────────────────────────────────────────
 const toStr = (v: unknown): string => String(v ?? '');
 const toNum = (v: unknown): number => Number(v) || 0;
+
+const sortJobsChronological = (rows: ProductionJobRow[]): ProductionJobRow[] =>
+  rows.sort((a, b) => {
+    if (a.plan_date !== b.plan_date) return a.plan_date.localeCompare(b.plan_date);
+    if (a.machine_no !== b.machine_no) return a.machine_no.localeCompare(b.machine_no);
+    return a.start_time.localeCompare(b.start_time);
+  });
 
 /**
  * Maps a raw API job response (with numeric IDs) to a ProductionJobRow
@@ -226,13 +241,26 @@ export const planningRepository = {
           ? `/api/production/jobs/?from_date=${fromDate}&to_date=${toDate}`
           : '/api/production/jobs/';
 
-      const [rawMachines, rawBottles, rawConfigs, rawJobs, rawHolidays] = await Promise.all([
+      const tasks: Promise<unknown>[] = [
         apiFetch('/api/production/machines/'),
         apiFetch('/api/production/products/bottles/'),
         apiFetch('/api/production/products/configurations/'),
         apiFetch(jobsUrl),
         apiFetch('/api/production/holidays/'),
-      ]);
+      ];
+      // Load the full job history once (on boot); later window-scoped fetches
+      // only refresh _jobs so the cumulative Qty source stays complete.
+      if (!_allJobsLoaded) {
+        tasks.push(apiFetch('/api/production/jobs/'));
+      }
+      const [
+        rawMachines,
+        rawBottles,
+        rawConfigs,
+        rawJobs,
+        rawHolidays,
+        rawAllJobs,
+      ] = await Promise.all(tasks);
 
       _machines = (rawMachines as Record<string, unknown>[]).map(mapMachineRow);
       _bottles = (rawBottles as Record<string, unknown>[]).map((b) => ({
@@ -242,6 +270,10 @@ export const planningRepository = {
       _configs = (rawConfigs as Record<string, unknown>[]).map(mapConfigRow);
       invalidateConfigLookups();
       _jobs = (rawJobs as Record<string, unknown>[]).map(mapJobRow);
+      if (!_allJobsLoaded) {
+        _allJobs = (rawAllJobs as Record<string, unknown>[]).map(mapJobRow);
+        _allJobsLoaded = true;
+      }
       _holidays = (rawHolidays as Record<string, unknown>[]).map((h) => ({
         holiday_date: toStr(h.holiday_date),
         holiday_name: toStr(h.holiday_name),
@@ -299,11 +331,18 @@ export const planningRepository = {
   },
 
   getProductionJobs(): ProductionJobRow[] {
-    return [..._jobs].sort((a, b) => {
-      if (a.plan_date !== b.plan_date) return a.plan_date.localeCompare(b.plan_date);
-      if (a.machine_no !== b.machine_no) return a.machine_no.localeCompare(b.machine_no);
-      return a.start_time.localeCompare(b.start_time);
-    });
+    return sortJobsChronological([..._jobs]);
+  },
+
+  /**
+   * Complete production-job history in chronological order, independent of the
+   * currently filtered planning window. Used to seed the cumulative Qty column
+   * so a Job ID that continues from outside the selected date range still starts
+   * from its previous accumulated value.
+   */
+  getFullProductionJobs(): ProductionJobRow[] {
+    if (!_allJobsLoaded) return [];
+    return sortJobsChronological([..._allJobs]);
   },
 
   getCachedHolidays(): { holiday_date: string; holiday_name: string }[] {
@@ -449,22 +488,44 @@ export const planningRepository = {
   async deleteProductionJob(
     plan_date: string,
     machine_no: string,
-    start_time: string
+    start_time: string,
+    job_id?: string,
+    section?: number
   ): Promise<{ ok: boolean; error?: string }> {
     try {
       const machineInt = this._machineIdToInt(machine_no);
-      await apiFetch(`/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(start_time)}`, {
-        method: 'DELETE',
-      });
+      const query = new URLSearchParams();
+      if (job_id) {
+        const parsedJobId = parseInt(job_id, 10);
+        if (Number.isFinite(parsedJobId)) query.set('job_id', String(parsedJobId));
+      }
+      if (typeof section === 'number' && Number.isFinite(section)) {
+        query.set('section', String(section));
+      }
+      const qs = query.toString();
+      await apiFetch(
+        `/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(start_time)}${qs ? `?${qs}` : ''}`,
+        { method: 'DELETE', }
+      );
       // Drop the deleted row(s) from the in-memory cache so the grid reflects
-      // the deletion without a full dataset re-fetch.
+      // the deletion without a full dataset re-fetch. When job_id/section are
+      // supplied, only the exact rows are removed — other jobs that share the
+      // same (plan_date, machine_no, start_time) slot stay in the cache.
       const machineId = this._machineIdToStr(machineInt);
       const normStart = start_time.includes('T') ? start_time.split('T')[1].substring(0, 5) : start_time;
       const prevLen = _jobs.length;
-      _jobs = _jobs.filter(
-        (j) => !(j.plan_date === plan_date && j.machine_no === machineId && j.start_time === normStart)
+      const filterFn = (j: ProductionJobRow) => !(
+        j.plan_date === plan_date &&
+        j.machine_no === machineId &&
+        j.start_time === normStart &&
+        (job_id == null || toStr(j.job_id) === toStr(job_id)) &&
+        (section == null || j.section === section)
       );
-      if (_jobs.length !== prevLen) _cacheVersion++;
+      _jobs = _jobs.filter(filterFn);
+      if (_jobs.length !== prevLen) {
+        _cacheVersion++;
+        if (_allJobsLoaded) _allJobs = _allJobs.filter(filterFn);
+      }
       return { ok: true };
     } catch (err: any) {
       console.error('deleteProductionJob failed:', err);
@@ -961,6 +1022,7 @@ export const planningRepository = {
    * refresh the grid without re-fetching the entire planning dataset.
    * Rows are matched by DB identity (plan_date + machine_no + start_time +
    * section); an existing match is replaced, anything new is appended.
+   * Also keeps the full-history cache (_allJobs) in sync for cumulative Qty.
    */
   _applyRowsToCache(rows: ProductionJobRow[]): void {
     if (rows.length === 0) return;
@@ -976,6 +1038,13 @@ export const planningRepository = {
       } else {
         _jobs.push(row);
         changed = true;
+      }
+      if (_allJobsLoaded) {
+        const idxAll = _allJobs.findIndex(
+          (j) => `${j.plan_date}|${j.machine_no}|${j.start_time}|${j.section}` === key
+        );
+        if (idxAll >= 0) _allJobs[idxAll] = row;
+        else _allJobs.push(row);
       }
     }
     if (changed) _cacheVersion++;

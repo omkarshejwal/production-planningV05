@@ -263,23 +263,23 @@ export const PlanningDrawer: React.FC = () => {
       console.log('handleSubmit: Calling saveJob with', { machineId, date, bottleId, quantity, rows });
       const saved = await saveJob({
         id: editingJob?.id,
-      jobNumber: editingJob?.jobNumber,
-      machineId,
-      date,
-      startDate: date,
-      endDate: date,
-      bottleId,
-      customerName,
-      sectionCount,
-      grossQuantity: quantity,
-      productionQuantity: quantity,
-      producedQuantity: 0,
-      startTime,
-      changeoverHours,
-      linkedJobGroupId: editingJob?.linkedJobGroupId,
-      sequenceNumber: editingJob?.sequenceNumber,
-      lifecycleStatus: editingJob?.lifecycleStatus || 'ACTIVE',
-    }, rows);
+        jobNumber: editingJob?.jobNumber,
+        machineId,
+        date,
+        startDate: date,
+        endDate: date,
+        bottleId,
+        customerName,
+        sectionCount,
+        grossQuantity: quantity,
+        productionQuantity: quantity,
+        producedQuantity: 0,
+        startTime,
+        changeoverHours,
+        linkedJobGroupId: editingJob?.linkedJobGroupId,
+        sequenceNumber: editingJob?.sequenceNumber,
+        lifecycleStatus: editingJob?.lifecycleStatus || 'ACTIVE',
+      }, rows);
 
       if (saved) {
         console.log('handleSubmit: saveJob returned true, closing drawer');
@@ -513,8 +513,8 @@ export const PlanningDrawer: React.FC = () => {
                     type="button"
                     onClick={() => togglePackaging(option.code)}
                     className={`rounded-lg border px-2 py-2 text-center transition-colors ${selected
-                        ? 'border-blue-500 bg-blue-50 text-blue-700'
-                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                      ? 'border-blue-500 bg-blue-50 text-blue-700'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
                       }`}
                   >
                     <div className="font-bold text-[11px]">{option.code}</div>
@@ -572,8 +572,8 @@ export const PlanningDrawer: React.FC = () => {
                     type="button"
                     onClick={() => setPalletPacking(value)}
                     className={`px-4 py-1.5 text-[11px] font-semibold ${palletPacking === value
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-slate-50'
                       }`}
                   >
                     {value}
@@ -597,19 +597,20 @@ export const PlanningDrawer: React.FC = () => {
             </div>
           )}
 
-          <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
+          <div className="pt-2 flex items-center justify-between border-t border-slate-200">
+            <button
+              type="submit"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold flex items-center gap-1.5"
+            >
+              <Save className="w-3.5 h-3.5" /> Save
+            </button>
+
             <button
               type="button"
               onClick={closeDrawer}
               className="px-3.5 py-2 border border-slate-300 rounded-lg font-semibold text-slate-600 hover:bg-slate-100"
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold flex items-center gap-1.5"
-            >
-              <Save className="w-3.5 h-3.5" /> Save Changes
             </button>
           </div>
         </form>

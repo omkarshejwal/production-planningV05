@@ -587,13 +587,27 @@ def delete_job(
     plan_date: str,
     machine_no: int,
     start_time: str,
+    job_id: Optional[int] = None,
+    section: Optional[int] = None,
     db: Session = Depends(get_db),
     user_role: str = Depends(require_manager_role)
 ):
     """
-    Delete a production job and its associated packaging rows.
-    All subsequent jobs on the same machine are shifted backward to
-    close the gap so the schedule stays continuous.
+    Delete the production job row(s) belonging to ONE specific day/slot.
+
+    production_job.job_id is NOT unique: an extended job intentionally shares
+    the same logical job_id across multiple dates, machines and sections. This
+    deletion is therefore ALWAYS scoped to the exact day (plan_date + machine_no
+    + start_time), optionally narrowed to a specific job_id and section. Rows
+    for other dates that share the same job_id are never touched and job_master
+    is only removed once NO production_job rows reference it anymore.
+
+    - Missing rows are an idempotent no-op (204): the caller may remove a day
+      that was never persisted, and should not be told it "could not be removed".
+    - The backward-shift that closes a scheduling gap is applied ONLY for
+      standalone jobs. When the removed day belongs to a multi-day extended job
+      (other dates still reference the same job_id), the remaining continuation
+      days stay exactly where they are.
     """
     try:
         parsed_date = datetime.strptime(plan_date, "%Y-%m-%d").date()
@@ -602,92 +616,135 @@ def delete_job(
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid plan_date or start_time format")
 
-    existing_job = db.query(ProductionJob).filter_by(
-        plan_date=plan_date,
-        machine_no=machine_no,
-        start_time=parsed_start_time
-    ).first()
+    match_query = db.query(ProductionJob).filter(
+        ProductionJob.plan_date == parsed_date,
+        ProductionJob.machine_no == machine_no,
+        ProductionJob.start_time == parsed_start_time,
+    )
+    if job_id is not None:
+        match_query = match_query.filter(ProductionJob.job_id == job_id)
+    if section is not None:
+        match_query = match_query.filter(ProductionJob.section == section)
 
-    if not existing_job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    matched = match_query.all()
 
-    # Snapshot the deleted job's timing before removal
-    deleted_start = existing_job.start_time
-    deleted_plan = existing_job.plan_date
+    # Idempotent delete: the exact day rows are already absent, nothing to do.
+    if not matched:
+        return
 
-    # ── 1. Delete the job to vacate its slot ──────────────────────────────────
-    db.query(JobPackaging).filter_by(
-        job_id=existing_job.job_id,
-        plan_date=existing_job.plan_date,
-        machine_no=existing_job.machine_no,
-        start_time=existing_job.start_time,
-    ).delete()
-    db.flush()
+    affected_job_ids = {row.job_id for row in matched}
 
-    db.delete(existing_job)
-    db.flush()
-
-    # ── 2. Shift every subsequent job on this machine backward ────────────────
-    # Fresh query so we read from the DB state that already excludes the
-    # deleted row.
-    subsequent = (
+    # Is any of the removed day's job_ids still used by an OTHER date? If so,
+    # this is a partial deletion of an extended job and the other continuation
+    # days must be left exactly where they are (no backward shift).
+    extended_deletion = (
         db.query(ProductionJob)
         .filter(
-            ProductionJob.machine_no == machine_no,
-            or_(
-                ProductionJob.plan_date > deleted_plan,
-                and_(
-                    ProductionJob.plan_date == deleted_plan,
-                    ProductionJob.start_time > deleted_start,
-                ),
-            ),
+            ProductionJob.job_id.in_(list(affected_job_ids)),
+            ProductionJob.plan_date != parsed_date,
         )
-        .order_by(ProductionJob.plan_date, ProductionJob.start_time)
-        .all()
+        .first()
+        is not None
     )
 
-    if subsequent:
-        # The gap to close is the time between the deleted job's start
-        # and the next job's start.  Shifting every subsequent job backward
-        # by this amount makes the first remaining job start exactly where
-        # the deleted job used to start.
-        delta = subsequent[0].start_time - deleted_start
+    # Snapshot the deleted slot's timing before removal
+    first = matched[0]
+    deleted_start = first.start_time
+    deleted_plan = first.plan_date
 
-    for job in subsequent:
-        new_start = job.start_time - delta
-        new_plan = new_start.date()
-
+    # ── 1. Delete packaging + production rows for the removed day only ─────────
+    for job_row in matched:
         db.query(JobPackaging).filter_by(
-            job_id=job.job_id,
-            plan_date=job.plan_date,
-            machine_no=job.machine_no,
-            start_time=job.start_time,
-        ).update(
-            {"plan_date": new_plan, "start_time": new_start},
-            synchronize_session=False,
-        )
+            job_id=job_row.job_id,
+            plan_date=job_row.plan_date,
+            machine_no=job_row.machine_no,
+            start_time=job_row.start_time,
+        ).delete()
         db.flush()
 
-        db.query(ProductionJob).filter_by(
-            plan_date=job.plan_date,
-            machine_no=job.machine_no,
-            start_time=job.start_time,
-            section=job.section,
-        ).update(
-            {
-                "plan_date": new_plan,
-                "start_time": new_start,
-                "estimated_completion": (
-                    (job.estimated_completion - delta)
-                    if job.estimated_completion else None
-                ),
-                "completion_time": (
-                    (job.completion_time - delta)
-                    if job.completion_time else None
-                ),
-            },
-            synchronize_session=False,
-        )
+        db.delete(job_row)
         db.flush()
+
+    # ── 2. Shift subsequent jobs backward ONLY for standalone jobs ─────────────
+    if not extended_deletion:
+        # Fresh query so we read from the DB state that already excludes the
+        # deleted rows.
+        subsequent = (
+            db.query(ProductionJob)
+            .filter(
+                ProductionJob.machine_no == machine_no,
+                or_(
+                    ProductionJob.plan_date > deleted_plan,
+                    and_(
+                        ProductionJob.plan_date == deleted_plan,
+                        ProductionJob.start_time > deleted_start,
+                    ),
+                ),
+            )
+            .order_by(ProductionJob.plan_date, ProductionJob.start_time)
+            .all()
+        )
+
+        if subsequent:
+            # The gap to close is the time between the deleted job's start
+            # and the next job's start.  Shifting every subsequent job backward
+            # by this amount makes the first remaining job start exactly where
+            # the deleted job used to start.
+            delta = subsequent[0].start_time - deleted_start
+
+        for job in subsequent:
+            new_start = job.start_time - delta
+            new_plan = new_start.date()
+
+            db.query(JobPackaging).filter_by(
+                job_id=job.job_id,
+                plan_date=job.plan_date,
+                machine_no=job.machine_no,
+                start_time=job.start_time,
+            ).update(
+                {"plan_date": new_plan, "start_time": new_start},
+                synchronize_session=False,
+            )
+            db.flush()
+
+            db.query(ProductionJob).filter_by(
+                plan_date=job.plan_date,
+                machine_no=job.machine_no,
+                start_time=job.start_time,
+                section=job.section,
+            ).update(
+                {
+                    "plan_date": new_plan,
+                    "start_time": new_start,
+                    "estimated_completion": (
+                        (job.estimated_completion - delta)
+                        if job.estimated_completion else None
+                    ),
+                    "completion_time": (
+                        (job.completion_time - delta)
+                        if job.completion_time else None
+                    ),
+                },
+                synchronize_session=False,
+            )
+            db.flush()
+
+    # ── 3. Clean up job_master only when NO production_job rows remain ─────────
+    for affected_id in affected_job_ids:
+        still_referenced = (
+            db.query(ProductionJob)
+            .filter(ProductionJob.job_id == affected_id)
+            .first()
+        )
+        if still_referenced is None:
+            # Drop orphaned packaging before removing the master row (FK-safe).
+            db.query(JobPackaging).filter(
+                JobPackaging.job_id == affected_id
+            ).delete()
+            db.flush()
+            db.query(JobMaster).filter(
+                JobMaster.job_id == affected_id
+            ).delete()
+            db.flush()
 
     db.commit()
