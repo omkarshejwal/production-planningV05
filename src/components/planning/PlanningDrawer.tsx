@@ -53,7 +53,7 @@ export const PlanningDrawer: React.FC = () => {
   const [bottleQuery, setBottleQuery] = useState('');
   const [sectionCount, setSectionCount] = useState(8);
   const [quantity, setQuantity] = useState(0);
-  const [startTime, setStartTime] = useState('07:00');
+  const [startTime, setStartTime] = useState('09:00');
   const [changeoverHours, setChangeoverHours] = useState(0);
   const [customerName, setCustomerName] = useState('');
 
@@ -184,7 +184,7 @@ export const PlanningDrawer: React.FC = () => {
       8
     );
     setQuantity(0);
-    setStartTime(drawerSuggestedStartTime || '07:00');
+    setStartTime(drawerSuggestedStartTime || '09:00');
     setChangeoverHours(0);
     setCustomerName('');
     resetPackaging();

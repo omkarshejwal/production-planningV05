@@ -69,11 +69,11 @@ export function TimePicker({ value, onChange, placeholder = 'Select time' }: {
             ))}
           </div>
           <div className="w-px bg-[#E5E7EB]" />
-          {/* Minutes 00–59 */}
+          {/* Minutes 00, 10, 15, 20, 30, 45 */}
           <div ref={minColRef} className="flex flex-col overflow-y-auto max-h-49 py-1 w-11">
-            {Array.from({ length: 60 }, (_, i) => i).map(min => (
-              <button key={min} type="button"
-                onClick={() => pick(h, min, mer)}
+          {[0, 10, 15, 20, 30, 45].map(min => (
+            <button key={min} type="button"
+             onClick={() => pick(h, min, mer)}
                 className={`py-1 text-xs font-medium text-center mx-1 rounded transition-colors ${m === min ? 'bg-[#2563EB] text-white' : 'hover:bg-[#EFF6FF] text-[#374151]'}`}>
                 {String(min).padStart(2, '0')}
               </button>

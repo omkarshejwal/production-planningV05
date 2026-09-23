@@ -627,7 +627,7 @@ export const ProductionPlanningPage: React.FC = () => {
           ...sourceEntry,
           eid: Math.random(),
           jobId: continuationJobId,
-          startTime: '07:00',
+          startTime: '09:00',
           endTime: '',
           status: 'running' as const,
         };
@@ -1406,7 +1406,7 @@ export const ProductionPlanningPage: React.FC = () => {
           ...sourceEntry,
           eid: Math.random(),
           jobId: continuationJobId,
-          startTime: '07:00',
+          startTime: '09:00',
           endTime: '',
           status: 'running' as const,
         };
@@ -2063,7 +2063,7 @@ export const ProductionPlanningPage: React.FC = () => {
                     }`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showWt ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
-                  Wt {showWt ? 'ON' : 'OFF'}
+                  Weight {showWt ? 'ON' : 'OFF'}
                 </button>
                 <button
                   onClick={() => setShowCut(s => !s)}
@@ -2074,7 +2074,7 @@ export const ProductionPlanningPage: React.FC = () => {
                     }`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full transition-colors ${showCut ? 'bg-white' : 'bg-[#D1D5DB]'}`} />
-                  Cut {showCut ? 'ON' : 'OFF'}
+                  Cut Speed {showCut ? 'ON' : 'OFF'}
                 </button>
               </div>
 
@@ -2475,7 +2475,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                       </div>
                                     )}
                                     <div className="flex items-center gap-1 flex-wrap">
-                                      {hasProduct && (
+                                      {hasProduct && !isRunContinuation && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
                                           className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={8} />
@@ -2488,13 +2488,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                           <Plus size={8} />
                                         </button>
                                       )}
-                                      {hasProduct && isLastDay && (
+                                      {/* {hasProduct && isLastDay && (
                                         <button onClick={() => handleAddJob(mIdx, rowIdx)}
                                           title="Schedule a new job after this one finishes"
                                           className="flex items-center gap-0.5 h-5 px-1.5 text-[9px] font-semibold text-[#7C3AED] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#DDD6FE] rounded transition-colors whitespace-nowrap">
                                           <ClipboardPlus size={8} /> End Job
                                         </button>
-                                      )}
+                                      )} */}
                                     </div>
                                   </>
                                 ) : (
