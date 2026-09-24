@@ -13,8 +13,8 @@ from app.models.quality import (
     DefectMaster, HourlyProductionDefect, HprJob
 )
 from app.schemas.quality import QualityDailyRequest, QualityDailyResponse, QualityHourlyEntrySchema, QualityShiftAssignmentSchema
-from app.api.auth import get_current_user
-from app.models.user import User
+from app.api.permissions import require_module_read, require_module_edit, MODULE_QUALITY_CONTROL
+from app.models.auth import AuthUser
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def get_default_shape(date_str: str) -> QualityDailyResponse:
 
 
 @router.get("/", response_model=QualityDailyResponse)
-def get_daily_quality(date: str, db: Session = Depends(get_db)):
+def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser = Depends(require_module_read(MODULE_QUALITY_CONTROL))):
     try:
         query_date = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
@@ -176,7 +176,7 @@ def _has_meaningful_data(entry_data: QualityHourlyEntrySchema) -> bool:
 def save_daily_quality(
     payload: QualityDailyRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    _user: AuthUser = Depends(require_module_edit(MODULE_QUALITY_CONTROL))
 ):
     try:
         p_date = datetime.strptime(payload.production_date, "%Y-%m-%d").date()

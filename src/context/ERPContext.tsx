@@ -19,6 +19,7 @@ import {
   calculateEstimatedCompletionDays,
 } from '../utils/calculations';
 import { planningRepository, getCacheVersion } from '../services/planningRepository';
+import { useAuth, MODULES } from './AuthContext';
 
 interface ERPContextType {
   activeModule: ActiveModule;
@@ -247,23 +248,46 @@ const setHashForModule = (module: ActiveModule) => {
 };
 
 export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user: authUser, hasPermission } = useAuth();
   const [activeModule, setActiveModuleState] = useState<ActiveModule>(getModuleFromHash);
 
+  const canAccessModule = useCallback((mod: ActiveModule): boolean => {
+    if (mod === 'Production Planning') return hasPermission(MODULES.PRODUCTION_PLANNING, 'read');
+    if (mod === 'Quality Control') return hasPermission(MODULES.QUALITY_CONTROL, 'read');
+    if (mod === 'Master Management') {
+      return hasPermission(MODULES.BOTTLE_MASTER, 'read') || hasPermission(MODULES.HOLIDAY_MASTER, 'read');
+    }
+    return true;
+  }, [hasPermission]);
+
   const setActiveModule = useCallback((mod: ActiveModule) => {
+    if (!canAccessModule(mod)) mod = 'Dashboard';
     setActiveModuleState(mod);
     setHashForModule(mod);
-  }, []);
+  }, [canAccessModule]);
 
   // Listen for hashchange events (e.g. browser back/forward or manual hash change)
   useEffect(() => {
     const handleHashChange = () => {
-      setActiveModuleState(getModuleFromHash());
+      const next = canAccessModule(getModuleFromHash()) ? getModuleFromHash() : 'Dashboard';
+      setActiveModuleState(next);
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => {
       window.removeEventListener('hashchange', handleHashChange);
     };
-  }, []);
+  }, [canAccessModule]);
+
+  // Once the logged-in user resolves, drop any module the URL may still point
+  // at that their permissions cannot access (e.g. deep link on load).
+  useEffect(() => {
+    if (!authUser) return;
+    if (!canAccessModule(activeModule)) {
+      setActiveModuleState('Dashboard');
+      setHashForModule('Dashboard');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser]);
 
   // Keep the URL hash in sync with the current module on every mount and on
   // every module change. This ensures the address bar is correct even after

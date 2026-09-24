@@ -25,5 +25,9 @@ class Settings(BaseSettings):
     def hpr_schema(self) -> str | None:
         return None if self.is_sqlite else "hpr"
 
+    @property
+    def auth_schema(self) -> str | None:
+        return None if self.is_sqlite else "auth"
+
 
 settings = Settings()

@@ -19,21 +19,28 @@ interface MenuNavItem {
   label: string;
   icon: React.ElementType;
   badge?: string;
+  requireRead?: string | string[];
 }
 
 const NAV_ITEMS: MenuNavItem[] = [
   { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, badge: 'Excel' },
-  { id: 'Master Management', label: 'Master Management', icon: Cpu },
-  { id: 'Quality Control', label: 'Hourly Production', icon: ClipboardCheck },
+  { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, requireRead: 'Production Planning', badge: 'Excel' },
+  { id: 'Master Management', label: 'Master Management', icon: Cpu, requireRead: ['Bottle Master', 'Holiday Master'] },
+  { id: 'Quality Control', label: 'Hourly Production', icon: ClipboardCheck, requireRead: 'Quality Control' },
   { id: 'Settings', label: 'Settings', icon: Sliders },
   { id: 'Profile', label: 'Profile', icon: User },
 ];
 
 export const Sidebar: React.FC = () => {
   const { activeModule, setActiveModule } = useERP();
-  const { logout } = useAuth();
+  const { hasPermission, logout } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(true);
+
+  const visibleItems = NAV_ITEMS.filter((item) => {
+    if (!item.requireRead) return true;
+    const modules = Array.isArray(item.requireRead) ? item.requireRead : [item.requireRead];
+    return modules.some((m) => hasPermission(m, 'read'));
+  });
 
   return (
     <aside
@@ -54,7 +61,7 @@ export const Sidebar: React.FC = () => {
       </button>
 
       <div className="p-3 space-y-1 overflow-y-auto flex-1">
-        {NAV_ITEMS.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeModule === item.id;
 

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { FlaskConical, Search, Check, ChevronDown, Pencil, X } from 'lucide-react';
 import { planningRepository } from '../../services/planningRepository';
 import { MachineMasterRow, BottleMasterRow, BottleConfigurationRow } from '../../data/planningSchema';
+import { useAuth, MODULES } from '../../context/AuthContext';
 
 interface BottleMasterPanelProps {
   machines: MachineMasterRow[];
@@ -23,6 +24,8 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   configs,
   onRefresh,
 }) => {
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission(MODULES.BOTTLE_MASTER, 'edit');
   const [tab, setTab] = useState<'new' | 'edit'>('new');
   const [machineNo, setMachineNo] = useState<string>('');
   const [formBottleName, setFormBottleName] = useState('');
@@ -452,18 +455,20 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
         <h2 className="text-base font-semibold text-gray-800">Bottle Master</h2>
       </div>
 
-      <div className="flex border-b border-gray-100 px-6">
-        {(['new', 'edit'] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => switchTab(t)}
-            className={`py-3 px-0 mr-6 text-sm font-semibold border-b-2 -mb-px transition-colors ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'
-              }`}
-          >
-            {t === 'new' ? 'Add New' : 'Edit Existing'}
-          </button>
-        ))}
-      </div>
+      {canEdit && (
+        <div className="flex border-b border-gray-100 px-6">
+          {(['new', 'edit'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => switchTab(t)}
+              className={`py-3 px-0 mr-6 text-sm font-semibold border-b-2 -mb-px transition-colors ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'
+                }`}
+            >
+              {t === 'new' ? 'Add New' : 'Edit Existing'}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="p-6 flex flex-col gap-5">
         {showForm ? (
@@ -586,7 +591,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                       </div>
                     )}
                   </div>
-                  {selectedBase && (
+                  {canEdit && selectedBase && (
                     <button
                       type="button"
                       onClick={beginRename}
@@ -737,7 +742,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                       </div>
                     )}
                   </div>
-                  {selectedBase && (
+                  {canEdit && selectedBase && (
                     <button
                       type="button"
                       onClick={beginRename}
@@ -801,38 +806,40 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           </div>
         )}
 
-        <div className="flex justify-end items-center gap-2 pt-2">
-          {tab === 'edit' && isDirty && (
-            <button
-              type="button"
-              onClick={handleCancel}
-              className="flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 hover:text-gray-800 transition-all duration-200"
-            >
-              Cancel
-            </button>
-          )}
-          <button
-            onClick={handleSave}
-            disabled={!canSave}
-            className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${saved
-                ? 'bg-green-50 text-green-600 border border-green-200'
-                : !canSave
-                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 text-white'
-              }`}
-          >
-            {saved ? (
-              <>
-                <Check className="w-3.5 h-3.5" />
-                Saved
-              </>
-            ) : tab === 'new' ? (
-              'Save Bottle'
-            ) : (
-              'Save Changes'
+        {canEdit && (
+          <div className="flex justify-end items-center gap-2 pt-2">
+            {tab === 'edit' && isDirty && (
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 hover:text-gray-800 transition-all duration-200"
+              >
+                Cancel
+              </button>
             )}
-          </button>
-        </div>
+            <button
+              onClick={handleSave}
+              disabled={!canSave}
+              className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${saved
+                  ? 'bg-green-50 text-green-600 border border-green-200'
+                  : !canSave
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 text-white'
+                }`}
+            >
+              {saved ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  Saved
+                </>
+              ) : tab === 'new' ? (
+                'Save Bottle'
+              ) : (
+                'Save Changes'
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

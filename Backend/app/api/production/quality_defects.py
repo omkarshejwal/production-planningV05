@@ -7,18 +7,13 @@ from typing import List
 from app.db.session import get_db
 from app.models.quality import DefectMaster
 from app.schemas.quality import DefectMasterCreate, DefectMasterUpdate, DefectMasterResponse
-from app.api.auth import get_current_user
-from app.models.user import User
+from app.api.permissions import require_module_read, require_module_edit, MODULE_QUALITY_CONTROL
+from app.models.auth import AuthUser
 
 router = APIRouter()
 
-def require_editor(current_user: User = Depends(get_current_user)):
-    if current_user.role not in ["Admin", "Editor"]:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    return current_user
-
 @router.get("/", response_model=List[DefectMasterResponse])
-def list_defects(active_only: bool = False, db: Session = Depends(get_db)):
+def list_defects(active_only: bool = False, db: Session = Depends(get_db), _user: AuthUser = Depends(require_module_read(MODULE_QUALITY_CONTROL))):
     query = db.query(DefectMaster)
     if active_only:
         query = query.filter(DefectMaster.is_active == True)
@@ -28,7 +23,7 @@ def list_defects(active_only: bool = False, db: Session = Depends(get_db)):
 def create_defect(
     defect: DefectMasterCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_editor)
+    _user: AuthUser = Depends(require_module_edit(MODULE_QUALITY_CONTROL))
 ):
     if defect.defect_type not in ["Critical", "Major", "Minor"]:
         raise HTTPException(status_code=400, detail="defect_type must be Critical, Major, or Minor")
@@ -51,7 +46,7 @@ def update_defect(
     defect_id: int,
     defect_update: DefectMasterUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_editor)
+    _user: AuthUser = Depends(require_module_edit(MODULE_QUALITY_CONTROL))
 ):
     db_defect = db.query(DefectMaster).filter(DefectMaster.defect_id == defect_id).first()
     if not db_defect:

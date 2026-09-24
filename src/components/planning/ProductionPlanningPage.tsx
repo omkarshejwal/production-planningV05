@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState, useEffect } from 'react';
 
 import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
+import { useAuth, MODULES } from '../../context/AuthContext';
 import { planningRepository } from '../../services/planningRepository';
 import { ProductionJobRow } from '../../data/planningSchema';
 import { ProductionJob } from '../../types';
@@ -322,6 +323,8 @@ function loadFromStorage(): { machineLists: MachineLists; completedJobMap: Compl
 
 export const ProductionPlanningPage: React.FC = () => {
   const { jobs, bottles, holidays, productionHistory, refreshPlanner, reloadJobsForWindow, selectedMonth, setSelectedMonth, setFromDate, setToDate } = useERP();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission(MODULES.PRODUCTION_PLANNING, 'edit');
 
   // Filters
   const [dayTick, setDayTick] = useState(0);
@@ -747,6 +750,10 @@ export const ProductionPlanningPage: React.FC = () => {
   }, []);
 
   const handleSaveToDb = async () => {
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     setIsSaving(true);
     try {
       const calculateChangeover = (mIdx: number, rowIdx: number, startTime: string) => {
@@ -946,7 +953,7 @@ export const ProductionPlanningPage: React.FC = () => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
         event.preventDefault();
-        if (isDirty && !isSaving) {
+        if (canEdit && isDirty && !isSaving) {
           handleSaveToDb();
         }
       }
@@ -956,7 +963,7 @@ export const ProductionPlanningPage: React.FC = () => {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isDirty, isSaving, handleSaveToDb]);
+  }, [canEdit, isDirty, isSaving, handleSaveToDb]);
 
 
   const allRowIndices = useMemo(() =>
@@ -1335,6 +1342,10 @@ export const ProductionPlanningPage: React.FC = () => {
   // job, stop and show an error. Never shifts, inserts, or removes any rows.
   // `completedIndex` targets an ended job in the completed list.
   const handleExtendJob = (mIdx: number, rowIdx: number, days: number, completedIndex?: number) => {
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     const daysToAdd = Math.max(1, Math.min(10, Math.floor(days) || 1));
     const list = machineLists[mIdx];
     if (!list || rowIdx < 0 || rowIdx >= list.length) return;
@@ -1466,6 +1477,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   // Remove blank entry at rowIdx from machine mIdx only
   const deleteBlankEntry = (mIdx: number, rowIdx: number) => {
+    if (!canEdit) return;
     updateMachineLists(prev => {
       if (!prev[mIdx][rowIdx]?.isBlank) return prev;
       const next = [...prev] as MachineLists;
@@ -1476,25 +1488,36 @@ export const ProductionPlanningPage: React.FC = () => {
     });
   };
 
-  const openEdit = (mIdx: number, rowIdx: number) =>
+  const openEdit = (mIdx: number, rowIdx: number) => {
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     setEditModal({
       mIdx,
       rowIdx,
       isContinuation: isContinuationEntry(mIdx, rowIdx, machineLists[mIdx]?.[rowIdx]),
     });
+  };
 
   // Open the edit modal for a COMPLETED job entry (editable now)
-  const openEditCompleted = (mIdx: number, rowIdx: number, completedIndex: number) =>
+  const openEditCompleted = (mIdx: number, rowIdx: number, completedIndex: number) => {
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     setEditModal({
       mIdx,
       rowIdx,
       completedIndex,
       isContinuation: isContinuationEntry(mIdx, rowIdx, completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]),
     });
+  };
 
   const isEditingCompleted = !!editModal && editModal.completedIndex !== undefined;
 
   const updateSection = (mIdx: number, rowIdx: number, val: number) => {
+    if (!canEdit) return;
     markJobIdsDirty([machineLists[mIdx]?.[rowIdx]?.jobId]);
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
@@ -2407,36 +2430,40 @@ export const ProductionPlanningPage: React.FC = () => {
                                     {isComplContinuation ? '' : (completedJob.product && completedJob.product !== 'None' ? completedJob.product : '—')}
                                   </p>
                                   <div className="flex items-center gap-1">
-                                    <button
-                                      onClick={() => openEditCompleted(mIdx, rowIdx, completedIdx)}
-                                      title="Edit completed job"
-                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors"
-                                    >
-                                      <Pencil size={8} />
-                                    </button>
-                                    <button
-                                      onClick={() => handleExtendJob(mIdx, rowIdx, 1, completedIdx)}
-                                      title="Extend this ended job by one day to the next blank date"
-                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors"
-                                    >
-                                      <Plus size={8} />
-                                    </button>
-                                    <button
-                                      onClick={() => {
-                                        if (!completedJob.startTime) {
-                                          toast.error("Cannot delete: job start time is missing");
-                                          return;
-                                        }
-                                        const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
-                                        if (!planDate) return;
-                                        const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-                                        setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, jobId: completedJob.jobId, section: completedJob.section, isCompleted: true });
-                                      }}
-                                      title="Delete historical job"
-                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
-                                    >
-                                      <Minus size={8} />
-                                    </button>
+                                    {canEdit && (
+                                      <>
+                                        <button
+                                          onClick={() => openEditCompleted(mIdx, rowIdx, completedIdx)}
+                                          title="Edit completed job"
+                                          className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors"
+                                        >
+                                          <Pencil size={8} />
+                                        </button>
+                                        <button
+                                          onClick={() => handleExtendJob(mIdx, rowIdx, 1, completedIdx)}
+                                          title="Extend this ended job by one day to the next blank date"
+                                          className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors"
+                                        >
+                                          <Plus size={8} />
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            if (!completedJob.startTime) {
+                                              toast.error("Cannot delete: job start time is missing");
+                                              return;
+                                            }
+                                            const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
+                                            if (!planDate) return;
+                                            const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+                                            setDeleteModal({ planDate, machineNo, startTime: completedJob.startTime, jobId: completedJob.jobId, section: completedJob.section, isCompleted: true });
+                                          }}
+                                          title="Delete historical job"
+                                          className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors"
+                                        >
+                                          <Minus size={8} />
+                                        </button>
+                                      </>
+                                    )}
                                   </div>
                                   {/* Job-wide cumulative total */}
                                   {/* {(completedJob.cumulativeQty ?? 0) > 0 && (
@@ -2536,31 +2563,33 @@ export const ProductionPlanningPage: React.FC = () => {
                                         </span>
                                       )}
                                       {/* Quick-edit shortcut beside "No bottle set" */}
-                                      {!hasProduct && (
+                                      {canEdit && !hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"
                                           className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={7} />
                                         </button>
                                       )}
-                                      <button
-                                        onClick={() => {
-                                          if (!entry.startTime) {
-                                            toast.error("Cannot delete: job start time is missing");
-                                            return;
-                                          }
+                                      {canEdit && (
+                                        <button
+                                          onClick={() => {
+                                            if (!entry.startTime) {
+                                              toast.error("Cannot delete: job start time is missing");
+                                              return;
+                                            }
 
-                                          const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
-                                          if (!planDate) return;
+                                            const planDate = dateRowToIso(dateRows[rowIdx]?.date || '');
+                                            if (!planDate) return;
 
-                                          // Consistent with how machine_no is built in handleSaveToDb (line 289)
-                                          const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+                                            // Consistent with how machine_no is built in handleSaveToDb (line 289)
+                                            const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
 
-                                          setDeleteModal({ planDate, machineNo, startTime: entry.startTime, jobId: entry.jobId, section: entry.section });
-                                        }}
-                                        title="Remove this job"
-                                        className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
-                                        <Minus size={7} />
-                                      </button>
+                                            setDeleteModal({ planDate, machineNo, startTime: entry.startTime, jobId: entry.jobId, section: entry.section });
+                                          }}
+                                          title="Remove this job"
+                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                          <Minus size={7} />
+                                        </button>
+                                      )}
                                     </div>
                                     {entry.startTime && (
                                       <div className="flex items-center gap-0.5 mb-1">
@@ -2569,13 +2598,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                       </div>
                                     )}
                                     <div className="flex items-center gap-1 flex-wrap">
-                                      {hasProduct && (
+                                      {canEdit && hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
                                           className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
                                           <Pencil size={8} />
                                         </button>
                                       )}
-                                      {canExtend && (
+                                      {canEdit && canExtend && (
                                         <button onClick={() => handleExtendJob(mIdx, rowIdx, 1)}
                                           title="Extend this job by one day to the next blank date"
                                           className="w-5 h-5 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors">
@@ -2593,15 +2622,19 @@ export const ProductionPlanningPage: React.FC = () => {
                                   </>
                                 ) : (
                                   <div className="flex items-center gap-1 py-0.5">
-                                    <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
-                                      className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
-                                      <Pencil size={8} />
-                                    </button>
-                                    {isBlank && (
-                                      <button onClick={() => deleteBlankEntry(mIdx, rowIdx)} title="Remove row"
-                                        className="w-5 h-5 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
-                                        <Minus size={8} />
-                                      </button>
+                                    {canEdit && (
+                                      <>
+                                        <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
+                                          className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                          <Pencil size={8} />
+                                        </button>
+                                        {isBlank && (
+                                          <button onClick={() => deleteBlankEntry(mIdx, rowIdx)} title="Remove row"
+                                            className="w-5 h-5 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                            <Minus size={8} />
+                                          </button>
+                                        )}
+                                      </>
                                     )}
                                   </div>
                                 )}
@@ -2613,7 +2646,8 @@ export const ProductionPlanningPage: React.FC = () => {
                                     <div className="relative inline-flex items-center justify-center">
                                       <select value={secVal}
                                         onChange={e => updateSection(mIdx, rowIdx, Number(e.target.value))}
-                                        className={`text-xs font-semibold appearance-none bg-transparent focus:outline-none cursor-pointer pr-3 ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`}>
+                                        disabled={!canEdit}
+                                        className={`text-xs font-semibold appearance-none bg-transparent focus:outline-none ${canEdit ? 'cursor-pointer' : 'cursor-default'} pr-3 ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`}>
                                         {[...valid].sort((a, b) => b - a).map(n => <option key={n} value={n}>{n}</option>)}
                                       </select>
                                       <ChevronDown size={8} className={`absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none ${isLowSec ? 'text-[#991B1B]' : 'text-[#7C3AED]'}`} />
@@ -2691,18 +2725,20 @@ export const ProductionPlanningPage: React.FC = () => {
               : 'All changes are saved.'}
           </span>
         </div>
-        <button
-          onClick={handleSaveToDb}
-          disabled={!isDirty || isSaving}
-          className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
-            ${isDirty && !isSaving
-              ? 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
-              : 'bg-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed'
-            }`}
-        >
-          <Save size={15} />
-          {isSaving ? 'Saving…' : 'Save'}
-        </button>
+        {canEdit && (
+          <button
+            onClick={handleSaveToDb}
+            disabled={!isDirty || isSaving}
+            className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
+              ${isDirty && !isSaving
+                ? 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
+                : 'bg-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed'
+              }`}
+          >
+            <Save size={15} />
+            {isSaving ? 'Saving…' : 'Save'}
+          </button>
+        )}
       </div>
 
       {/* Edit Modal */}

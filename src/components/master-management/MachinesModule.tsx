@@ -4,6 +4,7 @@ import { planningRepository } from '../../services/planningRepository';
 import { MachineMasterRow, BottleMasterRow, BottleConfigurationRow } from '../../data/planningSchema';
 import { BottleMasterPanel } from './BottleMasterPanel';
 import { HolidayMasterPanel } from './HolidayMasterPanel';
+import { useAuth, MODULES } from '../../context/AuthContext';
 
 type MasterTabId = 'bottle' | 'holiday';
 
@@ -19,10 +20,23 @@ const MASTER_TABS: MasterTab[] = [
 ];
 
 export const MachinesModule: React.FC = () => {
+  const { hasPermission } = useAuth();
   const [machineRows, setMachineRows] = useState<MachineMasterRow[]>([]);
   const [bottles, setBottles] = useState<BottleMasterRow[]>([]);
   const [configs, setConfigs] = useState<BottleConfigurationRow[]>([]);
   const [activeTab, setActiveTab] = useState<MasterTabId>('bottle');
+
+  const availableTabs = MASTER_TABS.filter((tab) =>
+    tab.id === 'bottle'
+      ? hasPermission(MODULES.BOTTLE_MASTER, 'read')
+      : hasPermission(MODULES.HOLIDAY_MASTER, 'read')
+  );
+
+  useEffect(() => {
+    if (availableTabs.length > 0 && !availableTabs.some((t) => t.id === activeTab)) {
+      setActiveTab(availableTabs[0].id);
+    }
+  }, [availableTabs, activeTab]);
 
   const refresh = useCallback(() => {
     setMachineRows(planningRepository.getMachines());
@@ -38,11 +52,13 @@ export const MachinesModule: React.FC = () => {
     fullInit();
   }, [fullInit]);
 
+  if (availableTabs.length === 0) return null;
+
   return (
     <div className="p-4 md:p-6 max-w-[1920px] mx-auto min-h-[calc(100vh-9rem)]">
       {/* Master tab navigation */}
       <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
-        {MASTER_TABS.map((tab) => (
+        {availableTabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}

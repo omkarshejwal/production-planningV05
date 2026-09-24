@@ -1,6 +1,15 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { apiFetch } from '../utils/api';
 
+export type ModulePermission = { read: boolean; edit: boolean };
+
+export const MODULES = {
+  PRODUCTION_PLANNING: 'Production Planning',
+  QUALITY_CONTROL: 'Quality Control',
+  BOTTLE_MASTER: 'Bottle Master',
+  HOLIDAY_MASTER: 'Holiday Master',
+} as const;
+
 export interface AuthUser {
   employee_id: string;
   employee_name: string;
@@ -8,13 +17,15 @@ export interface AuthUser {
   email: string;
   phone_number: string;
   role: 'Editor' | 'Viewer';
+  permissions: Record<string, ModulePermission>;
 }
 
 interface AuthContextType {
   user: AuthUser | null;
   isLoading: boolean;
+  hasPermission: (module: string, access: 'read' | 'edit') => boolean;
   login: (userId: string, password: string) => Promise<void>;
-  signup: (details: Omit<AuthUser, 'role'> & { password: string; role: AuthUser['role'] }) => Promise<void>;
+  signup: (details: Omit<AuthUser, 'role' | 'permissions'> & { password: string; role: AuthUser['role'] }) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -47,6 +58,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await apiFetch('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) });
   };
 
+  const hasPermission = (module: string, access: 'read' | 'edit') => {
+    if (!user) return false;
+    const perm = user.permissions?.[module];
+    if (!perm) return false;
+    if (access === 'read') return perm.read;
+    return perm.read && perm.edit;
+  };
+
   const logout = async () => {
     try { await apiFetch('/api/auth/logout', { method: 'POST' }); } finally {
       localStorage.removeItem('authToken');
@@ -57,7 +76,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  return <AuthContext.Provider value={{ user, isLoading, login, signup, changePassword, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, isLoading, hasPermission, login, signup, changePassword, logout }}>{children}</AuthContext.Provider>;
 };
 
 export function useAuth() {

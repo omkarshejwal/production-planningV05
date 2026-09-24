@@ -6,22 +6,21 @@ from app.db.session import get_db
 from app.models.holiday import HolidayMaster
 from app.models.audit_log import AuditLog
 from app.schemas.holiday import HolidayMasterResponse, HolidayMasterCreate
-from app.api.deps import require_manager_role
+from app.api.permissions import require_module_read, require_module_edit, MODULE_HOLIDAY_MASTER
 from app.api.auth import get_current_user
-from app.models.user import User
+from app.models.auth import AuthUser
 
 router = APIRouter(prefix="/holidays", tags=["Holiday Master"])
 
 @router.get("/", response_model=List[HolidayMasterResponse])
-def get_all_holidays(db: Session = Depends(get_db)):
+def get_all_holidays(db: Session = Depends(get_db), _user: AuthUser = Depends(require_module_read(MODULE_HOLIDAY_MASTER))):
     return db.query(HolidayMaster).order_by(HolidayMaster.holiday_date).all()
 
 @router.post("/", response_model=HolidayMasterResponse)
 def create_holiday(
     holiday_in: HolidayMasterCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_HOLIDAY_MASTER)),
 ):
     existing = db.query(HolidayMaster).filter(HolidayMaster.holiday_date == holiday_in.holiday_date).first()
     if existing:
@@ -32,7 +31,7 @@ def create_holiday(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="CREATED_HOLIDAY",
-        details=f"User ({user_role}) created holiday '{new_holiday.holiday_name}' on {new_holiday.holiday_date}"
+        details=f"User ({current_user.employee_id}) created holiday '{new_holiday.holiday_name}' on {new_holiday.holiday_date}"
     ))
     db.commit()
     db.refresh(new_holiday)
@@ -43,8 +42,7 @@ def update_holiday(
     holiday_date: str,
     holiday_in: HolidayMasterCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_HOLIDAY_MASTER)),
 ):
     from datetime import date as dt_date
     parsed_date = dt_date.fromisoformat(holiday_date)
@@ -62,7 +60,7 @@ def update_holiday(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="UPDATED_HOLIDAY",
-        details=f"User ({user_role}) updated holiday '{existing.holiday_name}'"
+        details=f"User ({current_user.employee_id}) updated holiday '{existing.holiday_name}'"
     ))
     db.commit()
     db.refresh(existing)
@@ -72,8 +70,7 @@ def update_holiday(
 def delete_holiday(
     holiday_date: str,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_HOLIDAY_MASTER)),
 ):
     from datetime import date as dt_date
     parsed_date = dt_date.fromisoformat(holiday_date)
@@ -85,7 +82,7 @@ def delete_holiday(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="DELETED_HOLIDAY",
-        details=f"User ({user_role}) deleted holiday '{existing.holiday_name}' on {parsed_date}"
+        details=f"User ({current_user.employee_id}) deleted holiday '{existing.holiday_name}' on {parsed_date}"
     ))
     db.commit()
     return {"ok": True}

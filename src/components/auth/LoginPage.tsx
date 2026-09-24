@@ -67,13 +67,14 @@ export const LoginPage: React.FC = () => {
 
       {view === 'login' && <>
         <h2 className="text-xl font-bold">Sign in to ERP</h2>
-        <p className="mt-1 text-sm text-slate-500">Use your email address or mobile number.</p>
+        <p className="mt-1 text-sm text-slate-500">Use your Employee ID.</p>
         {error && <p className="mt-4 rounded-lg px-3 py-2 text-sm bg-red-50 text-red-700">{error}</p>}
         <form onSubmit={submitLogin} className="mt-5 space-y-4">
-          <label className="block"><span className="mb-1 block text-xs font-semibold text-slate-600">User ID</span><div className="relative"><UserRound className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><input required name="userId" placeholder="Email or mobile number" className={`${inputClass} pl-9`} /></div></label>
+          <label className="block"><span className="mb-1 block text-xs font-semibold text-slate-600">Employee ID</span><div className="relative"><UserRound className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><input required name="userId" placeholder="Employee ID" className={`${inputClass} pl-9`} /></div></label>
           <label className="block"><span className="mb-1 block text-xs font-semibold text-slate-600">Password</span><div className="relative"><LockKeyhole className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><input required type="password" name="password" placeholder="Password" className={`${inputClass} pl-9`} /></div></label>
           <button disabled={isSubmitting} className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">{isSubmitting ? 'Signing in...' : 'Sign In'}</button>
         </form>
+        <p className="mt-3 text-center text-xs text-slate-400">Initial password: your registered mobile number.</p>
         <button onClick={() => { setError(''); setView('forgot-email'); }} className="mt-5 w-full text-sm font-semibold text-blue-700 hover:underline">Forgot Password?</button>
       </>}
 

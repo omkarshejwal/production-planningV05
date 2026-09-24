@@ -6,14 +6,14 @@ from app.db.session import get_db
 from app.models.machine import MachineMaster
 from app.models.audit_log import AuditLog
 from app.schemas.machine import MachineMasterResponse, MachineMasterCreate
-from app.api.deps import require_manager_role
+from app.api.permissions import require_module_read, require_module_edit, MODULE_PRODUCTION_PLANNING
 from app.api.auth import get_current_user
-from app.models.user import User
+from app.models.auth import AuthUser
 
 router = APIRouter(prefix="/machines", tags=["Production Machines"])
 
 @router.get("/", response_model=List[MachineMasterResponse])
-def get_all_machines(db: Session = Depends(get_db)):
+def get_all_machines(db: Session = Depends(get_db), _user: AuthUser = Depends(require_module_read(MODULE_PRODUCTION_PLANNING))):
     machines = db.query(MachineMaster).all()
     return machines
 
@@ -21,8 +21,7 @@ def get_all_machines(db: Session = Depends(get_db)):
 def create_machine(
     machine_in: MachineMasterCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
 ):
     if machine_in.machine_no not in [1, 2, 3, 4]:
         raise HTTPException(status_code=400, detail="Only Machines 1, 2, 3, and 4 are supported in this factory.")
@@ -43,7 +42,7 @@ def create_machine(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="CREATED_MACHINE",
-        details=f"User ({user_role}) created Machine {new_machine.machine_no}"
+        details=f"User ({current_user.employee_id}) created Machine {new_machine.machine_no}"
     ))
 
     db.commit()
@@ -55,8 +54,7 @@ def update_machine(
     machine_no: int,
     machine_in: MachineMasterCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
 ):
     existing = db.query(MachineMaster).filter(MachineMaster.machine_no == machine_no).first()
     if not existing:
@@ -71,7 +69,7 @@ def update_machine(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="UPDATED_MACHINE",
-        details=f"User ({user_role}) updated Machine {machine_no}"
+        details=f"User ({current_user.employee_id}) updated Machine {machine_no}"
     ))
 
     db.commit()

@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.api.access import load_permissions
 from app.db.session import get_db
-from app.models.user import User
+from app.models.auth import AuthUser
+from app.models.user import User as ProductionUser
 
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -50,21 +51,27 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=1024)
 
 
-def user_response(user: User) -> dict[str, str]:
+def user_response(user: AuthUser, db: Session) -> dict:
+    # Employee self-service display fields (profile/header) come from the
+    # legacy production.users table when available; auth.users is authoritative
+    # for login and permissions. Missing legacy rows fall back safely.
+    legacy = db.get(ProductionUser, user.employee_id)
+
     return {
         "employee_id": user.employee_id,
         "employee_name": user.employee_name,
-        "department": user.department,
-        "email": user.email,
-        "phone_number": user.phone_number,
-        "role": user.role,
+        "department": legacy.department if legacy else "",
+        "email": user.email or "",
+        "phone_number": user.phone_number or "",
+        "role": legacy.role if legacy else "Viewer",
+        "permissions": load_permissions(user.employee_id, db),
     }
 
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
-) -> User:
+) -> AuthUser:
     if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -81,7 +88,7 @@ def get_current_user(
             detail="Session has expired",
         )
 
-    user = db.get(User, session[0])
+    user = db.get(AuthUser, session[0])
 
     if not user or not user.is_active:
         raise HTTPException(
@@ -97,28 +104,36 @@ def login(
     payload: LoginRequest,
     db: Session = Depends(get_db),
 ):
-    user_id = payload.user_id.strip()
+    # Auth is driven by the auth.users table: employee_id is the login ID.
+    user = db.query(AuthUser).filter(
+        AuthUser.employee_id == payload.user_id.strip()
+    ).first()
 
-    user = (
-        db.query(User)
-        .filter(
-            or_(
-                User.email == user_id.lower(),
-                User.phone_number == user_id,
-            )
-        )
-        .first()
-    )
-
-    # Plain-text password comparison
-    if (
-        not user
-        or not user.is_active
-        or payload.password != user.password
-    ):
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user ID or password",
+            detail="Invalid employee ID or password",
+        )
+
+    # auth.users.password is nullable; the initial password for every employee
+    # is their registered mobile number (stored in plain text).
+    if user.password is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No password is set for this account. Your initial password is your registered mobile number.",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account is inactive. Please contact your administrator.",
+        )
+
+    # Passwords are stored as plain text in auth.users, so compare directly.
+    if payload.password != user.password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid employee ID or password",
         )
 
     token = secrets.token_urlsafe(32)
@@ -130,7 +145,7 @@ def login(
 
     return {
         "token": token,
-        "user": user_response(user),
+        "user": user_response(user, db),
     }
 
 
@@ -147,33 +162,46 @@ def signup(
 
     email = payload.email
 
-    if db.query(User).filter(User.email == email).first():
+    if db.query(ProductionUser).filter(ProductionUser.email == email).first():
         raise HTTPException(
             status_code=409,
             detail="An account already exists for this email address",
         )
 
-    if db.get(User, payload.employee_id.strip()):
+    if db.get(ProductionUser, payload.employee_id.strip()):
         raise HTTPException(
             status_code=409,
             detail="An account already exists for this employee ID",
         )
 
-    user = User(
+    if db.get(AuthUser, payload.employee_id.strip()):
+        raise HTTPException(
+            status_code=409,
+            detail="An account already exists for this employee ID",
+        )
+
+    # Auth source of truth: auth.users (password authorizes /api/auth/login).
+    db.add(AuthUser(
+        employee_id=payload.employee_id.strip(),
+        employee_name=payload.employee_name.strip(),
+        email=email,
+        phone_number=payload.phone_number.strip(),
+        password=payload.password,
+        is_active=True,
+    ))
+
+    # Legacy production.users row retains the display-only department/role.
+    db.add(ProductionUser(
         employee_id=payload.employee_id.strip(),
         employee_name=payload.employee_name.strip(),
         department=payload.department.strip(),
         email=email,
         phone_number=payload.phone_number.strip(),
-
-        # Store normal password without hashing
         password=payload.password,
-
         role=payload.role,
         is_active=True,
-    )
+    ))
 
-    db.add(user)
     db.commit()
 
     return {
@@ -183,15 +211,16 @@ def signup(
 
 @router.get("/me")
 def get_me(
-    user: User = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    return user_response(user)
+    return user_response(user, db)
 
 
 @router.post("/change-password")
 def change_password(
     payload: ChangePasswordRequest,
-    user: User = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     # Plain-text password comparison
@@ -203,6 +232,10 @@ def change_password(
 
     # Store new password without hashing
     user.password = payload.new_password
+
+    legacy = db.get(ProductionUser, user.employee_id)
+    if legacy:
+        legacy.password = payload.new_password
 
     db.commit()
 

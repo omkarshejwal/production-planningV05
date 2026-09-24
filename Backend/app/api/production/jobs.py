@@ -14,13 +14,15 @@ from app.models.machine import MachineMaster
 from app.models.product import BottleConfiguration
 from app.models.audit_log import AuditLog
 from app.schemas.job import ProductionJobResponse, ProductionJobCreate, ExtendJobRequest, ProductionJobBulkRequest
-from app.api.deps import require_manager_role
+from app.api.permissions import require_module_read, require_module_edit, MODULE_PRODUCTION_PLANNING
+from app.models.auth import AuthUser
 
 router = APIRouter(prefix="/jobs", tags=["Production Jobs"])
 
 @router.get("/", response_model=List[ProductionJobResponse])
 def get_all_jobs(
     db: Session = Depends(get_db),
+    _user: AuthUser = Depends(require_module_read(MODULE_PRODUCTION_PLANNING)),
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     machine_no: Optional[int] = None,
@@ -47,7 +49,7 @@ def get_all_jobs(
 def create_job(
     job_in: ProductionJobCreate, 
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING))
 ):
     """
     Add a new job. The Backend Calculation Engine automatically computes Quantity and Tonnage.
@@ -186,7 +188,7 @@ def create_job(
 def create_jobs_bulk(
     bulk_in: ProductionJobBulkRequest,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
 ):
     """
     Upsert many production jobs in ONE transaction.
@@ -371,6 +373,7 @@ def create_jobs_bulk(
 def get_next_job_id(
     machine_no: int,
     db: Session = Depends(get_db),
+    _user: AuthUser = Depends(require_module_read(MODULE_PRODUCTION_PLANNING)),
 ):
     """
     Return the next available job_id for a machine WITHOUT consuming it.
@@ -400,7 +403,7 @@ def get_next_job_id(
 def reserve_next_job_id(
     machine_no: int,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING))
 ):
     """
     Reserve the next job_id for a machine WITHOUT persisting a production job.
@@ -426,7 +429,7 @@ def reserve_next_job_id(
 def extend_job(
     req: ExtendJobRequest,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING))
 ):
     """
     Extend a production job by N extra days.
@@ -590,7 +593,7 @@ def delete_job(
     job_id: Optional[int] = None,
     section: Optional[int] = None,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role)
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING))
 ):
     """
     Delete the production job row(s) belonging to ONE specific day/slot.

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Printer, Download, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
+import { useAuth, MODULES } from '../../context/AuthContext';
 import { BottleMaster } from '../../types';
 import { qualityRepository, QualityHourlyEntry, QualityShiftMap, hasMeaningfulData } from '../../services/qualityRepository';
 
@@ -772,6 +773,8 @@ const QualityTimeRow = React.memo<{
 // ─── Module ────────────────────────────────────────────────────────────────
 export const QualityControlModule: React.FC = () => {
   const { machines, bottles, bottleMasterRecords } = useERP();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission(MODULES.QUALITY_CONTROL, 'edit');
 
   const [activeMachine, setActiveMachine] = useState(1);
   const [navDate, setNavDate] = useState<Date>(() => new Date());
@@ -1223,6 +1226,10 @@ export const QualityControlModule: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (!canEdit) {
+      toast.error('You do not have permission to edit quality data.');
+      return;
+    }
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
@@ -1922,20 +1929,22 @@ export const QualityControlModule: React.FC = () => {
               Saved for {dateLabel}
             </span>
           )}
-          <button
-            onClick={() => void handleSave()}
-            disabled={saving}
-            style={{
-              backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px',
-              padding: '7px 22px', fontSize: '13px', fontWeight: 600,
-              cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
-              letterSpacing: '0.01em', transition: 'background-color 0.15s',
-            }}
-            onMouseEnter={(e) => { if (!saving) e.currentTarget.style.backgroundColor = '#1d4ed8'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#2563eb'; }}
-          >
-            Save
-          </button>
+          {canEdit && (
+            <button
+              onClick={() => void handleSave()}
+              disabled={saving}
+              style={{
+                backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px',
+                padding: '7px 22px', fontSize: '13px', fontWeight: 600,
+                cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
+                letterSpacing: '0.01em', transition: 'background-color 0.15s',
+              }}
+              onMouseEnter={(e) => { if (!saving) e.currentTarget.style.backgroundColor = '#1d4ed8'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#2563eb'; }}
+            >
+              Save
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -13,22 +13,26 @@ from app.schemas.product import (
     BottleConfigurationResponse, BottleConfigurationCreate,
     BottleConfigurationBulkRequest
 )
-from app.api.deps import require_manager_role
+from app.api.permissions import (
+    require_module_edit,
+    require_any_module_read,
+    MODULE_PRODUCTION_PLANNING,
+    MODULE_BOTTLE_MASTER,
+)
 from app.api.auth import get_current_user
-from app.models.user import User
+from app.models.auth import AuthUser
 
 router = APIRouter(prefix="/products", tags=["Production Products"])
 
 @router.get("/bottles/", response_model=List[BottleMasterResponse])
-def get_all_bottles(db: Session = Depends(get_db)):
+def get_all_bottles(db: Session = Depends(get_db), _user: AuthUser = Depends(require_any_module_read([MODULE_PRODUCTION_PLANNING, MODULE_BOTTLE_MASTER]))):
     return db.query(BottleMaster).all()
 
 @router.post("/bottles/", response_model=BottleMasterResponse)
 def create_bottle(
     bottle_in: BottleMasterCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
     new_bottle = BottleMaster(bottle_name=bottle_in.bottle_name)
     db.add(new_bottle)
@@ -38,7 +42,7 @@ def create_bottle(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="CREATED_BOTTLE",
-        details=f"User ({user_role}) created Bottle '{new_bottle.bottle_name}' with ID {new_bottle.bottle_id}"
+        details=f"User ({current_user.employee_id}) created Bottle '{new_bottle.bottle_name}' with ID {new_bottle.bottle_id}"
     ))
     db.commit()
 
@@ -49,8 +53,7 @@ def update_bottle(
     bottle_id: int,
     bottle_in: BottleMasterCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
     existing = db.query(BottleMaster).filter(BottleMaster.bottle_id == bottle_id).first()
     if not existing:
@@ -61,22 +64,21 @@ def update_bottle(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="UPDATED_BOTTLE",
-        details=f"User ({user_role}) updated Bottle {bottle_id} to '{bottle_in.bottle_name}'"
+        details=f"User ({current_user.employee_id}) updated Bottle {bottle_id} to '{bottle_in.bottle_name}'"
     ))
     db.commit()
     db.refresh(existing)
     return existing
 
 @router.get("/configurations/", response_model=List[BottleConfigurationResponse])
-def get_all_configurations(db: Session = Depends(get_db)):
+def get_all_configurations(db: Session = Depends(get_db), _user: AuthUser = Depends(require_any_module_read([MODULE_PRODUCTION_PLANNING, MODULE_BOTTLE_MASTER]))):
     return db.query(BottleConfiguration).all()
 
 @router.post("/configurations/", response_model=BottleConfigurationResponse)
 def create_configuration(
     config_in: BottleConfigurationCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
     existing = db.query(BottleConfiguration).filter(
         BottleConfiguration.machine_no == config_in.machine_no,
@@ -103,7 +105,7 @@ def create_configuration(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="CONFIGURED_BOTTLE",
-        details=f"User ({user_role}) configured Bottle {new_config.bottle_id} on Machine {new_config.machine_no} Section {new_config.section}"
+        details=f"User ({current_user.employee_id}) configured Bottle {new_config.bottle_id} on Machine {new_config.machine_no} Section {new_config.section}"
     ))
     db.commit()
 
@@ -116,8 +118,7 @@ def update_configuration(
     section: int,
     config_in: BottleConfigurationCreate,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
     existing = db.query(BottleConfiguration).filter(
         BottleConfiguration.machine_no == machine_no,
@@ -133,7 +134,7 @@ def update_configuration(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="UPDATED_BOTTLE_CONFIG",
-        details=f"User ({user_role}) updated config for Bottle {bottle_id} on Machine {machine_no} Section {section}"
+        details=f"User ({current_user.employee_id}) updated config for Bottle {bottle_id} on Machine {machine_no} Section {section}"
     ))
     db.commit()
     db.refresh(existing)
@@ -145,8 +146,7 @@ def delete_configuration(
     bottle_id: int,
     section: int,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
     existing = db.query(BottleConfiguration).filter(
         BottleConfiguration.machine_no == machine_no,
@@ -160,7 +160,7 @@ def delete_configuration(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="DELETED_BOTTLE_CONFIG",
-        details=f"User ({user_role}) deleted config for Bottle {bottle_id} on Machine {machine_no} Section {section}"
+        details=f"User ({current_user.employee_id}) deleted config for Bottle {bottle_id} on Machine {machine_no} Section {section}"
     ))
     db.commit()
     return {"ok": True}
@@ -169,8 +169,7 @@ def delete_configuration(
 def bulk_upsert_configurations(
     payload: BottleConfigurationBulkRequest,
     db: Session = Depends(get_db),
-    user_role: str = Depends(require_manager_role),
-    current_user: User = Depends(get_current_user),
+    current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
     """Upserts many bottle configurations atomically in a single transaction.
 
@@ -237,9 +236,9 @@ def bulk_upsert_configurations(
                 user_id=current_user.employee_id,
                 action="UPDATED_BOTTLE_CONFIG" if is_update else "CONFIGURED_BOTTLE",
                 details=(
-                    f"User ({user_role}) updated config for Bottle {c.bottle_id} on Machine {c.machine_no} Section {c.section}"
+                    f"User ({current_user.employee_id}) updated config for Bottle {c.bottle_id} on Machine {c.machine_no} Section {c.section}"
                     if is_update
-                    else f"User ({user_role}) configured Bottle {c.bottle_id} on Machine {c.machine_no} Section {c.section}"
+                    else f"User ({current_user.employee_id}) configured Bottle {c.bottle_id} on Machine {c.machine_no} Section {c.section}"
                 ),
             ))
         db.commit()

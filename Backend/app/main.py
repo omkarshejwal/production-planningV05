@@ -28,6 +28,10 @@ from app.models.audit_log import AuditLog
 from app.models.holiday import HolidayMaster
 from app.models.quality import DefectMaster, HourlyProductionReport, ShiftMaster, ShiftAssignment, HourlyProduction, HourlyProductionDefect
 
+# Auth schema models live on their own base so Base.metadata.create_all never
+# touches the server-provisioned auth.users / module_master / permissions tables.
+from app.models.auth import AuthBase
+
 def initialize_database() -> None:
     if settings.production_schema:
         with engine.begin() as connection:
@@ -36,6 +40,9 @@ def initialize_database() -> None:
         with engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.hpr_schema}"'))
     Base.metadata.create_all(bind=engine)
+    # Safe no-op against the production Postgres (auth tables already exist);
+    # creates a local sqlite fallback so local development still works.
+    AuthBase.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="VitrumGlass Manufacturing API",
