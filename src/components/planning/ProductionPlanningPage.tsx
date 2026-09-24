@@ -648,7 +648,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   // Date rows are fixed; each machine owns an independent flat array.
 
-  const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number } | null>(null);
+  const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number; isContinuation?: boolean } | null>(null);
   const [endJobModal, setEndJobModal] = useState<{ mIdx: number; rowIdx: number } | null>(null);
   const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; jobId?: string; section?: number; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
@@ -1437,11 +1437,21 @@ export const ProductionPlanningPage: React.FC = () => {
     });
   };
 
-  const openEdit = (mIdx: number, rowIdx: number) => setEditModal({ mIdx, rowIdx });
+  const openEdit = (mIdx: number, rowIdx: number) =>
+    setEditModal({
+      mIdx,
+      rowIdx,
+      isContinuation: isContinuationEntry(mIdx, rowIdx, machineLists[mIdx]?.[rowIdx]),
+    });
 
   // Open the edit modal for a COMPLETED job entry (editable now)
   const openEditCompleted = (mIdx: number, rowIdx: number, completedIndex: number) =>
-    setEditModal({ mIdx, rowIdx, completedIndex });
+    setEditModal({
+      mIdx,
+      rowIdx,
+      completedIndex,
+      isContinuation: isContinuationEntry(mIdx, rowIdx, completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]),
+    });
 
   const isEditingCompleted = !!editModal && editModal.completedIndex !== undefined;
 
@@ -2083,20 +2093,22 @@ export const ProductionPlanningPage: React.FC = () => {
                 <button
                   onClick={handlePrint}
                   disabled={isPrinting}
-                  className="h-7 flex items-center gap-1.5 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
-                  <Printer size={12} /> {isPrinting ? 'Printing...' : 'Print'}
+                  className="h-9 flex items-center gap-2 px-7 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+                  <Printer size={14} /> {isPrinting ? 'Printing...' : 'Print'}
                 </button>
+
                 <button
                   onClick={handleExport}
                   disabled={isExporting}
-                  className="h-7 flex items-center gap-1.5 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
-                  <Download size={12} /> {isExporting ? 'Exporting...' : 'Export'}
+                  className="h-9 flex items-center gap-2 px-6 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+                  <Download size={14} /> {isExporting ? 'Exporting...' : 'Export'}
                 </button>
+
                 <button
                   type="button"
                   onClick={() => { reloadJobsForWindow(appliedFromDate, appliedToDate); }}
-                  className="h-7 flex items-center gap-1.5 px-2.5 text-xs font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
-                  <RefreshCw size={12} /> Refresh
+                  className="h-9 flex items-center gap-2 px-4 text-sm font-medium border border-[#E5E7EB] rounded bg-white text-[#374151] hover:bg-[#F8FAFC] transition-colors">
+                  <RefreshCw size={14} /> Refresh
                 </button>
               </div>
             </div>
@@ -2108,20 +2120,13 @@ export const ProductionPlanningPage: React.FC = () => {
       <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden">
         {/* Toolbar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-[#E5E7EB] bg-[#F8FAFC]">
-          <div className="flex flex-col">
-            <span className="text-xs font-medium text-[#6B7280]">
+          <div className="flex items-center">
+            <span className="text-s font-medium text-[#6B7280]">
               Production Planning
             </span>
-
-            <div className="flex items-center gap-2 min-w-0">
-              {/* <h1 className="text-[18px] font-bold text-[#111827] whitespace-nowrap">
-                Production Planning
-              </h1> */}
-
-              <span className="text-sm font-semibold text-[#1e5be1] whitespace-nowrap">
-                {monthLabel}
-              </span>
-            </div>
+            <span className="text-s font-semibold text-[#1e5be1] whitespace-nowrap ml-2">
+              {monthLabel}
+            </span>
           </div>
 
           {/* <button
@@ -2619,6 +2624,7 @@ export const ProductionPlanningPage: React.FC = () => {
           onSave={handleSave}
           onClose={() => setEditModal(null)}
           newJobStartTime={editModal.newJobStartTime}
+          isContinuation={editModal.isContinuation}
         />
       )}
 
@@ -2648,27 +2654,88 @@ export const ProductionPlanningPage: React.FC = () => {
             return;
           }
 
-          // Track the deletion so the save persists it via the DELETE endpoint
-          // instead of re-creating the row through a full-dataset diff.
-          if (startTime) {
-            markJobDeleted(planDate, machineNo, startTime, jobId, section);
-          }
-
-          if (isCompleted) {
-            // Remove the completed entry from completedJobMap
-            const key = `${mIdx}-${rowIdx}`;
-            setCompletedJobMap(prev => {
-              const list = prev[key] ?? [];
-              const nextList = list.filter(e => e.startTime !== startTime);
-              return { ...prev, [key]: nextList };
-            });
+          // ── Cascading delete ──────────────────────────────────────────────────
+          // All rows sharing the same job_id on this machine (the selected day
+          // and every later day) form ONE logical job. Deleting an extended
+          // mid-job row removes that row AND every upcoming continuation row of
+          // the same job_id so the job never leaves orphaned future days behind.
+          // Earlier days of the job (before the selected day) are never touched.
+          if (!jobId) {
+            // Legacy row without a shared Job ID — delete only this exact slot.
+            if (startTime) {
+              markJobDeleted(planDate, machineNo, startTime, undefined, section);
+            }
+            if (isCompleted) {
+              const key = `${mIdx}-${rowIdx}`;
+              setCompletedJobMap(prev => {
+                const list = prev[key] ?? [];
+                const nextList = list.filter(e => e.startTime !== startTime);
+                if (nextList.length === list.length) return prev;
+                if (nextList.length === 0) {
+                  const { [key]: _removed, ...rest } = prev;
+                  return rest;
+                }
+                return { ...prev, [key]: nextList };
+              });
+            } else {
+              // Remove the running job by blanking the row.
+              // Upcoming jobs remain on their original dates – never shift.
+              updateMachineLists(prev => {
+                const next = [...prev] as MachineLists;
+                const list = [...next[mIdx]];
+                list[rowIdx] = makeNoneEntry(mIdx);
+                next[mIdx] = list;
+                return next;
+              });
+            }
           } else {
-            // Remove the running job by blanking the row.
-            // Upcoming jobs remain on their original dates – never shift.
+            // Track every DB row of the same job_id being removed so Save
+            // persists the cascade via the DELETE endpoint (one call per day,
+            // scoped by plan_date + start_time + job_id + section) instead of
+            // re-creating the rows through a full-dataset diff.
+            for (let r = rowIdx; r < dateRows.length; r++) {
+              const dayIso = dateRows[r]?.isoDate;
+              if (!dayIso) continue;
+
+              const running = machineLists[mIdx]?.[r];
+              if (running && !running.isBlank && running.product !== 'None' && running.jobId === jobId) {
+                if (running.startTime) markJobDeleted(dayIso, machineNo, running.startTime, jobId, running.section);
+              }
+
+              const completed = completedJobMap[`${mIdx}-${r}`] ?? [];
+              for (const c of completed) {
+                if (c.jobId === jobId && c.startTime) {
+                  markJobDeleted(dayIso, machineNo, c.startTime, jobId, c.section);
+                }
+              }
+            }
+
+            // Remove the completed entries of this job on this day and every later day.
+            setCompletedJobMap(prev => {
+              const next = { ...prev };
+              for (let r = rowIdx; r < dateRows.length; r++) {
+                const key = `${mIdx}-${r}`;
+                const list = next[key] ?? [];
+                if (list.length === 0) continue;
+                const nextList = list.filter(e => e.jobId !== jobId);
+                if (nextList.length !== list.length) {
+                  if (nextList.length === 0) delete next[key];
+                  else next[key] = nextList;
+                }
+              }
+              return next;
+            });
+
+            // Blank the running rows of this job on this day and every later day.
             updateMachineLists(prev => {
               const next = [...prev] as MachineLists;
               const list = [...next[mIdx]];
-              list[rowIdx] = makeNoneEntry(mIdx);
+              for (let r = rowIdx; r < dateRows.length; r++) {
+                const entry = list[r];
+                if (entry && !entry.isBlank && entry.jobId === jobId) {
+                  list[r] = makeNoneEntry(mIdx);
+                }
+              }
               next[mIdx] = list;
               return next;
             });

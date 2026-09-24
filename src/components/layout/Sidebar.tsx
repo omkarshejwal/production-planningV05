@@ -25,7 +25,7 @@ const NAV_ITEMS: MenuNavItem[] = [
   { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, badge: 'Excel' },
   { id: 'Master Management', label: 'Master Management', icon: Cpu },
-  { id: 'Quality Control', label: 'Quality Control', icon: ClipboardCheck },
+  { id: 'Quality Control', label: 'Hourly Production', icon: ClipboardCheck },
   { id: 'Settings', label: 'Settings', icon: Sliders },
   { id: 'Profile', label: 'Profile', icon: User },
 ];

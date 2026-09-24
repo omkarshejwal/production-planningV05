@@ -1385,7 +1385,7 @@ export const QualityControlModule: React.FC = () => {
       // ── Header: title, date, machine + shift assignments ────────────────
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(15);
-      doc.text('Production Quality Monitor', 10, 13);
+      doc.text('Hourly Production Monitor', 10, 13);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(10.5);
       doc.text(`Date: ${dateLabel}    Machine: No. ${activeMachine}`, 10, 19);
@@ -1537,7 +1537,7 @@ export const QualityControlModule: React.FC = () => {
         doc.setPage(i);
         doc.setFontSize(7);
         doc.setTextColor(100, 116, 139);
-        doc.text(`Production Quality Monitor — Machine ${activeMachine} — ${dateLabel}`, 10, pageH - 5);
+        doc.text(`Hourly Production Monitor — Machine ${activeMachine} — ${dateLabel}`, 10, pageH - 5);
         doc.text(`Page ${i} of ${pageCount}`, pageW - 10, pageH - 5, { align: 'right' });
       }
 
@@ -1619,7 +1619,7 @@ export const QualityControlModule: React.FC = () => {
       <div className="no-print" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#1e293b', letterSpacing: '-0.01em' }}>
-            Production Quality Monitor
+            Hourly Production Monitor
           </h1>
           <p style={{ margin: '2px 0 0', fontSize: '12px', color: C.textMuted }}>
             Hourly quality log — {dateLabel}{loadedDates[dateKey] ? '' : ' (loading…)'}

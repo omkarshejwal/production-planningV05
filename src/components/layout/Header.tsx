@@ -36,11 +36,11 @@ export const Header: React.FC = () => {
     <header className="h-16 bg-white border-b border-slate-200 px-4 md:px-6 flex items-center justify-between sticky top-0 z-40 shadow-xs">
       {/* Left: Brand Logo & Title */}
       <div className="flex items-center gap-3 min-w-56">
-        <div className="w-10 h-10 rounded-lg flex items-center justify-center overflow-hidden shadow-xs">
+        <div className="w-15 h-10 flex items-center justify-center overflow-hidden shadow-xs">
           <img src={officialLogo} alt="Empire Industries" className="w-full h-full object-contain" />
         </div>
         <div>
-          <h1 className="text-base font-bold text-slate-900 leading-none tracking-tight">Vitrum Glass</h1>
+          <h1 className="text-base font-bold text-slate-900 leading-none tracking-tight">VITRUM GLASS</h1>
           <span className="text-[10px] uppercase font-semibold text-slate-400 tracking-wider">
             ERP SYSTEM
           </span>

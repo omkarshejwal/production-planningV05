@@ -17,12 +17,14 @@ export function EditMachineModal({
   onSave,
   onClose,
   newJobStartTime,
+  isContinuation,
 }: {
   machineNo: number;
   currentEntry: MachineEntry;
   onSave: (payload: EditSavePayload) => void;
   onClose: () => void;
   newJobStartTime?: string;
+  isContinuation?: boolean;
 }) {
   const mIdx = machineNo - 1;
   const bottles = useMemo(() => getMachineBottles(machineNo), [machineNo]);
@@ -169,12 +171,20 @@ export function EditMachineModal({
 
           {/* Bottle Name Dropdown */}
           <div>
-            <label className="block text-xs font-medium text-[#374151] mb-1.5">Bottle Name</label>
+            <label className="block text-xs font-medium text-[#374151] mb-1.5">
+              Bottle Name
+              {isContinuation && (
+                <span className="ml-1.5 text-[10px] font-normal text-[#6B7280]">
+                  (continuation — inherited, not editable)
+                </span>
+              )}
+            </label>
             <div className="relative">
               <button
                 type="button"
+                disabled={isContinuation}
                 onClick={() => setBottleDropdownOpen(prev => !prev)}
-                className="w-full h-9 px-3 pr-8 text-sm text-left border border-[#E5E7EB] rounded-lg bg-white text-[#111827] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] relative"
+                className={`w-full h-9 px-3 pr-8 text-sm text-left border border-[#E5E7EB] rounded-lg bg-white text-[#111827] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] relative ${isContinuation ? 'bg-[#F8FAFC] text-[#6B7280] cursor-not-allowed' : ''}`}
               >
                 <span className={selected === 'None' ? 'text-[#9CA3AF]' : 'text-[#111827]'}>
                   {selected === 'None' ? 'Select bottle' : selected}
