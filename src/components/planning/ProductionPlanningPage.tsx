@@ -22,6 +22,7 @@ import {
   Save,
 } from 'lucide-react';
 import {
+  BottleEntry,
   CompletedJobMap,
   MachineEntry,
   MachineLists,
@@ -256,6 +257,44 @@ const buildExportFilename = (
 
   const monthName = new Date(year, month, 1).toLocaleDateString('en-GB', { month: 'long' });
   return `Production_Planning_${monthName}_${year}.xlsx`;
+};
+
+// Job identity used for bottle propagation: persisted rows group by their DB
+// job_id, unsaved rows group by machine + bottle name (mirrors getCumulativeQty).
+const jobKeyOf = (e: MachineEntry | null | undefined, mIdx: number): string | null => {
+  if (!e || e.isBlank || !e.product || e.product === 'None') return null;
+  const id = e.jobId && String(e.jobId).trim() !== '' ? String(e.jobId) : '';
+  if (id) return `db:${id}`;
+  return `local:${mIdx}:${e.product.trim().toLowerCase()}`;
+};
+
+// Reapply a bottle's configuration to an extended/continuation row after its
+// job's bottle was swapped. Recomputes the cut speed (per that row's section),
+// daily quantity and draw using the new bottle. The row's own times, required
+// bottles, packing and job_id are preserved.
+const reapplyBottleConfig = (
+  entry: MachineEntry,
+  bottle: BottleEntry,
+  machineNo: number,
+  fallbackSection: number
+): MachineEntry => {
+  const section =
+    entry.section && lookupSpeed(machineNo, bottle.name, entry.section) > 0
+      ? entry.section
+      : fallbackSection;
+  const cut = lookupSpeed(machineNo, bottle.name, section) || 0;
+  const qty = cut > 0 ? calcQty(cut, machineNo) : 0;
+  const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : qty;
+  return {
+    ...entry,
+    product: bottle.name,
+    wt: bottle.wt,
+    speeds: cut,
+    cut,
+    qty,
+    draw: calcDraw(bottle.wt, requiredQty),
+    section,
+  };
 };
 
 // ─── Production Planning Page ─────────────────────────────────────────────────
@@ -1601,6 +1640,52 @@ export const ProductionPlanningPage: React.FC = () => {
       ? { ...updatedFields, jobId: allocatedJobId }
       : { ...updatedFields };
 
+    // When the bottle is swapped for a job, the SAME bottle must be applied to
+    // every production row sharing the same job_id (all extended/continuation
+    // days), not just the row being edited. The job's draw and daily quantity
+    // are then recomputed per row from the new bottle. The job_id is preserved
+    // across every row.
+    const prevJobKey = prevEntry ? jobKeyOf(prevEntry, mIdx) : null;
+    const bottleChanged =
+      !!prevEntry &&
+      !!prevJobKey &&
+      bottle.name !== 'None' &&
+      bottle.name !== prevEntry.product;
+
+    const propagateRunningRows = (lists: MachineLists): MachineLists => {
+      if (!bottleChanged || !prevJobKey) return lists;
+      const next = [...lists] as MachineLists;
+      const list = [...next[mIdx]];
+      for (let r = 0; r < list.length; r++) {
+        const row = list[r];
+        if (!row || row.isBlank || row.product === 'None') continue;
+        if (r === rowIdx) continue;
+        if (jobKeyOf(row, mIdx) === prevJobKey) {
+          list[r] = reapplyBottleConfig(row, bottle, mIdx + 1, section);
+        }
+      }
+      next[mIdx] = list;
+      return next;
+    };
+
+    const propagateCompletedRows = (completed: CompletedJobMap): CompletedJobMap => {
+      if (!bottleChanged || !prevJobKey) return completed;
+      const next: CompletedJobMap = { ...completed };
+      const editedKey = `${mIdx}-${rowIdx}`;
+      for (const [key, entries] of Object.entries(completed)) {
+        const keyM = Number(key.split('-')[0]);
+        if (keyM !== mIdx) continue;
+        const updated = entries.map((entry, idx) => {
+          if (entry.isBlank || entry.product === 'None') return entry;
+          if (key === editedKey && idx === completedIndex) return entry;
+          if (jobKeyOf(entry, mIdx) !== prevJobKey) return entry;
+          return reapplyBottleConfig(entry, bottle, mIdx + 1, section);
+        });
+        next[key] = updated;
+      }
+      return next;
+    };
+
     if (editModal.completedIndex !== undefined) {
       // Editing a COMPLETED job entry — write back to the completed map
       const key = `${editModal.mIdx}-${editModal.rowIdx}`;
@@ -1611,11 +1696,13 @@ export const ProductionPlanningPage: React.FC = () => {
             ? { ...entry, ...updatedFieldsFinal, status: 'completed' as const }
             : entry
         );
-        return { ...prev, [key]: nextList };
+        return propagateCompletedRows({ ...prev, [key]: nextList });
       });
+      // Any running continuation row of the same job must adopt the new bottle too.
+      updateMachineLists(prev => propagateRunningRows(prev));
     } else {
       updateMachineLists(prev => {
-        const next = [...prev] as MachineLists;
+        const next = propagateRunningRows(prev) as MachineLists;
         const list = [...next[editModal.mIdx]];
         list[editModal.rowIdx] = {
           ...list[editModal.rowIdx],
@@ -1624,6 +1711,8 @@ export const ProductionPlanningPage: React.FC = () => {
         next[editModal.mIdx] = list;
         return next;
       });
+      // Completed rows of the same job adopt the new bottle too.
+      setCompletedJobMap(prev => propagateCompletedRows(prev));
     }
     setIsDirty(true);
 
