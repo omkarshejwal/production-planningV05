@@ -429,7 +429,8 @@ def reserve_next_job_id(
 def extend_job(
     req: ExtendJobRequest,
     db: Session = Depends(get_db),
-    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING))
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
+    user_role: Optional[str] = None,
 ):
     """
     Extend a production job by N extra days.
@@ -593,7 +594,8 @@ def delete_job(
     job_id: Optional[int] = None,
     section: Optional[int] = None,
     db: Session = Depends(get_db),
-    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING))
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
+    user_role: Optional[str] = None,
 ):
     """
     Delete the production job row(s) belonging to ONE specific day/slot.
