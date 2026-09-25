@@ -2511,16 +2511,16 @@ export const ProductionPlanningPage: React.FC = () => {
                         Bottle Name
                       </th>
                       {showSection && (
-                        <th className="px-1 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Sec</th>
+                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Sec</th>
                       )}
                       {showWt && (
-                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Wt</th>
+                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#050505] border-r border-[#E5E7EB] w-13.75">Weight</th>
                       )}
                       {showCut && (
-                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Cut</th>
+                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#000000] border-r border-[#E5E7EB] w-15">Cut</th>
                       )}
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-15">Qty</th>
-                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151] border-r border-[#E5E7EB] w-13.75">Draw</th>
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#000000] border-r border-[#E5E7EB] w-15">Quantity</th>
+                      <th className="px-2 py-2 text-center text-xs font-semibold text-[#000000] border-r border-[#E5E7EB] w-13.75">Draw</th>
                     </React.Fragment>
                   ))}
                   <th className="px-2 py-2 text-center text-xs font-semibold text-[#374151]"></th>
@@ -3184,7 +3184,7 @@ export const ProductionPlanningPage: React.FC = () => {
               </div>
 
 
-              {/* DAILY GOOD BOTTLES */}
+              {/* DAILY GOOD BOTTLES
               <div className="py-2.5 border-b border-[#334155]">
                 <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
                   Daily Good Bottles (90%)
@@ -3193,13 +3193,14 @@ export const ProductionPlanningPage: React.FC = () => {
                 <p className="font-bold text-[#38BDF8] text-sm mt-1">
                   {goodLiters.toFixed(2)} L ({goodBottles.toLocaleString()} bottles)
                 </p>
-              </div>
+              </div> */}
 
 
               {/* TOTAL REQUIRED BOTTLES */}
               <div className="py-2.5 border-b border-[#334155]">
                 <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
-                  Total Required Bottles
+                  Total Required Bottles <br />
+                   (Total quantity/24hr)
                 </p>
 
                 <p className="font-bold text-[#FCD34D] text-sm mt-1">
