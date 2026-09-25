@@ -9,6 +9,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  Boxes,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { ActiveModule } from '../../types';
@@ -19,28 +20,51 @@ interface MenuNavItem {
   label: string;
   icon: React.ElementType;
   badge?: string;
-  requireRead?: string | string[];
+  /**
+   * module_master name this entry maps to. Visibility is derived from the
+   * database permission rows (module or any of its descendants readable) --
+   * never from hardcoded permission values.
+   */
+  module?: string;
 }
 
 const NAV_ITEMS: MenuNavItem[] = [
   { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, requireRead: 'Production Planning', badge: 'Excel' },
-  { id: 'Master Management', label: 'Master Management', icon: Cpu, requireRead: ['Bottle Master', 'Holiday Master'] },
-  { id: 'Quality Control', label: 'Hourly Production', icon: ClipboardCheck, requireRead: 'Quality Control' },
+  { id: 'Production Planning', label: 'Production Planning', icon: CalendarDays, module: 'Production Planning', badge: 'Excel' },
+  { id: 'Master Management', label: 'Master Management', icon: Cpu, module: 'Master Management' },
+  { id: 'Quality Control', label: 'Hourly Production', icon: ClipboardCheck, module: 'Quality Control' },
   { id: 'Settings', label: 'Settings', icon: Sliders },
   { id: 'Profile', label: 'Profile', icon: User },
 ];
 
+/** module_master rows already represented by a dedicated nav entry above. */
+const STATIC_MODULE_NAMES = new Set(['Production Planning', 'Master Management', 'Quality Control']);
+
 export const Sidebar: React.FC = () => {
   const { activeModule, setActiveModule } = useERP();
-  const { hasPermission, logout } = useAuth();
+  const { canReadModule, modules, logout } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(true);
 
-  const visibleItems = NAV_ITEMS.filter((item) => {
-    if (!item.requireRead) return true;
-    const modules = Array.isArray(item.requireRead) ? item.requireRead : [item.requireRead];
-    return modules.some((m) => hasPermission(m, 'read'));
-  });
+  const visibleItems = (() => {
+    const visible = NAV_ITEMS.filter((item) => (item.module ? canReadModule(item.module) : true));
+
+    // Modules registered in module_master that have no hand-built nav entry
+    // are surfaced automatically with the same read check, so newly added
+    // modules need no frontend change to be permission-protected.
+    const dynamicItems: MenuNavItem[] = (modules ?? [])
+      .filter(
+        (m) =>
+          m.is_active &&
+          m.parent_module_id == null &&
+          !STATIC_MODULE_NAMES.has(m.module_name) &&
+          canReadModule(m.module_name)
+      )
+      .map((m) => ({ id: m.module_name, label: m.module_name, icon: Boxes, module: m.module_name }));
+
+    const settingsAt = visible.findIndex((item) => item.id === 'Settings');
+    if (settingsAt === -1) return [...visible, ...dynamicItems];
+    return [...visible.slice(0, settingsAt), ...dynamicItems, ...visible.slice(settingsAt)];
+  })();
 
   return (
     <aside

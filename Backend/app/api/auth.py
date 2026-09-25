@@ -1,4 +1,4 @@
-import secrets
+﻿import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.api.access import load_permissions
+from app.api.access import load_access
 from app.db.session import get_db
 from app.models.auth import AuthUser
 from app.models.user import User as ProductionUser
@@ -56,6 +56,7 @@ def user_response(user: AuthUser, db: Session) -> dict:
     # legacy production.users table when available; auth.users is authoritative
     # for login and permissions. Missing legacy rows fall back safely.
     legacy = db.get(ProductionUser, user.employee_id)
+    access = load_access(user.employee_id, db)
 
     return {
         "employee_id": user.employee_id,
@@ -64,7 +65,10 @@ def user_response(user: AuthUser, db: Session) -> dict:
         "email": user.email or "",
         "phone_number": user.phone_number or "",
         "role": legacy.role if legacy else "Viewer",
-        "permissions": load_permissions(user.employee_id, db),
+        # Dynamic module catalog (auth.module_master) + effective permissions
+        # (auth.user_module_permissions) -- both read fresh from the database.
+        "modules": access["modules"],
+        "permissions": access["permissions"],
     }
 
 
@@ -97,6 +101,22 @@ def get_current_user(
         )
 
     return user
+
+
+@router.get("/permissions")
+def get_permissions(
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Cheap re-read of the module catalog and the caller's permissions.
+
+    The frontend polls this so permission changes made in the database are
+    picked up without a redeploy, a rebuild, or a re-login.  Authoritative
+    enforcement still happens on every backend request via
+    ``require_module_read`` / ``require_module_edit``.
+    """
+    return load_access(user.employee_id, db)
 
 
 @router.post("/login")

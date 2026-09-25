@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, X } from 'lucide-react';
 import { BottleEntry, EditSavePayload, MachineEntry, PackCatKey } from '../../types/planning';
-import { MAX_SECTIONS, VALID_SECTIONS, calcQty, lookupSpeed, getMachineBottles, NONE_ENTRY } from '../../utils/planningCalculations';
+import { MAX_SECTIONS, VALID_SECTIONS, calcQty, getMachineBottles, lookupConfig, lookupSpeedForBottle, resolveBottleIdForMachine, NONE_ENTRY } from '../../utils/planningCalculations';
 import { TimePicker } from './TimePicker';
 
 export const PACKING_OPTIONS: { key: 'ST' | 'SN' | 'SB' | 'BT'; label: string; desc: string }[] = [
@@ -29,7 +29,13 @@ export function EditMachineModal({
   const mIdx = machineNo - 1;
   const bottles = useMemo(() => getMachineBottles(machineNo), [machineNo]);
 
-  const [selected, setSelected] = useState(currentEntry.product);
+  // The selection is a bottle_master id. The name shown in the list can be
+  // shared by several ids, so it can never be the selection itself.
+  const [selectedBottleId, setSelectedBottleId] = useState<string | undefined>(() => {
+    if (currentEntry.bottleId) return currentEntry.bottleId;
+    if (!currentEntry.product || currentEntry.product === 'None') return undefined;
+    return resolveBottleIdForMachine(machineNo, currentEntry.product, currentEntry.section);
+  });
   const [bottleSearch, setBottleSearch] = useState('');
   const [bottleDropdownOpen, setBottleDropdownOpen] = useState(false);
   const [jobStartTime, setJobStartTime] = useState(newJobStartTime ?? currentEntry.startTime ?? '');
@@ -89,20 +95,34 @@ export function EditMachineModal({
   return [...filtered].sort((a, b) => Number(a.wt) - Number(b.wt));
 }, [bottles, bottleSearch]);
 
-  const bottleRef = selected === 'None' ? NONE_ENTRY : bottles.find(b => b.name === selected) ?? NONE_ENTRY;
+  // The selected bottle is identified by its id (names are not unique).
+  const selectedBottle = selectedBottleId
+    ? bottles.find(b => b.bottleId === selectedBottleId) ?? null
+    : null;
+  const isSelected = selectedBottle !== null;
 
   // Resolve the section from the bottle's saved bottle_configuration rows.
-  // The cut speed always comes from the exact (machine, bottle, section) row —
-  // one section's speed is never copied onto another.
-  const configuredSections = selected !== 'None'
-    ? VALID_SECTIONS(mIdx).filter((s) => lookupSpeed(machineNo, selected, s) > 0)
+  // Weight and cut speed always come from the exact
+  // (machine, bottle id, section) row — one section's speed is never copied
+  // onto another, and another machine's configuration is never used.
+  const configuredSections = selectedBottle?.bottleId
+    ? VALID_SECTIONS(mIdx).filter(s => lookupSpeedForBottle(machineNo, selectedBottle.bottleId!, s) > 0)
     : [];
   const currentSection = currentEntry.section ?? MAX_SECTIONS(mIdx);
   const section = configuredSections.includes(currentSection)
     ? currentSection
     : (configuredSections[configuredSections.length - 1] ?? MAX_SECTIONS(mIdx));
-  const cutSpeed = selected !== 'None' ? lookupSpeed(machineNo, selected, section) : 0;
-  const bottle: BottleEntry = { name: bottleRef.name, wt: bottleRef.wt, speeds: cutSpeed };
+  const exactConfig = selectedBottle?.bottleId
+    ? lookupConfig(machineNo, selectedBottle.bottleId, section)
+    : undefined;
+  const cutSpeed = exactConfig?.speeds ?? 0;
+  const wt = exactConfig?.weight ?? selectedBottle?.wt ?? 0;
+  const bottle: BottleEntry = {
+    name: selectedBottle?.name ?? NONE_ENTRY.name,
+    wt,
+    speeds: cutSpeed,
+    bottleId: selectedBottle?.bottleId,
+  };
   const prodQty = cutSpeed > 0 ? calcQty(cutSpeed, machineNo) : 0;
   const reqNum = parseFloat(requiredBottles);
   const estDays = prodQty > 0 && !isNaN(reqNum) && reqNum > 0 ? reqNum / prodQty : null;
@@ -186,8 +206,8 @@ export function EditMachineModal({
                 onClick={() => setBottleDropdownOpen(prev => !prev)}
                 className={`w-full h-9 px-3 pr-8 text-sm text-left border border-[#E5E7EB] rounded-lg bg-white text-[#111827] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] relative ${isContinuation ? 'bg-[#F8FAFC] text-[#6B7280] cursor-not-allowed' : ''}`}
               >
-                <span className={selected === 'None' ? 'text-[#9CA3AF]' : 'text-[#111827]'}>
-                  {selected === 'None' ? 'Select bottle' : selected}
+                <span className={isSelected ? 'text-[#111827]' : 'text-[#9CA3AF]'}>
+                  {isSelected ? selectedBottle!.name : 'Select bottle'}
                 </span>
                 <ChevronDown
                   size={14}
@@ -211,24 +231,24 @@ export function EditMachineModal({
                     <button
                       type="button"
                       onClick={() => {
-                        setSelected('None');
+                        setSelectedBottleId(undefined);
                         setBottleSearch('');
                         setBottleDropdownOpen(false);
                       }}
-                      className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${selected === 'None' ? 'bg-[#EFF6FF] text-[#2563EB] font-medium' : 'text-[#374151]'}`}
+                      className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${!selectedBottleId ? 'bg-[#EFF6FF] text-[#2563EB] font-medium' : 'text-[#374151]'}`}
                     >
                       None
                     </button>
                     {filteredBottles.map(b => (
   <button
-    key={b.name}
+    key={b.bottleId ?? b.name}
     type="button"
     onClick={() => {
-      setSelected(b.name);
+      setSelectedBottleId(b.bottleId);
       setBottleSearch('');
       setBottleDropdownOpen(false);
     }}
-    className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${selected === b.name ? 'bg-[#EFF6FF] text-[#2563EB] font-medium' : 'text-[#374151]'}`}
+    className={`w-full px-3 py-2 text-sm text-left hover:bg-[#F8FAFC] ${selectedBottleId && b.bottleId === selectedBottleId ? 'bg-[#EFF6FF] text-[#2563EB] font-medium' : 'text-[#374151]'}`}
   >
     <div className="flex items-center justify-between w-full">
       <span>{b.name}</span>
@@ -243,11 +263,11 @@ export function EditMachineModal({
           </div>
 
           {/* Wt + Cut Speed reference */}
-          {selected !== 'None' && (
+          {isSelected && (
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg px-3 py-2.5">
                 <p className="text-[10px] font-medium text-[#6B7280] uppercase tracking-wide mb-0.5">Weight (g)</p>
-                <p className="text-sm font-bold text-[#111827]">{bottleRef.wt}</p>
+                <p className="text-sm font-bold text-[#111827]">{wt}</p>
               </div>
               <div className="bg-[#EDE9FE] border border-[#DDD6FE] rounded-lg px-3 py-2.5">
                 <p className="text-[10px] font-medium text-[#7C3AED] uppercase tracking-wide mb-0.5">Cut Speed ({section} sec)</p>

@@ -26,7 +26,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 }) => {
   const { hasPermission } = useAuth();
   const canEdit = hasPermission(MODULES.BOTTLE_MASTER, 'edit');
-  const [tab, setTab] = useState<'new' | 'edit'>('new');
+  // Read-only employees (can_edit = FALSE) always start in view mode: the
+  // Add/Edit forms, rename and save controls are only rendered with edit
+  // permission, so nothing in this panel can modify data for a viewer.
+  const [tab, setTab] = useState<'new' | 'edit'>(canEdit ? 'new' : 'edit');
   const [machineNo, setMachineNo] = useState<string>('');
   const [formBottleName, setFormBottleName] = useState('');
   const [formWeight, setFormWeight] = useState('');
@@ -49,6 +52,12 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   const [origSnapshot, setOrigSnapshot] = useState<{ weight: string; rows: SectionFormRow[] } | null>(null);
 
   const selectedMachine = machines.find((m) => m.machine_no === machineNo) ?? null;
+
+  // Permissions can change while the app is open (the backend catalog is
+  // re-read periodically): fall back to view mode the moment edit is lost.
+  useEffect(() => {
+    if (!canEdit && tab !== 'edit') setTab('edit');
+  }, [canEdit, tab]);
 
   // Machine-level sections from DB (unique sections across ALL bottles on this machine)
   const machineSections = useMemo(() => {
@@ -334,6 +343,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
 
   async function handleSave() {
+    if (!canEdit) return;
     if (!selectedMachine || saving) return;
     setSaving(true);
 
@@ -471,7 +481,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
       )}
 
       <div className="p-6 flex flex-col gap-5">
-        {showForm ? (
+        {showForm && canEdit ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Machine No.</label>
@@ -758,7 +768,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
           </div>
         )}
 
-        {showForm && (
+        {showForm && canEdit && (
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">

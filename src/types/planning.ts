@@ -4,6 +4,10 @@ export interface BottleEntry {
   name: string;
   wt: number;
   speeds: number;
+  // bottle_master.bottle_id of the EXACT row this entry came from. Names are
+  // NOT unique (e.g. two bottles can both be "230 ml Protone"), so the id is
+  // the only safe identity when saving.
+  bottleId?: string;
 }
 
 export interface MachineEntry {
@@ -12,6 +16,10 @@ export interface MachineEntry {
   // source job's jobId; it only changes when the bottle is swapped (new job).
   jobId?: string;
   product: string;
+  // bottle_master.bottle_id backing `product`. Populated when the row is
+  // hydrated from the DB or picked in the edit modal; `product` alone can not
+  // identify a bottle because names are not unique.
+  bottleId?: string;
   wt: number;
   speeds: number;
   cut: number;

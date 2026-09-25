@@ -6,14 +6,19 @@ from app.db.session import get_db
 from app.models.machine import MachineMaster
 from app.models.audit_log import AuditLog
 from app.schemas.machine import MachineMasterResponse, MachineMasterCreate
-from app.api.permissions import require_module_read, require_module_edit, MODULE_PRODUCTION_PLANNING
+from app.api.permissions import require_module_edit, require_any_module_read, MODULE_PRODUCTION_PLANNING, MODULE_BOTTLE_MASTER
 from app.api.auth import get_current_user
 from app.models.auth import AuthUser
 
 router = APIRouter(prefix="/machines", tags=["Production Machines"])
 
 @router.get("/", response_model=List[MachineMasterResponse])
-def get_all_machines(db: Session = Depends(get_db), _user: AuthUser = Depends(require_module_read(MODULE_PRODUCTION_PLANNING))):
+def get_all_machines(
+    db: Session = Depends(get_db),
+    # Reference data: the planning grid and the Bottle Master panel both need
+    # the machine list, so read access to either module is sufficient.
+    _user: AuthUser = Depends(require_any_module_read([MODULE_PRODUCTION_PLANNING, MODULE_BOTTLE_MASTER])),
+):
     machines = db.query(MachineMaster).all()
     return machines
 

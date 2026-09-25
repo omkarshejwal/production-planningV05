@@ -71,7 +71,13 @@ def create_job(
             db.add(jm)
             db.flush()
 
-        # 2. Fetch Machine and Bottle Configuration from the DB
+        # 2. Fetch Machine and Bottle Configuration from the DB.
+        #    Strict composite-key validation against bottle_configuration:
+        #    production_job is keyed on (bottle_id, machine_no, section) through
+        #    fk_production_job_configuration, so THAT EXACT combination must
+        #    exist in bottle_configuration.  Never fall back to another section
+        #    or another machine's row: that would silently substitute a
+        #    different configuration and still violate the foreign key.
         machine = db.query(MachineMaster).filter(MachineMaster.machine_no == job_in.machine_no).first()
         bottle_config = db.query(BottleConfiguration).filter(
             BottleConfiguration.machine_no == job_in.machine_no,
@@ -80,23 +86,19 @@ def create_job(
         ).first()
 
         if not bottle_config:
-            # Fallback: try to find ANY section configuration for this machine/bottle
-            bottle_config = db.query(BottleConfiguration).filter(
-                BottleConfiguration.machine_no == job_in.machine_no,
-                BottleConfiguration.bottle_id == job_in.bottle_id
-            ).first()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid bottle configuration for job {resolved_job_id} "
+                    f"on {job_in.plan_date}: no bottle_configuration row for "
+                    f"bottle_id={job_in.bottle_id}, machine_no={job_in.machine_no}, "
+                    f"section={job_in.section}. Configure this bottle for this "
+                    f"machine and section first."
+                ),
+            )
 
-        if not bottle_config:
-            # Ultimate Fallback: try to find ANY machine's configuration for this bottle
-            bottle_config = db.query(BottleConfiguration).filter(
-                BottleConfiguration.bottle_id == job_in.bottle_id
-            ).first()
-            
-        if not bottle_config:
-            raise HTTPException(status_code=404, detail=f"Bottle configuration not found for Machine {job_in.machine_no} and Bottle ID {job_in.bottle_id}")
-
-        # Use the resolved section from the config to ensure foreign keys match
-        resolved_section = bottle_config.section
+        # The requested section is the section that gets stored.
+        resolved_section = job_in.section
 
         # 3. Execute Factory Formula (The Calculation Engine)
         running_minutes = 1440 - job_in.changeover_minutes
@@ -207,19 +209,35 @@ def create_jobs_bulk(
 
         configs = db.query(BottleConfiguration).all()
         configs_by_key: dict[tuple, BottleConfiguration] = {}
-        configs_by_machine_bottle: dict[tuple, list[BottleConfiguration]] = {}
-        configs_by_bottle: dict[int, list[BottleConfiguration]] = {}
         for c in configs:
             configs_by_key[(c.machine_no, c.bottle_id, c.section)] = c
-            mb_key = (c.machine_no, c.bottle_id)
-            configs_by_machine_bottle.setdefault(mb_key, []).append(c)
-            configs_by_bottle.setdefault(c.bottle_id, []).append(c)
 
         # Lock sequence rows to prevent concurrent job_id collisions
         seq_rows = db.query(MachineJobSequence).with_for_update().all()
         sequences = {s.machine_no: s for s in seq_rows}
 
-        # ── 2. Process each job in order (same logic as create_job) ──────────
+        # ── 2. Validate EVERY row BEFORE anything is written ─────────────────
+        #     production_job has an FK on (bottle_id, machine_no, section):
+        #     fk_production_job_configuration.  A row referencing a combination
+        #     that is absent from bottle_configuration would otherwise be
+        #     rejected by the database with an opaque foreign-key error, so it
+        #     is rejected here with a message naming the job, bottle, machine
+        #     and section.  No fallback to another section/machine is attempted.
+        for index, job_in in enumerate(jobs_in, start=1):
+            if (job_in.machine_no, job_in.bottle_id, job_in.section) not in configs_by_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Invalid bottle configuration for job "
+                        f"{job_in.job_id if job_in.job_id is not None else f'row {index}'} "
+                        f"on {job_in.plan_date}: no bottle_configuration row for "
+                        f"bottle_id={job_in.bottle_id}, machine_no={job_in.machine_no}, "
+                        f"section={job_in.section}. Configure this bottle for this "
+                        f"machine and section first."
+                    ),
+                )
+
+        # ── 3. Process each job in order (same logic as create_job) ──────────
         results: list[dict] = []
 
         for job_in in jobs_in:
@@ -244,20 +262,10 @@ def create_jobs_bulk(
 
             machine = machines.get(job_in.machine_no)
 
-            # Bottle config resolution (identical to create_job)
-            bottle_config = configs_by_key.get((job_in.machine_no, job_in.bottle_id, job_in.section))
-            if not bottle_config:
-                for c in configs_by_machine_bottle.get((job_in.machine_no, job_in.bottle_id), []):
-                    bottle_config = c
-                    break
-            if not bottle_config:
-                for c in configs_by_bottle.get(job_in.bottle_id, []):
-                    bottle_config = c
-                    break
-            if not bottle_config:
-                raise HTTPException(status_code=404, detail=f"Bottle configuration not found for Machine {job_in.machine_no} and Bottle ID {job_in.bottle_id}")
+            # Bottle config: EXACT composite key only (validated above).
+            bottle_config = configs_by_key[(job_in.machine_no, job_in.bottle_id, job_in.section)]
 
-            resolved_section = bottle_config.section
+            resolved_section = job_in.section
 
             # Factory formula
             running_minutes = 1440 - job_in.changeover_minutes

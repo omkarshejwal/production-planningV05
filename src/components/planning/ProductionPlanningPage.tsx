@@ -44,11 +44,14 @@ import {
   calculateDailyDrawForEntries,
   calculateDrawForProductionDay,
   calculateQuantityForProductionDay,
+  lookupConfig,
   lookupSpeed,
+  lookupSpeedForBottle,
   makeNoneEntry,
+  resolveBottleIdForMachine,
 } from '../../utils/planningCalculations';
 import { addCalendarDays } from '../../utils/calculations';
-import { buildExportData } from '../../utils/exportData';
+import { buildExportData, calculateAverageTotalDraw } from '../../utils/exportData';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
@@ -279,21 +282,31 @@ const reapplyBottleConfig = (
   machineNo: number,
   fallbackSection: number
 ): MachineEntry => {
+  // Resolve the EXACT (machine, bottle id, section) configuration. The bottle
+  // id comes from the picker, never from the (non-unique) name.
+  const configFor = (section: number) =>
+    bottle.bottleId ? lookupConfig(machineNo, bottle.bottleId, section) : undefined;
+  const hasSpeedFor = (section: number) =>
+    bottle.bottleId
+      ? lookupSpeedForBottle(machineNo, bottle.bottleId, section) > 0
+      : lookupSpeed(machineNo, bottle.name, section) > 0;
+
   const section =
-    entry.section && lookupSpeed(machineNo, bottle.name, entry.section) > 0
-      ? entry.section
-      : fallbackSection;
-  const cut = lookupSpeed(machineNo, bottle.name, section) || 0;
+    entry.section && hasSpeedFor(entry.section) ? entry.section : fallbackSection;
+  const exact = configFor(section);
+  const cut = exact ? exact.speeds : lookupSpeed(machineNo, bottle.name, section) || 0;
+  const wt = exact ? exact.weight : bottle.wt;
   const qty = cut > 0 ? calcQty(cut, machineNo) : 0;
   const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : qty;
   return {
     ...entry,
     product: bottle.name,
-    wt: bottle.wt,
+    bottleId: bottle.bottleId,
+    wt,
     speeds: cut,
     cut,
     qty,
-    draw: calcDraw(bottle.wt, requiredQty),
+    draw: calcDraw(wt, requiredQty),
     section,
   };
 };
@@ -344,16 +357,6 @@ export const ProductionPlanningPage: React.FC = () => {
   const [draftToDate, setDraftToDate] = useState(() => defaultPlanningRange.endIso);
   const [appliedFromDate, setAppliedFromDate] = useState('');
   const [appliedToDate, setAppliedToDate] = useState('');
-
-  // Lowercase name → first matching bottle (for the per-cell product lookup)
-  const bottleNameLookup = useMemo(() => {
-    const m = new Map<string, { id: string; name: string }>();
-    for (const b of bottles) {
-      const key = b.name.toLowerCase();
-      if (!m.has(key)) m.set(key, b);
-    }
-    return m;
-  }, [bottles]);
 
   const dateRows = useMemo<DateRow[]>(() => {
     const startIso = appliedFromDate || defaultPlanningRange.startIso;
@@ -493,6 +496,9 @@ export const ProductionPlanningPage: React.FC = () => {
         eid: Math.random(),
         jobId: job.jobId || '',
         product,
+        // Keep the exact bottle_master id from the DB row. The name alone is
+        // not an identity — several bottle ids can share one name.
+        bottleId: bottle?.id ?? ((job as any).bottle_id ? String((job as any).bottle_id) : undefined),
         wt: Number((job as any).weight ?? job.weightGrams ?? 0),
         speeds: backendSpeed,
         cut: backendSpeed,
@@ -819,16 +825,49 @@ export const ProductionPlanningPage: React.FC = () => {
         return;
       }
 
+      // Collects rows whose bottle/section configuration could not be resolved
+      // exactly — the save is aborted (instead of reaching the DB and failing
+      // on the bottle_configuration foreign key).
+      const rowErrors: string[] = [];
+
       const buildRow = (entry: MachineEntry, mIdx: number, rowIdx: number): ProductionJobRow | null => {
         if (!entry || entry.product === 'None') return null;
         const plan_date = dateRows[rowIdx]?.isoDate;
         if (!plan_date) return null;
         const machine_no = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
-        const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-        const bottle = bottles.find(b => normalize(b.name) === normalize(entry.product));
-        if (!bottle) {
-          console.error(`Bottle not found in DB: ${entry.product}`);
-          toast.error(`Save failed: Bottle "${entry.product}" not found in system.`);
+
+        // ── Bottle identity ─────────────────────────────────────────────────
+        // The row carries bottle_master.bottle_id. A name is never an identity:
+        // several ids can share one name (ids 58 and 80 are both
+        // "230 ml Protone"), so a name is only used to recover an id among the
+        // bottles actually configured on THIS machine + section.
+        const bottleId =
+          entry.bottleId || resolveBottleIdForMachine(mIdx + 1, entry.product, entry.section);
+        if (!bottleId) {
+          const msg =
+            `Save failed: no bottle_configuration row matches bottle "${entry.product}" ` +
+            `on ${machine_no}${entry.section ? ` section ${entry.section}` : ''} ` +
+            `(job ${entry.jobId || 'new'}, ${plan_date}).`;
+          console.error(msg);
+          rowErrors.push(msg);
+          return null;
+        }
+
+        // ── Exact (machine, bottle, section) configuration ──────────────────
+        // Validate the composite key BEFORE sending it so a bad row produces a
+        // clear message instead of a database foreign-key violation.
+        let section = entry.section;
+        if (!section) {
+          const configured = planningRepository.getBottleConfigurations(machine_no, bottleId);
+          section = configured.length > 0 ? configured[configured.length - 1].section : MAX_SECTIONS(mIdx);
+        }
+        const config = planningRepository.getBottleConfiguration(machine_no, bottleId, section);
+        if (!config) {
+          const msg =
+            `Save failed: no bottle_configuration for bottle ${bottleId} ("${entry.product}") ` +
+            `on ${machine_no} section ${section} (job ${entry.jobId || 'new'}, ${plan_date}).`;
+          console.error(msg);
+          rowErrors.push(msg);
           return null;
         }
 
@@ -875,10 +914,11 @@ export const ProductionPlanningPage: React.FC = () => {
           job_id: entry.jobId,
           plan_date,
           machine_no,
-          bottle_id: bottle.id,
-          section: entry.section || MAX_SECTIONS(mIdx),
-          weight: entry.wt,
-          speeds: entry.cut,
+          // Exact ids validated against bottle_configuration above.
+          bottle_id: bottleId,
+          section: config.section,
+          weight: config.weight,
+          speeds: config.speeds,
           draw: entry.draw,
           quantity: entry.qty,
           requiredBottles: entry.requiredBottles ?? undefined,
@@ -897,6 +937,18 @@ export const ProductionPlanningPage: React.FC = () => {
         .filter((row): row is ProductionJobRow => row !== null);
 
       console.log("[SAVE] Sending only changed rows:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time, job_id: (r as any).job_id })), null, 2));
+
+      if (rowErrors.length > 0) {
+        // Abort instead of sending rows that would violate the
+        // bottle_configuration (bottle_id, machine_no, section) foreign key.
+        rowErrors.forEach(msg => toast.error(msg, { duration: 7000 }));
+        toast.error(
+          `Save aborted: ${rowErrors.length} row(s) have no matching bottle configuration. Fix them and retry.`,
+          { duration: 7000 }
+        );
+        setIsSaving(false);
+        return;
+      }
 
       if (payloadRows.length > 0) {
         // ONE bulk request containing only the changed jobs.
@@ -1094,6 +1146,7 @@ export const ProductionPlanningPage: React.FC = () => {
         return;
       }
 
+      const averageTotalDraw = calculateAverageTotalDraw(exportRows);
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Production Planning');
       worksheet.views = [{ state: 'frozen', ySplit: 2 }];
@@ -1151,6 +1204,11 @@ export const ProductionPlanningPage: React.FC = () => {
         worksheet.addRow(rowValues);
       }
 
+      const averageValues: any[] = Array(26).fill('');
+      averageValues[0] = 'Average Total Draw';
+      averageValues[25] = averageTotalDraw;
+      const averageRow = worksheet.addRow(averageValues);
+
       // Format Header Rows
       const headerRow1 = worksheet.getRow(1);
       const headerRow2 = worksheet.getRow(2);
@@ -1182,6 +1240,10 @@ export const ProductionPlanningPage: React.FC = () => {
           }
         });
       });
+
+      averageRow.font = { bold: true };
+      averageRow.getCell(1).alignment = { horizontal: 'right', vertical: 'middle' };
+      averageRow.getCell(26).alignment = { horizontal: 'center', vertical: 'middle' };
 
       worksheet.columns = worksheet.columns.map((column: ExcelJS.Column) => {
         let max = 10;
@@ -1268,6 +1330,7 @@ export const ProductionPlanningPage: React.FC = () => {
         return;
       }
 
+      const averageTotalDraw = calculateAverageTotalDraw(exportRows);
       const doc = new jsPDF('landscape');
 
       const title = `Production Planning (${startIso} to ${endIso})`;
@@ -1291,7 +1354,7 @@ export const ProductionPlanningPage: React.FC = () => {
         ]
       ];
 
-      const body = exportRows.map(row => {
+      const body: any[] = exportRows.map(row => {
         const rowValues: any[] = [];
         if (row.date) {
           const parsedDate = parseDisplayDate(row.date);
@@ -1307,6 +1370,15 @@ export const ProductionPlanningPage: React.FC = () => {
         rowValues.push(row.totalDraw);
         return rowValues;
       });
+
+      body.push([
+        {
+          content: 'Average Total Draw',
+          colSpan: 25,
+          styles: { halign: 'right', fontStyle: 'bold' },
+        },
+        { content: averageTotalDraw, styles: { halign: 'center', fontStyle: 'bold' } },
+      ]);
 
       autoTable(doc, {
         head,
@@ -1518,18 +1590,34 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const updateSection = (mIdx: number, rowIdx: number, val: number) => {
     if (!canEdit) return;
-    markJobIdsDirty([machineLists[mIdx]?.[rowIdx]?.jobId]);
+    const currentEntry = machineLists[mIdx]?.[rowIdx];
+    if (!currentEntry) return;
+
+    // Speed and weight always come from the exact (machine, bottle, section)
+    // bottle_configuration row. The bottle is resolved by its id first; the
+    // name is only a legacy fallback and is matched against THIS machine's
+    // configured bottles only — never another machine's.
+    const machineNo = `MAC-${String(mIdx + 1).padStart(2, '0')}`;
+    const bottleId = currentEntry.bottleId || resolveBottleIdForMachine(mIdx + 1, currentEntry.product, val);
+    const config = bottleId ? lookupConfig(mIdx + 1, bottleId, val) : undefined;
+
+    if (!config) {
+      toast.error(
+        `Section ${val} was not applied: no bottle_configuration row for bottle "${currentEntry.product}" on ${machineNo} section ${val}.`
+      );
+      return;
+    }
+
+    markJobIdsDirty([currentEntry.jobId]);
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
       const list = [...next[mIdx]];
       const entry = list[rowIdx];
-      // Speed always comes from the exact (machine, bottle, section)
-      // bottle_configuration row. Never carry one section's speed over.
-      const speeds = lookupSpeed(mIdx + 1, entry.product, val);
+      const speeds = config.speeds;
       const qty = calcQty(speeds, mIdx + 1);
       const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : qty;
-      const draw = calcDraw(entry.wt, requiredQty);
-      list[rowIdx] = { ...entry, section: val, speeds, cut: speeds, qty, draw };
+      const draw = calcDraw(config.weight, requiredQty);
+      list[rowIdx] = { ...entry, bottleId, section: val, wt: config.weight, speeds, cut: speeds, qty, draw };
       next[mIdx] = list;
       return next;
     });
@@ -1537,6 +1625,10 @@ export const ProductionPlanningPage: React.FC = () => {
 
   // ── Add Job workflow ──
   const handleAddJob = (mIdx: number, rowIdx: number) => {
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     const entry = machineLists[mIdx][rowIdx];
     if (!entry) return;
     setEndJobModal({ mIdx, rowIdx });
@@ -1544,6 +1636,10 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const handleEndJobConfirm = (endTime: string, delayMinutes: number) => {
     if (!endJobModal) return;
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     const { mIdx, rowIdx } = endJobModal;
     const currentEntry = machineLists[mIdx][rowIdx];
     const key = `${mIdx}-${rowIdx}`;
@@ -1612,6 +1708,10 @@ export const ProductionPlanningPage: React.FC = () => {
 
   const handleSave = async (payload: EditSavePayload) => {
     if (!editModal) return;
+    if (!canEdit) {
+      toast.error('You do not have permission to edit production planning.');
+      return;
+    }
     const { mIdx, rowIdx, completedIndex } = editModal;
     const prevEntry = completedIndex !== undefined
       ? completedJobMap[`${mIdx}-${rowIdx}`]?.[completedIndex]
@@ -1621,9 +1721,34 @@ export const ProductionPlanningPage: React.FC = () => {
     const qty = calcQty(cut, editModal.mIdx + 1);
     const requiredQtyValue = requiredBottles && requiredBottles > 0 ? requiredBottles : qty;
     const draw = calcDraw(bottle.wt, requiredQtyValue);
+
+    // Refuse a bottle/section combination that does not exist in
+    // bottle_configuration. Saving it would either store a wrong weight/speed
+    // or, worse, trip the bottle_configuration (bottle_id, machine_no, section)
+    // foreign key on the server. Validate BEFORE a job id is reserved.
+    const machineNoStr = `MAC-${String(editModal.mIdx + 1).padStart(2, '0')}`;
+    const hasBottle = !!bottle.name && bottle.name !== 'None';
+    if (hasBottle && !bottle.bottleId) {
+      toast.error(
+        `Cannot save: bottle "${bottle.name}" has no id configured on ${machineNoStr}. Please re-select the bottle.`,
+        { duration: 6000 }
+      );
+      return;
+    }
+    if (hasBottle && bottle.bottleId && !lookupConfig(editModal.mIdx + 1, bottle.bottleId, section)) {
+      toast.error(
+        `Cannot save: no bottle_configuration row for "${bottle.name}" (id ${bottle.bottleId}) ` +
+        `on ${machineNoStr} section ${section}.`,
+        { duration: 6000 }
+      );
+      return;
+    }
     const updatedFields: Partial<MachineEntry> = {
       isBlank: false,
       product: bottle.name,
+      // Exact bottle_master id for the picked configuration — this is what the
+      // save path persists, never a name lookup.
+      bottleId: bottle.bottleId,
       wt: bottle.wt,
       speeds: bottle.speeds,
       cut,
@@ -1669,11 +1794,18 @@ export const ProductionPlanningPage: React.FC = () => {
     // are then recomputed per row from the new bottle. The job_id is preserved
     // across every row.
     const prevJobKey = prevEntry ? jobKeyOf(prevEntry, mIdx) : null;
+    // Compare by bottle id first — a name can not tell two bottles apart
+    // (ids 58 and 80 are both "230 ml Protone").
+    const sameBottle = !!prevEntry && (
+      prevEntry.bottleId && bottle.bottleId
+        ? prevEntry.bottleId === bottle.bottleId
+        : bottle.name === prevEntry.product
+    );
     const bottleChanged =
       !!prevEntry &&
       !!prevJobKey &&
       bottle.name !== 'None' &&
-      bottle.name !== prevEntry.product;
+      !sameBottle;
 
     const propagateRunningRows = (lists: MachineLists): MachineLists => {
       if (!bottleChanged || !prevJobKey) return lists;
@@ -2517,11 +2649,12 @@ export const ProductionPlanningPage: React.FC = () => {
                           const entry = running!;
                           const isBlank = !!entry.isBlank;
                           const hasProduct = !isBlank && !!entry.product && entry.product !== 'None';
-                          // Dynamic sections from bottle_configuration for this bottle+machine
-                          const bottleForSec = hasProduct
-                            ? bottleNameLookup.get(entry.product.toLowerCase())
-                            : null;
-                          const bidForSec = bottleForSec?.id;
+                          // Dynamic sections from bottle_configuration for this bottle+machine.
+                          // Resolve the bottle by its id; a bare name can not
+                          // identify the row (two ids can share one name).
+                          const bidForSec = hasProduct
+                            ? (entry.bottleId || resolveBottleIdForMachine(mIdx + 1, entry.product))
+                            : undefined;
                           const validForEntry = bidForSec
                             ? VALID_SECTIONS_FOR_BOTTLE(mIdx, bidForSec)
                             : validMachine;
@@ -2611,13 +2744,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                           <Plus size={8} />
                                         </button>
                                       )}
-                                      {/* {hasProduct && isLastDay && (
+                                      {canEdit && hasProduct && isLastDay && (
                                         <button onClick={() => handleAddJob(mIdx, rowIdx)}
                                           title="Schedule a new job after this one finishes"
                                           className="flex items-center gap-0.5 h-5 px-1.5 text-[9px] font-semibold text-[#7C3AED] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#DDD6FE] rounded transition-colors whitespace-nowrap">
                                           <ClipboardPlus size={8} /> End Job
                                         </button>
-                                      )} */}
+                                      )}
                                     </div>
                                   </>
                                 ) : (

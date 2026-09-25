@@ -1,5 +1,6 @@
 import { BottleEntry, DateRow, MachineEntry, MachineLists } from '../types/planning';
 import { calculateDraw, calculateProductionMetrics, resolveMachineNumber, getGobCountFromDB } from './calculations';
+import { BottleConfigurationRow } from '../data/planningSchema';
 import { planningRepository } from '../services/planningRepository';
 
 export const PRODUCTION_DAY_START_HOUR = 7;
@@ -201,20 +202,75 @@ export const calcCutPerSection = (speeds: number, sections: number): number =>
 
 export const NONE_ENTRY: BottleEntry = { name: "None", wt: 0, speeds: 0 };
 
+const machineIdOf = (machineNo: number): string => `MAC-${String(machineNo).padStart(2, '0')}`;
+
+/**
+ * Exact bottle_configuration row for the composite key
+ * (machine, bottle_id, section). Returns undefined when that exact row does
+ * not exist — never another section's and never another machine's row.
+ */
+export const lookupConfig = (
+  machineNo: number,
+  bottleId: string,
+  section: number
+): BottleConfigurationRow | undefined => {
+  if (!bottleId || !section) return undefined;
+  return planningRepository.getBottleConfiguration(machineIdOf(machineNo), bottleId, section);
+};
+
+/**
+ * Exact configured cut speed for (machine, bottle_id, section).
+ * 0 when no matching bottle_configuration row exists.
+ */
+export const lookupSpeedForBottle = (machineNo: number, bottleId: string, section: number): number =>
+  lookupConfig(machineNo, bottleId, section)?.speeds ?? 0;
+
+/**
+ * Resolves bottle_master.bottle_id for a bottle NAME on ONE machine
+ * (optionally narrowed to a single section).
+ *
+ * Names are not unique — several bottle ids can share a name (e.g. two
+ * "230 ml Protone" records configured on different machines) — so the name is
+ * only ever matched against the configs that actually exist for THIS machine
+ * (and section). Returns undefined when nothing matches or when the match is
+ * ambiguous, so callers surface a validation error instead of guessing.
+ */
+export const resolveBottleIdForMachine = (
+  machineNo: number,
+  bottleName: string,
+  section?: number
+): string | undefined => {
+  const name = (bottleName || '').trim().toLowerCase();
+  if (!name || name === 'none') return undefined;
+
+  const machineId = machineIdOf(machineNo);
+  const machineConfigs = planningRepository.getBottleConfigurations(machineId, '*');
+  const configuredIds = new Set(
+    (section ? machineConfigs.filter((c) => c.section === section) : machineConfigs).map((c) => c.bottle_id)
+  );
+  if (configuredIds.size === 0) return undefined;
+
+  const matches = planningRepository
+    .getBottles()
+    .filter((b) => configuredIds.has(b.bottle_id) && b.bottle_name.trim().toLowerCase() === name);
+
+  if (matches.length === 0) return undefined;
+  if (matches.length > 1) return undefined; // ambiguous — never guess between ids
+  return matches[0].bottle_id;
+};
+
 /**
  * Looks up the configured cut speed for a bottle on a specific machine and section.
  * Reads from bottle_configuration table (via planningRepository cache).
+ *
+ * The name is resolved ONLY against this machine's (and section's)
+ * configuration rows, so a same-named bottle configured on another machine can
+ * never leak its speed in.
  */
 export const lookupSpeed = (machineNo: number, bottleName: string, section: number): number => {
-  const machines = planningRepository.getMachines();
-  if (machines.length === 0) return 0;
-  const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
-  const bottles = planningRepository.getBottles();
-  const normalized = bottleName.trim().toLowerCase();
-  const bottle = bottles.find((b) => b.bottle_name.trim().toLowerCase() === normalized);
-  if (!bottle) return 0;
-  const config = planningRepository.getBottleConfiguration(machineId, bottle.bottle_id, section);
-  return config?.speeds ?? 0;
+  const bottleId = resolveBottleIdForMachine(machineNo, bottleName, section);
+  if (!bottleId) return 0;
+  return lookupSpeedForBottle(machineNo, bottleId, section);
 };
 
 /**
@@ -223,17 +279,20 @@ export const lookupSpeed = (machineNo: number, bottleName: string, section: numb
  */
 export function lookupBottle(machineNo: number, name: string): BottleEntry {
   if (name === "None" || !name) return NONE_ENTRY;
-  const machines = planningRepository.getMachines();
-  if (machines.length === 0) return NONE_ENTRY;
-  const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
-  const bottles = planningRepository.getBottles();
-  const bottle = bottles.find((b) => b.bottle_name === name);
-  if (!bottle) return NONE_ENTRY;
-  const configs = planningRepository.getBottleConfigurations(machineId, bottle.bottle_id);
+  if (planningRepository.getMachines().length === 0) return NONE_ENTRY;
+  const bottleId = resolveBottleIdForMachine(machineNo, name);
+  if (!bottleId) return NONE_ENTRY;
+  const configs = planningRepository.getBottleConfigurations(machineIdOf(machineNo), bottleId);
   if (configs.length === 0) return NONE_ENTRY;
+  const bottle = planningRepository.getBottles().find((b) => b.bottle_id === bottleId);
   const defaultSection = configs[configs.length - 1].section;
   const config = configs.find((c) => c.section === defaultSection) ?? configs[0];
-  return { name: bottle.bottle_name, wt: config.weight, speeds: config.speeds };
+  return {
+    name: bottle ? bottle.bottle_name : name,
+    wt: config.weight,
+    speeds: config.speeds,
+    bottleId,
+  };
 }
 
 /**
@@ -243,7 +302,7 @@ export function lookupBottle(machineNo: number, name: string): BottleEntry {
 export function getMachineBottles(machineNo: number): BottleEntry[] {
   const machines = planningRepository.getMachines();
   if (machines.length === 0) return [];
-  const machineId = `MAC-${String(machineNo).padStart(2, '0')}`;
+  const machineId = machineIdOf(machineNo);
   const allConfigs = planningRepository.getAllConfigurations();
   const machineConfigs = allConfigs.filter((c) => c.machine_no === machineId);
   const bottleIds = new Set(machineConfigs.map((c) => c.bottle_id));
@@ -265,6 +324,8 @@ export function getMachineBottles(machineNo: number): BottleEntry[] {
         name: b.bottle_name,
         wt: representative?.weight ?? 0,
         speeds: 0,
+        // Exact bottle_master id — the only safe identity (names collide).
+        bottleId: b.bottle_id,
       };
     });
 }
@@ -344,6 +405,7 @@ export function makeEntry(name: string, machineNo: number): MachineEntry {
   return {
     eid: nextEid(),
     product: b.name,
+    bottleId: b.bottleId,
     wt: b.wt,
     speeds: b.speeds,
     cut,

@@ -6,14 +6,21 @@ from app.db.session import get_db
 from app.models.holiday import HolidayMaster
 from app.models.audit_log import AuditLog
 from app.schemas.holiday import HolidayMasterResponse, HolidayMasterCreate
-from app.api.permissions import require_module_read, require_module_edit, MODULE_HOLIDAY_MASTER
+from app.api.permissions import require_module_edit, require_any_module_read, MODULE_HOLIDAY_MASTER, MODULE_PRODUCTION_PLANNING
 from app.api.auth import get_current_user
 from app.models.auth import AuthUser
 
 router = APIRouter(prefix="/holidays", tags=["Holiday Master"])
 
 @router.get("/", response_model=List[HolidayMasterResponse])
-def get_all_holidays(db: Session = Depends(get_db), _user: AuthUser = Depends(require_module_read(MODULE_HOLIDAY_MASTER))):
+def get_all_holidays(
+    db: Session = Depends(get_db),
+    # Holidays are reference data: the planning grid renders them for anyone
+    # who may read Production Planning, holiday management itself needs
+    # Holiday Master read.  A 403 here must never block planning viewers from
+    # loading their planning data.
+    _user: AuthUser = Depends(require_any_module_read([MODULE_HOLIDAY_MASTER, MODULE_PRODUCTION_PLANNING])),
+):
     return db.query(HolidayMaster).order_by(HolidayMaster.holiday_date).all()
 
 @router.post("/", response_model=HolidayMasterResponse)

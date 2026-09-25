@@ -76,12 +76,13 @@ const C = {
 };
 
 // ─── NumInput ──────────────────────────────────────────────────────────────
-const NumInput: React.FC<{ value: string; onChange: (v: string) => void }> = ({ value, onChange }) => {
+const NumInput: React.FC<{ value: string; onChange: (v: string) => void; disabled?: boolean }> = ({ value, onChange, disabled = false }) => {
   return (
     <input
       type="number"
       min="0"
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       style={{
         width: '100%',
@@ -95,6 +96,8 @@ const NumInput: React.FC<{ value: string; onChange: (v: string) => void }> = ({ 
         textAlign: 'center',
         transition: 'border-color 0.15s',
         MozAppearance: 'textfield',
+        cursor: disabled ? 'not-allowed' : undefined,
+        opacity: disabled ? 0.6 : 1,
       } as React.CSSProperties}
       onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
       onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
@@ -133,7 +136,8 @@ const DefectDropdown: React.FC<{
   onChange: (v: string[]) => void;
   defectGroups: { group: 'Critical' | 'Major' | 'Minor'; items: string[] }[];
   isLoading?: boolean;
-}> = ({ selected, onChange, defectGroups, isLoading = false }) => {
+  disabled?: boolean;
+}> = ({ selected, onChange, defectGroups, isLoading = false, disabled = false }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const ref = React.useRef<HTMLDivElement>(null);
@@ -147,8 +151,10 @@ const DefectDropdown: React.FC<{
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const toggle = (item: string) =>
+  const toggle = (item: string) => {
+    if (disabled) return;
     onChange(selected.includes(item) ? selected.filter((x) => x !== item) : [...selected, item]);
+  };
 
   const q = search.toLowerCase();
   const filtered = defectGroups.map((g) => ({
@@ -163,7 +169,7 @@ const DefectDropdown: React.FC<{
   return (
     <div ref={ref} style={{ position: 'relative', minWidth: '180px' }}>
       <div
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { if (!disabled) setOpen((o) => !o); }}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -173,7 +179,8 @@ const DefectDropdown: React.FC<{
           padding: '3px 6px',
           border: `1px solid ${open ? '#2563eb' : '#e2e8f0'}`,
           borderRadius: '5px',
-          cursor: 'pointer',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: disabled ? 0.6 : 1,
           backgroundColor: '#ffffff',
           boxShadow: open ? '0 0 0 2px #dbeafe' : 'none',
           transition: 'border-color 0.15s',
@@ -356,7 +363,7 @@ const DefectDropdown: React.FC<{
 };
 
 // ─── PackingMultiSelect ────────────────────────────────────────────────────
-const PackingMultiSelect: React.FC<{ selected: string[]; onChange: (v: string[]) => void }> = ({ selected: rawSelected, onChange }) => {
+const PackingMultiSelect: React.FC<{ selected: string[]; onChange: (v: string[]) => void; disabled?: boolean }> = ({ selected: rawSelected, onChange, disabled = false }) => {
   const selected = Array.isArray(rawSelected) ? rawSelected : [];
   const [open, setOpen] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
@@ -370,8 +377,10 @@ const PackingMultiSelect: React.FC<{ selected: string[]; onChange: (v: string[])
     return () => document.removeEventListener('mousedown', h);
   }, [open]);
 
-  const toggle = (item: string) =>
+  const toggle = (item: string) => {
+    if (disabled) return;
     onChange(selected.includes(item) ? selected.filter((x) => x !== item) : [...selected, item]);
+  };
 
   const label = selected.length === 0 ? '—' : selected.length === 1 ? selected[0] : `${selected[0]} +${selected.length - 1}`;
   const hasVal = selected.length > 0;
@@ -379,7 +388,7 @@ const PackingMultiSelect: React.FC<{ selected: string[]; onChange: (v: string[])
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <div
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { if (!disabled) setOpen((o) => !o); }}
         style={{
           padding: '3px 5px',
           fontSize: '11px',
@@ -388,7 +397,8 @@ const PackingMultiSelect: React.FC<{ selected: string[]; onChange: (v: string[])
           backgroundColor: hasVal ? '#dbeafe' : 'transparent',
           border: `1px solid ${open ? '#2563eb' : hasVal ? '#bfdbfe' : '#e2e8f0'}`,
           borderRadius: '4px',
-          cursor: 'pointer',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: disabled ? 0.6 : 1,
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
@@ -512,6 +522,7 @@ const QualityTimeRow = React.memo<{
   patchEntry: (time: string, patch: Partial<QualityHourlyEntry>) => void;
   copyRowDown: (time: string) => void;
   removeBottle: (time: string) => void;
+  canEdit: boolean;
 }>(({
   time,
   shiftIdx,
@@ -529,6 +540,7 @@ const QualityTimeRow = React.memo<{
   patchEntry,
   copyRowDown,
   removeBottle,
+  canEdit,
 }) => {
   const hasHold = Number(entry?.qc_hold ?? 0) > 0;
   const rowBg = hasHold ? '#fff5f5' : SHIFT_ROW_BG[shiftIdx];
@@ -557,7 +569,7 @@ const QualityTimeRow = React.memo<{
     backgroundColor: 'transparent',
     border: '1px solid transparent',
     borderRadius: '4px',
-    cursor: 'pointer',
+    cursor: canEdit ? 'pointer' : 'not-allowed',
     outline: 'none',
     textAlign: 'center',
   };
@@ -591,6 +603,7 @@ const QualityTimeRow = React.memo<{
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
           <select
             value={entry?.bottle_id ?? ''}
+            disabled={!canEdit}
             onChange={(e) => {
               selectBottle(time, e.target.value);
             }}
@@ -604,9 +617,10 @@ const QualityTimeRow = React.memo<{
               backgroundColor: 'transparent',
               border: '1px solid transparent',
               borderRadius: '4px',
-              cursor: 'pointer',
+              cursor: canEdit ? 'pointer' : 'not-allowed',
               outline: 'none',
               textAlign: 'left',
+              opacity: canEdit ? 1 : 0.6,
             }}
             onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
@@ -616,7 +630,7 @@ const QualityTimeRow = React.memo<{
               <option key={b.id} value={b.id}>{b.name}</option>
             ))}
           </select>
-          {entry?.bottle_id && (
+          {entry?.bottle_id && canEdit && (
             <button
               onClick={() => copyRowDown(time)}
               title="Copy this row to the next empty slot"
@@ -633,7 +647,7 @@ const QualityTimeRow = React.memo<{
               +
             </button>
           )}
-          {entry?.bottle_id ? (
+          {entry?.bottle_id && canEdit ? (
             <button
               onClick={() => removeBottle(time)}
               title="Remove one bottle from this row"
@@ -652,7 +666,7 @@ const QualityTimeRow = React.memo<{
           ) : (
             <button
               disabled
-              title="No bottle to remove"
+              title={entry?.bottle_id ? 'No edit permission for Quality Control' : 'No bottle to remove'}
               style={{
                 width: '24px', height: '24px', borderRadius: '5px',
                 border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', color: '#cbd5e1',
@@ -670,6 +684,7 @@ const QualityTimeRow = React.memo<{
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
         <select
           value={entry?.section ?? ''}
+          disabled={!canEdit}
           onChange={(e) => selectSection(time, e.target.value)}
           style={selectStyle}
           onFocus={selectFocus}
@@ -681,15 +696,15 @@ const QualityTimeRow = React.memo<{
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
-        <NumInput value={entry?.weight_front ?? ''} onChange={(v) => patchEntry(time, { weight_front: v })} />
+        <NumInput value={entry?.weight_front ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { weight_front: v })} />
       </td>
       {hasM && (
         <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
-          <NumInput value={entry?.weight_middle ?? ''} onChange={(v) => patchEntry(time, { weight_middle: v })} />
+          <NumInput value={entry?.weight_middle ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { weight_middle: v })} />
         </td>
       )}
       <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
-        <NumInput value={entry?.weight_rear ?? ''} onChange={(v) => patchEntry(time, { weight_rear: v })} />
+        <NumInput value={entry?.weight_rear ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { weight_rear: v })} />
       </td>
 
       <td style={{ ...tdCenter, fontSize: '12px', fontWeight: rowAvg ? 600 : 400, color: rowAvg ? '#1e293b' : '#94a3b8' }}>
@@ -697,22 +712,23 @@ const QualityTimeRow = React.memo<{
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.speed_per_min ?? ''} onChange={(v) => patchEntry(time, { speed_per_min: v })} />
+        <NumInput value={entry?.speed_per_min ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { speed_per_min: v })} />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 6px' }}>
         <PackingMultiSelect
           selected={entry?.packing_category ?? []}
+          disabled={!canEdit}
           onChange={(v) => patchEntry(time, { packing_category: v })}
         />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.packing_size ?? ''} onChange={(v) => patchEntry(time, { packing_size: v })} />
+        <NumInput value={entry?.packing_size ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { packing_size: v })} />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.cartons ?? ''} onChange={(v) => patchEntry(time, { cartons: v })} />
+        <NumInput value={entry?.cartons ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { cartons: v })} />
       </td>
 
       <td style={{ ...tdCenter, fontWeight: 500 }}>
@@ -724,20 +740,21 @@ const QualityTimeRow = React.memo<{
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.sqc ?? ''} onChange={(v) => patchEntry(time, { sqc: v })} />
+        <NumInput value={entry?.sqc ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { sqc: v })} />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.qc_hold != null ? String(entry.qc_hold) : '0'} onChange={(v) => patchEntry(time, { qc_hold: v === '' ? 0 : Number(v) })} />
+        <NumInput value={entry?.qc_hold != null ? String(entry.qc_hold) : '0'} disabled={!canEdit} onChange={(v) => patchEntry(time, { qc_hold: v === '' ? 0 : Number(v) })} />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.num ?? ''} onChange={(v) => patchEntry(time, { num: v })} />
+        <NumInput value={entry?.num ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { num: v })} />
       </td>
 
       <td style={{ ...td, minWidth: '200px', padding: '4px 8px' }}>
         <DefectDropdown
           selected={selectedDefectNames}
+          disabled={!canEdit}
           onChange={(names) => patchEntry(time, { defect_ids: names })}
           defectGroups={defectGroups}
           isLoading={loadingDefects}
@@ -748,13 +765,15 @@ const QualityTimeRow = React.memo<{
         <input
           type="text"
           value={entry?.remarks ?? ''}
+          disabled={!canEdit}
           onChange={(e) => patchEntry(time, { remarks: e.target.value })}
-          placeholder="Enter remarks..."
+          placeholder={canEdit ? 'Enter remarks...' : ''}
           style={{
             width: '100%', border: '1px solid transparent', borderRadius: '4px',
             padding: '4px 6px', fontSize: '12px', color: '#475569',
             backgroundColor: 'transparent', outline: 'none',
             transition: 'border-color 0.15s, background-color 0.15s',
+            cursor: canEdit ? 'text' : 'not-allowed',
           }}
           onFocus={(e) => {
             e.currentTarget.style.borderColor = '#2563eb';
@@ -914,6 +933,7 @@ export const QualityControlModule: React.FC = () => {
   );
 
   const patchEntry = useCallback((time: string, patch: Partial<QualityHourlyEntry>) => {
+    if (!canEdit) return;
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
     const mStr = String(activeMachine);
     const byDate = touchedTimes.current[dateKey] ?? (touchedTimes.current[dateKey] = {});
@@ -932,13 +952,14 @@ export const QualityControlModule: React.FC = () => {
         },
       };
     });
-  }, [dateKey, activeMachine]);
+  }, [dateKey, activeMachine, canEdit]);
 
   // ── Shift assignments ────────────────────────────────────────────────────
   const getShiftAssignment = (shiftId: number) =>
     shiftStore[dateKey]?.[shiftId] ?? { supervisor: '', executive: '' };
 
-  const patchShiftAssignment = (shiftId: number, patch: { supervisor?: string; executive?: string }) =>
+  const patchShiftAssignment = (shiftId: number, patch: { supervisor?: string; executive?: string }) => {
+    if (!canEdit) return;
     setShiftStore((prev) => ({
       ...prev,
       [dateKey]: {
@@ -946,6 +967,7 @@ export const QualityControlModule: React.FC = () => {
         [shiftId]: { ...getShiftAssignment(shiftId), ...patch },
       },
     }));
+  };
 
   // ── Master-data lookups ──────────────────────────────────────────────────
   const sectionKey = `${String(activeMachine).padStart(2, '0')}`;
@@ -994,6 +1016,7 @@ export const QualityControlModule: React.FC = () => {
   // same row; any other selection leaves job_id empty so the backend creates
   // a fresh job id on save.
   const selectBottle = useCallback((time: string, bottleId: string) => {
+    if (!canEdit) return;
     if (!bottleId) {
       patchEntry(time, {
         bottle_id: '',
@@ -1044,7 +1067,7 @@ export const QualityControlModule: React.FC = () => {
         },
       };
     });
-  }, [dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, patchEntry]);
+  }, [dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, patchEntry, canEdit]);
 
   const selectSection = useCallback((time: string, section: string) => patchEntry(time, { section }), [patchEntry]);
 
@@ -1053,6 +1076,7 @@ export const QualityControlModule: React.FC = () => {
   // day are full, the final 8 AM row extends the same job into the next day's
   // first row — crossing the day boundary never starts a new job.
   const copyRowDown = useCallback((time: string) => {
+    if (!canEdit) return;
     const idx = PRODUCTION_TIMES.findIndex((pt) => pt.time === time);
     setProductionStore((prev) => {
       const machineKey = String(activeMachine);
@@ -1112,7 +1136,7 @@ export const QualityControlModule: React.FC = () => {
       }
       return prev;
     });
-  }, [dateKey, activeMachine]);
+  }, [dateKey, activeMachine, canEdit]);
 
   const removeBottle = useCallback((time: string) => {
     patchEntry(time, {
@@ -1704,8 +1728,9 @@ export const QualityControlModule: React.FC = () => {
                   <input
                     type="text"
                     value={assignment.supervisor}
+                    disabled={!canEdit}
                     onChange={(e) => patchShiftAssignment(sh.shift_id, { supervisor: e.target.value })}
-                    placeholder="Enter supervisor name..."
+                    placeholder={canEdit ? 'Enter supervisor name...' : ''}
                     style={inputStyle}
                     onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
                     onBlur={(e) => { e.currentTarget.style.borderColor = C.border; }}
@@ -1718,8 +1743,9 @@ export const QualityControlModule: React.FC = () => {
                   <input
                     type="text"
                     value={assignment.executive}
+                    disabled={!canEdit}
                     onChange={(e) => patchShiftAssignment(sh.shift_id, { executive: e.target.value })}
-                    placeholder="Enter executive name..."
+                    placeholder={canEdit ? 'Enter executive name...' : ''}
                     style={inputStyle}
                     onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
                     onBlur={(e) => { e.currentTarget.style.borderColor = C.border; }}
@@ -1872,6 +1898,7 @@ export const QualityControlModule: React.FC = () => {
                     patchEntry={patchEntry}
                     copyRowDown={copyRowDown}
                     removeBottle={removeBottle}
+                    canEdit={canEdit}
                   />
                 );
               })}

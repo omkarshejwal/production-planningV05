@@ -107,10 +107,18 @@ export interface DailyPlanningEntry {
   changeoverHours?: number;
 }
 
+/**
+ * A module currently shown by the application. The first members are the
+ * built-in screens; the trailing `string` arm allows any module registered in
+ * the database module master to be navigated to without a type change, so new
+ * modules are supported without rewriting routing code.
+ */
 export type ActiveModule =
   | 'Dashboard'
   | 'Production Planning'
   | 'Master Management'
   | 'Quality Control'
   | 'Settings'
-  | 'Profile';
+  | 'Profile'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  | (string & {});

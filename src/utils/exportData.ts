@@ -23,6 +23,17 @@ export interface ExportRow {
   totalDraw: number | string; 
 }
 
+export function calculateAverageTotalDraw(rows: ExportRow[]): number | '' {
+  const validTotals = rows
+    .map(row => row.totalDraw)
+    .filter((total): total is number => typeof total === 'number' && Number.isFinite(total) && total >= 0);
+
+  if (validTotals.length === 0) return '';
+
+  const total = validTotals.reduce((sum, value) => sum + value, 0);
+  return Number((total / validTotals.length).toFixed(1));
+}
+
 export async function buildExportData(
   fromDateIso: string,
   toDateIso: string,

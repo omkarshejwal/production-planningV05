@@ -19,7 +19,7 @@ import {
   calculateEstimatedCompletionDays,
 } from '../utils/calculations';
 import { planningRepository, getCacheVersion } from '../services/planningRepository';
-import { useAuth, MODULES } from './AuthContext';
+import { useAuth, MODULES, APP_MODULES, ModuleInfo } from './AuthContext';
 
 interface ERPContextType {
   activeModule: ActiveModule;
@@ -213,7 +213,7 @@ const getDerivedJobWindow = (job: ProductionJob): { start: Date; end: Date } => 
   return { start, end };
 };
 
-const MODULE_TO_SLUG: Record<ActiveModule, string> = {
+const MODULE_TO_SLUG: Record<string, string> = {
   'Production Planning': 'production',
   'Quality Control': 'quality',
   'Master Management': 'master-management',
@@ -222,7 +222,7 @@ const MODULE_TO_SLUG: Record<ActiveModule, string> = {
   'Dashboard': 'dashboard',
 };
 
-const SLUG_TO_MODULE: Record<string, ActiveModule> = {
+const SLUG_TO_MODULE: Record<string, string> = {
   production: 'Production Planning',
   quality: 'Quality Control',
   'master-management': 'Master Management',
@@ -232,33 +232,50 @@ const SLUG_TO_MODULE: Record<string, ActiveModule> = {
   dashboard: 'Dashboard',
 };
 
-const getModuleFromHash = (): ActiveModule => {
+/** Slug for any module: known entries keep their stable URL, everything else
+ *  registered in module_master derives one from its name. */
+const slugifyModuleName = (name: string): string =>
+  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+const moduleToSlug = (mod: ActiveModule): string => MODULE_TO_SLUG[mod] ?? slugifyModuleName(mod);
+
+/** Resolve the current URL hash to a module, consulting the live module
+ *  catalog (from module_master) for modules registered after this build. */
+const getModuleFromHash = (modules: ModuleInfo[] = []): ActiveModule => {
   if (typeof window === 'undefined') return 'Production Planning';
   const raw = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
-  return SLUG_TO_MODULE[raw] || 'Production Planning';
+  const known = SLUG_TO_MODULE[raw];
+  if (known) return known;
+  const match = modules.find((m) => m.is_active && slugifyModuleName(m.module_name) === raw);
+  if (match) return match.module_name;
+  return 'Production Planning';
 };
 
 const setHashForModule = (module: ActiveModule) => {
   if (typeof window === 'undefined') return;
-  const slug = MODULE_TO_SLUG[module] || 'production';
-  const targetHash = `/${slug}`;
+  const targetHash = `/${moduleToSlug(module)}`;
   if (window.location.hash.replace(/^#/, '') !== targetHash) {
     window.history.replaceState(null, '', `#${targetHash}`);
   }
 };
 
 export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user: authUser, hasPermission } = useAuth();
+  const { user: authUser, hasPermission, canReadModule } = useAuth();
   const [activeModule, setActiveModuleState] = useState<ActiveModule>(getModuleFromHash);
 
+  /**
+   * Generic access rule, fully driven by the database module catalog and the
+   * employee's permission rows:
+   *   - application-shell modules (Dashboard/Settings/Profile) are always open;
+   *   - every other module needs can_read on it or on one of its descendants
+   *     (module_master.parent_module_id), e.g. "Master Management" via
+   *     "Bottle Master"/"Holiday Master".
+   * No module ids, permission values or per-module conditions are hardcoded.
+   */
   const canAccessModule = useCallback((mod: ActiveModule): boolean => {
-    if (mod === 'Production Planning') return hasPermission(MODULES.PRODUCTION_PLANNING, 'read');
-    if (mod === 'Quality Control') return hasPermission(MODULES.QUALITY_CONTROL, 'read');
-    if (mod === 'Master Management') {
-      return hasPermission(MODULES.BOTTLE_MASTER, 'read') || hasPermission(MODULES.HOLIDAY_MASTER, 'read');
-    }
-    return true;
-  }, [hasPermission]);
+    if (APP_MODULES.includes(mod)) return true;
+    return canReadModule(mod);
+  }, [canReadModule]);
 
   const setActiveModule = useCallback((mod: ActiveModule) => {
     if (!canAccessModule(mod)) mod = 'Dashboard';
@@ -269,20 +286,28 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Listen for hashchange events (e.g. browser back/forward or manual hash change)
   useEffect(() => {
     const handleHashChange = () => {
-      const next = canAccessModule(getModuleFromHash()) ? getModuleFromHash() : 'Dashboard';
-      setActiveModuleState(next);
+      const next = getModuleFromHash(authUser?.modules);
+      setActiveModuleState(canAccessModule(next) ? next : 'Dashboard');
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => {
       window.removeEventListener('hashchange', handleHashChange);
     };
-  }, [canAccessModule]);
+  }, [canAccessModule, authUser]);
 
-  // Once the logged-in user resolves, drop any module the URL may still point
-  // at that their permissions cannot access (e.g. deep link on load).
+  // Whenever the logged-in user (or a refreshed permission set) resolves, drop
+  // any module the URL may still point at that the permissions deny - e.g. a
+  // deep link on load, or a permission that was revoked in the database while
+  // the app was open. Re-resolves against the live module catalog so modules
+  // registered after this build are handled too.
   useEffect(() => {
     if (!authUser) return;
-    if (!canAccessModule(activeModule)) {
+    const fromHash = getModuleFromHash(authUser.modules);
+    const next = canAccessModule(fromHash) ? fromHash : 'Dashboard';
+    if (next !== activeModule) {
+      setActiveModuleState(next);
+      setHashForModule(next);
+    } else if (!canAccessModule(activeModule)) {
       setActiveModuleState('Dashboard');
       setHashForModule('Dashboard');
     }
@@ -527,7 +552,21 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDrawerSuggestedStartTime(undefined);
   };
 
+  /**
+   * Frontend half of the can_edit rule for Production Planning. Every mutating
+   * entry point below refuses when the employee has no edit permission; the
+   * backend independently rejects the same requests with 403, so calling the
+   * APIs directly is equally impossible.
+   */
+  const canEditPlanning = hasPermission(MODULES.PRODUCTION_PLANNING, 'edit');
+  const denyPlanningEdit = (): boolean => {
+    if (canEditPlanning) return false;
+    alert('You do not have permission to edit production planning.');
+    return true;
+  };
+
   const saveJob = async (jobData: Partial<ProductionJob>, packagingRows?: JobPackagingRow[]): Promise<boolean> => {
+    if (denyPlanningEdit()) return false;
     const machine_no = jobData.machineId || drawerDefaultMachineId;
     const plan_date = jobData.date || jobData.startDate || drawerDefaultDate;
     const bottle_id = jobData.bottleId;
@@ -549,7 +588,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const resolvedConfig = planningRepository.getBottleConfiguration(machine_no, bottle_id, section);
 
     if (!resolvedConfig) {
-      alert('No configuration found in bottle_configuration for selected machine and bottle.');
+      alert(
+        `No bottle_configuration row for bottle "${bottle_id}" on ${machine_no} section ${section}. ` +
+          'This machine/section/bottle combination does not exist.'
+      );
       return false;
     }
 
@@ -652,6 +694,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
 
   const deleteJob = (jobId: string): boolean => {
+    if (denyPlanningEdit()) return false;
     const job = jobs.find((j) => j.id === jobId);
     if (!job) return false;
     if (job.lifecycleStatus === 'COMPLETED' || job.locked) {
@@ -672,6 +715,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     jobId: string,
     patch: Partial<Pick<ProductionJob, 'sectionCount' | 'productionQuantity' | 'grossQuantity'>>
   ): boolean => {
+    if (denyPlanningEdit()) return false;
     const job = jobs.find((j) => j.id === jobId);
     if (!job) return false;
     if (job.lifecycleStatus === 'COMPLETED' || job.locked) {
@@ -682,7 +726,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextSection = patch.sectionCount ?? job.sectionCount;
     const resolvedConfig = planningRepository.getBottleConfiguration(job.machineId, job.bottleId, nextSection);
     if (!resolvedConfig) {
-      alert('No bottle configuration found for the selected section.');
+      alert(
+        `No bottle_configuration row for bottle "${job.bottleId}" on ${job.machineId} section ${nextSection}. ` +
+          'Pick a section that is configured for this machine and bottle.'
+      );
       return false;
     }
 
@@ -736,6 +783,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const extendJob = async (jobId: string, numberOfDays: number): Promise<boolean> => {
+    if (denyPlanningEdit()) return false;
     const source = jobs.find((j) => j.id === jobId);
     if (!source || numberOfDays < 1) return false;
 

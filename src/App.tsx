@@ -14,8 +14,21 @@ import { QualityControlModule } from './components/quality/ProductionQualityMoni
 import { SettingsModule } from './components/settings/SettingsModule';
 import { ProfileModule } from './components/profile/ProfileModule';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { ModulePlaceholder } from './components/common/ModulePlaceholder';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './components/auth/LoginPage';
+
+/** Screens with a dedicated implementation. Anything else (e.g. a module that
+ *  was registered in module_master after this build) renders the generic
+ *  placeholder below, still behind the same database-driven read check. */
+const BUILT_IN_MODULES = [
+  'Dashboard',
+  'Production Planning',
+  'Master Management',
+  'Quality Control',
+  'Settings',
+  'Profile',
+];
 
 const MainLayout: React.FC = () => {
   const { activeModule } = useERP();
@@ -37,6 +50,9 @@ const MainLayout: React.FC = () => {
             {activeModule === 'Quality Control' && <QualityControlModule />}
             {activeModule === 'Settings' && <SettingsModule />}
             {activeModule === 'Profile' && <ProfileModule />}
+            {!BUILT_IN_MODULES.includes(activeModule) && (
+              <ModulePlaceholder moduleName={activeModule} />
+            )}
           </ErrorBoundary>
 
           {/* Footer Status Bar matching Professional Polish theme */}

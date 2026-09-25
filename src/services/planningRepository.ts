@@ -253,33 +253,60 @@ export const planningRepository = {
       if (!_allJobsLoaded) {
         tasks.push(apiFetch('/api/production/jobs/'));
       }
-      const [
-        rawMachines,
-        rawBottles,
-        rawConfigs,
-        rawJobs,
-        rawHolidays,
-        rawAllJobs,
-      ] = await Promise.all(tasks);
 
-      _machines = (rawMachines as Record<string, unknown>[]).map(mapMachineRow);
-      _bottles = (rawBottles as Record<string, unknown>[]).map((b) => ({
-        bottle_id: toStr(b.bottle_id),
-        bottle_name: toStr(b.bottle_name),
-      }));
-      _configs = (rawConfigs as Record<string, unknown>[]).map(mapConfigRow);
-      invalidateConfigLookups();
-      _jobs = (rawJobs as Record<string, unknown>[]).map(mapJobRow);
-      if (!_allJobsLoaded) {
-        _allJobs = (rawAllJobs as Record<string, unknown>[]).map(mapJobRow);
-        _allJobsLoaded = true;
+      // Promise.allSettled, not Promise.all: a single rejected request (403 on
+      // a module the employee may not read, a flaky call, ...) must never
+      // discard the responses that DID succeed. Each fulfilled response is
+      // applied below; each rejected one keeps its previous cache entry, so
+      // viewers always get every dataset they are allowed to read - for the
+      // current window, historical dates and future dates alike.
+      const results = await Promise.allSettled(tasks);
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          console.warn('planningRepository.init() partial failure (continuing):', result.reason);
+        }
       }
-      _holidays = (rawHolidays as Record<string, unknown>[]).map((h) => ({
-        holiday_date: toStr(h.holiday_date),
-        holiday_name: toStr(h.holiday_name),
-      }));
-      _initialized = true;
-      _cacheVersion++;
+
+      const [machinesRes, bottlesRes, configsRes, jobsRes, holidaysRes, allJobsRes] = results;
+      let applied = false;
+
+      if (machinesRes.status === 'fulfilled') {
+        _machines = (machinesRes.value as Record<string, unknown>[]).map(mapMachineRow);
+        applied = true;
+      }
+      if (bottlesRes.status === 'fulfilled') {
+        _bottles = (bottlesRes.value as Record<string, unknown>[]).map((b) => ({
+          bottle_id: toStr(b.bottle_id),
+          bottle_name: toStr(b.bottle_name),
+        }));
+        applied = true;
+      }
+      if (configsRes.status === 'fulfilled') {
+        _configs = (configsRes.value as Record<string, unknown>[]).map(mapConfigRow);
+        invalidateConfigLookups();
+        applied = true;
+      }
+      if (jobsRes.status === 'fulfilled') {
+        _jobs = (jobsRes.value as Record<string, unknown>[]).map(mapJobRow);
+        applied = true;
+      }
+      if (allJobsRes && allJobsRes.status === 'fulfilled') {
+        _allJobs = (allJobsRes.value as Record<string, unknown>[]).map(mapJobRow);
+        _allJobsLoaded = true;
+        applied = true;
+      }
+      if (holidaysRes.status === 'fulfilled') {
+        _holidays = (holidaysRes.value as Record<string, unknown>[]).map((h) => ({
+          holiday_date: toStr(h.holiday_date),
+          holiday_name: toStr(h.holiday_name),
+        }));
+        applied = true;
+      }
+
+      if (applied) {
+        _initialized = true;
+        _cacheVersion++;
+      }
     } catch (err) {
       console.error('planningRepository.init() failed:', err);
       // Keep existing cache on error — don't wipe good data
@@ -301,15 +328,16 @@ export const planningRepository = {
   },
 
   getBottleConfigurations(machine_no: string, bottle_id: string): BottleConfigurationRow[] {
-    const { byMachine, byMachineBottle, byBottle } = ensureConfigLookups();
+    const { byMachine, byMachineBottle } = ensureConfigLookups();
     if (bottle_id === '*') {
       const machineConfigs = byMachine.get(machine_no);
       return machineConfigs ? [...machineConfigs] : [];
     }
+    // Machine-scoped ONLY. Falling back to another machine's rows for the same
+    // bottle id would let a bottle that is not configured on this machine look
+    // like it is (and later produce an invalid composite key on save).
     const specific = byMachineBottle.get(`${machine_no}|${bottle_id}`);
-    if (specific && specific.length > 0) return [...specific];
-    const anyForBottle = byBottle.get(bottle_id);
-    return anyForBottle ? [...anyForBottle] : [];
+    return specific ? [...specific] : [];
   },
 
   getAllConfigurations(): BottleConfigurationRow[] {
@@ -317,17 +345,17 @@ export const planningRepository = {
   },
 
   /**
-   * Exact-equivalent O(1) lookup mirroring getBottleConfigurations' fallback
-   * semantics: when the (machine, bottle) pair has no configs, falls back to the
-   * bottle's config from any machine for the requested section.
+   * Exact composite-key lookup: (machine_no, bottle_id, section).
+   *
+   * Returns undefined unless THAT EXACT row exists in bottle_configuration —
+   * never another section and never another machine's row. Callers use this to
+   * validate a job before saving it, so any fallback here would silently
+   * substitute a different configuration and can violate the FK
+   * fk_production_job_configuration.
    */
   getBottleConfiguration(machine_no: string, bottle_id: string, section: number): BottleConfigurationRow | undefined {
-    const { byMachineBottle, byMachineBottleSection, byBottleSection } = ensureConfigLookups();
-    const hasSpecific = (byMachineBottle.get(`${machine_no}|${bottle_id}`)?.length ?? 0) > 0;
-    if (hasSpecific) {
-      return byMachineBottleSection.get(`${machine_no}|${bottle_id}|${section}`);
-    }
-    return byBottleSection.get(`${bottle_id}|${section}`);
+    const { byMachineBottleSection } = ensureConfigLookups();
+    return byMachineBottleSection.get(`${machine_no}|${bottle_id}|${section}`);
   },
 
   getProductionJobs(): ProductionJobRow[] {

@@ -30,6 +30,7 @@ export const HolidayMasterPanel: React.FC = () => {
   }
 
   async function handleSave() {
+    if (!canEdit) return;
     if (!holidayDate || !holidayName) return;
 
     if (editingDate) {
@@ -66,6 +67,7 @@ export const HolidayMasterPanel: React.FC = () => {
   }
 
   async function deleteHoliday(date: string) {
+    if (!canEdit) return;
     const result = await planningRepository.deleteHoliday(date);
     if (!result.ok) {
       alert(result.error || 'Failed to delete holiday.');
