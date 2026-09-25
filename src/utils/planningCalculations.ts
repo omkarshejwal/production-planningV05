@@ -71,6 +71,12 @@ const getProductionDayWindow = (dayValue: Date | string) => {
   return { windowStart, windowEnd };
 };
 
+const getLocalProductionDate = (dayValue: Date | string): Date => {
+  if (dayValue instanceof Date) return new Date(dayValue);
+  const { year, month, day } = toDateParts(dayValue);
+  return new Date(year, month, day);
+};
+
 const clampIntervalToWindow = (start: Date, end: Date, windowStart: Date, windowEnd: Date): number => {
   const overlapStart = start > windowStart ? start : windowStart;
   const overlapEnd = end < windowEnd ? end : windowEnd;
@@ -89,6 +95,88 @@ export function calculateDrawForProductionHours(
   const metrics = calculateProductionMetrics(cutPerMin, weightGrams, machineNo);
   const drawRatePer24Hours = metrics.totalQuantity > 0 ? calculateDraw(metrics.totalQuantity, weightGrams) : 0;
   return drawRatePer24Hours > 0 ? drawRatePer24Hours * (safeHours / PRODUCTION_DAY_DURATION_HOURS) : 0;
+}
+
+type ProductionDrawEntry = Pick<MachineEntry, 'cut' | 'wt' | 'qty' | 'requiredBottles' | 'startTime' | 'endTime'>;
+
+export interface EndJobDrawBreakdown {
+  completedDraws: number[];
+  changeoverDraws: number[];
+  newDraw: number;
+  totalDraw: number;
+}
+
+const resolveClockInProductionDay = (
+  timeValue: string | undefined,
+  windowStart: Date,
+  windowEnd: Date,
+  notBefore?: Date
+): Date => {
+  const { hours, minutes } = parseClockTime(timeValue);
+  const candidate = new Date(windowStart);
+  candidate.setHours(hours, minutes, 0, 0);
+  if (candidate < windowStart) candidate.setDate(candidate.getDate() + 1);
+  if (candidate > windowEnd) candidate.setDate(candidate.getDate() - 1);
+  if (notBefore && candidate < notBefore) candidate.setDate(candidate.getDate() + 1);
+  return candidate;
+};
+
+export function calculateEndJobDrawBreakdown(
+  dayValue: Date | string,
+  completedEntries: ProductionDrawEntry[],
+  nextEntry?: ProductionDrawEntry | null,
+  machineNo?: string | number,
+  changeoverMinutes = 0
+): EndJobDrawBreakdown {
+  const { windowStart, windowEnd } = getProductionDayWindow(getLocalProductionDate(dayValue));
+  const entries = Array.isArray(completedEntries) ? completedEntries : [];
+  const completedDraws: number[] = [];
+  const changeoverDraws: number[] = [];
+  const starts: Date[] = [];
+  const ends: Date[] = [];
+  let previousEnd: Date | undefined;
+
+  for (const entry of entries) {
+    const start = resolveClockInProductionDay(entry.startTime || '07:00', windowStart, windowEnd, previousEnd);
+    const end = entry.endTime
+      ? resolveClockInProductionDay(entry.endTime, windowStart, windowEnd, start)
+      : new Date(windowEnd);
+    const productionHours = clampIntervalToWindow(start, end, windowStart, windowEnd);
+    completedDraws.push(calculateDrawForProductionHours(entry.cut, entry.wt, productionHours, machineNo));
+    starts.push(start);
+    ends.push(end);
+    previousEnd = end;
+  }
+
+  for (let index = 0; index < ends.length; index++) {
+    const followingEntry = index + 1 < entries.length ? entries[index + 1] : nextEntry;
+    if (!followingEntry) continue;
+    const followingStart = followingEntry.startTime
+      ? (index + 1 < entries.length ? starts[index + 1] : resolveClockInProductionDay(followingEntry.startTime, windowStart, windowEnd, ends[index]))
+      : new Date(ends[index].getTime() + (Number.isFinite(changeoverMinutes) && changeoverMinutes > 0 ? changeoverMinutes : 0) * 60 * 1000);
+    const changeoverHours = clampIntervalToWindow(ends[index], followingStart, windowStart, windowEnd);
+    changeoverDraws.push(calculateDrawForProductionHours(entries[index].cut, entries[index].wt, changeoverHours, machineNo));
+  }
+
+  let newDraw = 0;
+  if (nextEntry) {
+    const newStart = nextEntry.startTime
+      ? resolveClockInProductionDay(nextEntry.startTime, windowStart, windowEnd, previousEnd)
+      : new Date((previousEnd || windowStart).getTime() + (Number.isFinite(changeoverMinutes) && changeoverMinutes > 0 ? changeoverMinutes : 0) * 60 * 1000);
+    const productionHours = clampIntervalToWindow(newStart, windowEnd, windowStart, windowEnd);
+    newDraw = calculateDrawForProductionHours(nextEntry.cut, nextEntry.wt, productionHours, machineNo);
+  }
+
+  const totalDraw = completedDraws.reduce((sum, value) => sum + value, 0)
+    + changeoverDraws.reduce((sum, value) => sum + value, 0)
+    + newDraw;
+
+  return {
+    completedDraws,
+    changeoverDraws,
+    newDraw,
+    totalDraw: Number(totalDraw.toFixed(2)),
+  };
 }
 
 export function calculateDrawForProductionDay(

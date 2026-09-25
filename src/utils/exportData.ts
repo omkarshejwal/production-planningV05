@@ -2,7 +2,7 @@ import { apiFetch } from './api';
 import { ProductionJobRow, BottleMasterRow } from '../data/planningSchema';
 import { MachineEntry, CompletedJobMap, MachineLists } from '../types/planning';
 import { addCalendarDays } from './calculations';
-import { calculateDailyDrawForEntries, calculateDrawForProductionDay, makeNoneEntry, calcProductionMetrics } from './planningCalculations';
+import { calculateDailyDrawForEntries, calculateDrawForProductionDay, calculateEndJobDrawBreakdown, makeNoneEntry, calcProductionMetrics } from './planningCalculations';
 
 export interface ExportMachineData {
   mIdx: number;
@@ -153,9 +153,40 @@ export async function buildExportData(
       }
   }
 
-  // Helper for Draw
+  const getEndJobBreakdown = (rowIdx: number, mIdx: number) => {
+      const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+      if (completed.length === 0) return null;
+
+      const previous = completed[completed.length - 1];
+      if (!previous.endTime) return null;
+
+      const running = machineLists[mIdx]?.[rowIdx];
+      const nextEntry = running?.status === 'running' ? running : undefined;
+      if (
+          nextEntry?.jobId &&
+          previous.jobId &&
+          String(nextEntry.jobId) === String(previous.jobId)
+      ) {
+          return null;
+      }
+
+      return calculateEndJobDrawBreakdown(
+          allDateRows[rowIdx].dateObj,
+          completed,
+          nextEntry,
+          `MAC-${String(mIdx + 1).padStart(2, '0')}`
+      );
+  };
+
   const getDrawForDateRow = (rowIdx: number, entry: MachineEntry | null, mIdx: number) => {
       if (!entry || entry.isBlank || !entry.product || entry.product === 'None') return 0;
+      const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+      if (endJobBreakdown) {
+          const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+          const completedIndex = completed.indexOf(entry);
+          if (completedIndex >= 0) return endJobBreakdown.completedDraws[completedIndex] ?? 0;
+          if (machineLists[mIdx]?.[rowIdx] === entry) return endJobBreakdown.newDraw;
+      }
       const dayValue = allDateRows[rowIdx].dateObj;
       const requiredQty = (entry as any).requiredBottles && (entry as any).requiredBottles > 0 ? (entry as any).requiredBottles : entry.qty;
       return calculateDrawForProductionDay(dayValue, {
@@ -167,11 +198,19 @@ export async function buildExportData(
 
   const calcTotal = (rowIdx: number) => {
       const dayValue = allDateRows[rowIdx].dateObj;
-      const perMachineEntries = machineLists.map((list, mIdx) => {
-          const e = list[rowIdx];
+      let totalDraw = 0;
+
+      for (let mIdx = 0; mIdx < machineLists.length; mIdx++) {
+          const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+          if (endJobBreakdown) {
+              totalDraw += endJobBreakdown.totalDraw;
+              continue;
+          }
+
+          const e = machineLists[mIdx][rowIdx];
           const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
           const hasProduct = e && !e.isBlank && !!e.product && e.product !== 'None';
-          
+
           const machineEntries = completed.map((job) => ({
               cut: job.cut,
               wt: job.wt,
@@ -193,9 +232,11 @@ export async function buildExportData(
                   machineNo: `MAC-${String(mIdx + 1).padStart(2, '0')}`,
               });
           }
-          return machineEntries;
-      }).flat();
-      return calculateDailyDrawForEntries(dayValue, perMachineEntries);
+
+          totalDraw += calculateDailyDrawForEntries(dayValue, machineEntries);
+      }
+
+      return Number(totalDraw.toFixed(2));
   };
 
   // ── Logical-job continuation detection (mirrors the screen's logic) ───────
@@ -293,9 +334,13 @@ export async function buildExportData(
                       if (hasProduct) {
                           drawVal = runningDraw > 0 ? Number(runningDraw.toFixed(1)) : '';
                       } else if (completed.length > 0) {
-                          const last = completed[completed.length - 1];
+                          const lastIndex = completed.length - 1;
+                          const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+                          const changeoverDraw = endJobBreakdown?.changeoverDraws[lastIndex];
+                          const last = completed[lastIndex];
                           const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
-                          drawVal = lastDraw > 0 ? Number(lastDraw.toFixed(1)) : '';
+                          const drawToShow = changeoverDraw !== undefined ? changeoverDraw : lastDraw;
+                          drawVal = drawToShow > 0 ? Number(drawToShow.toFixed(1)) : '';
                       }
 
                       rowData.machines.push({

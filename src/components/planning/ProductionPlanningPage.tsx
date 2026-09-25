@@ -43,6 +43,7 @@ import {
   calcQty,
   calculateDailyDrawForEntries,
   calculateDrawForProductionDay,
+  calculateEndJobDrawBreakdown,
   calculateQuantityForProductionDay,
   lookupConfig,
   lookupSpeed,
@@ -696,7 +697,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
   // Date rows are fixed; each machine owns an independent flat array.
 
-  const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number; isContinuation?: boolean } | null>(null);
+  const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number; isContinuation?: boolean; isEndJobReplacement?: boolean } | null>(null);
   const [endJobModal, setEndJobModal] = useState<{ mIdx: number; rowIdx: number } | null>(null);
   const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; jobId?: string; section?: number; isCompleted?: boolean } | null>(null);
   const [isDirty, setIsDirty] = useState(false);
@@ -754,6 +755,33 @@ export const ProductionPlanningPage: React.FC = () => {
       return next;
     });
   }, []);
+
+  const getEndJobBreakdown = (rowIdx: number, mIdx: number) => {
+    const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+    if (completed.length === 0) return null;
+
+    const previous = completed[completed.length - 1];
+    if (!previous.endTime) return null;
+
+    const running = machineLists[mIdx]?.[rowIdx];
+    const nextEntry = running?.status === 'running' ? running : undefined;
+    if (
+      nextEntry?.jobId &&
+      previous.jobId &&
+      String(nextEntry.jobId) === String(previous.jobId)
+    ) {
+      return null;
+    }
+
+    const rowDate = dateRows[rowIdx]?.date;
+    const dayValue = rowDate ? (parseDisplayDate(rowDate) || new Date()) : new Date();
+    return calculateEndJobDrawBreakdown(
+      dayValue,
+      completed,
+      nextEntry,
+      `MAC-${String(mIdx + 1).padStart(2, '0')}`
+    );
+  };
 
   const handleSaveToDb = async () => {
     if (!canEdit) {
@@ -1681,8 +1709,6 @@ export const ProductionPlanningPage: React.FC = () => {
 
     // Archive the current running job as completed, storing the job-wide total
     const completedJob: MachineEntry = { ...currentEntry, endTime, status: 'completed', cumulativeQty };
-    markJobIdsDirty([currentEntry?.jobId]);
-    setCompletedJobMap(prev => ({ ...prev, [key]: [...(prev[key] ?? []), completedJob] }));
 
     // New job starts after machine changeover (minutes, shift-day aware: wraps at 24 h)
     const newStartTime = delayMinutes > 0 ? addMinutesToTime(endTime, delayMinutes) : endTime;
@@ -1693,6 +1719,22 @@ export const ProductionPlanningPage: React.FC = () => {
       startTime: newStartTime,
       status: 'running',
     };
+
+    const completedEntries = [...(completedJobMap[key] ?? []), completedJob];
+    const breakdown = calculateEndJobDrawBreakdown(
+      dateRows[rowIdx]?.isoDate || new Date(),
+      completedEntries,
+      newEntry,
+      `MAC-${String(mIdx + 1).padStart(2, '0')}`
+    );
+    const completedJobWithDraw: MachineEntry = {
+      ...completedJob,
+      draw: breakdown.completedDraws[breakdown.completedDraws.length - 1] ?? 0,
+    };
+
+    markJobIdsDirty([currentEntry?.jobId]);
+    setCompletedJobMap(prev => ({ ...prev, [key]: [...(prev[key] ?? []), completedJobWithDraw] }));
+
     updateMachineLists(prev => {
       const next = [...prev] as MachineLists;
       const list = [...next[mIdx]];
@@ -1703,7 +1745,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
     setEndJobModal(null);
     // Open the edit modal pre-seeded with the calculated start time
-    setEditModal({ mIdx, rowIdx, newJobStartTime: newStartTime });
+    setEditModal({ mIdx, rowIdx, newJobStartTime: newStartTime, isEndJobReplacement: true });
   };
 
   const handleSave = async (payload: EditSavePayload) => {
@@ -1762,6 +1804,47 @@ export const ProductionPlanningPage: React.FC = () => {
       section,
       startTime: startTime || undefined,
     };
+
+    const completedEntriesForDraw = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+    const dayValue = parseDisplayDate(dateRows[rowIdx]?.date || '') || new Date();
+    if (completedIndex !== undefined && completedEntriesForDraw.length > 0) {
+      const updatedCompletedEntries = completedEntriesForDraw.map((entry, index) =>
+        index === completedIndex
+          ? { ...entry, ...updatedFields, status: 'completed' as const }
+          : entry
+      );
+      const lastCompleted = updatedCompletedEntries[updatedCompletedEntries.length - 1];
+      const running = machineLists[mIdx]?.[rowIdx];
+      const sameRunningJob = !!(
+        running?.status === 'running' &&
+        running.jobId &&
+        lastCompleted?.jobId &&
+        String(running.jobId) === String(lastCompleted.jobId)
+      );
+      const runningEntry = !sameRunningJob && running?.status === 'running' ? running : undefined;
+      const breakdown = calculateEndJobDrawBreakdown(
+        dayValue,
+        updatedCompletedEntries,
+        runningEntry,
+        machineNoStr
+      );
+      updatedFields.draw = breakdown.completedDraws[completedIndex] ?? draw;
+    }
+
+    if (editModal.isEndJobReplacement && completedEntriesForDraw.length > 0) {
+      const replacementEntry: MachineEntry = {
+        ...(machineLists[mIdx]?.[rowIdx] ?? makeNoneEntry(mIdx)),
+        ...updatedFields,
+        startTime: startTime || editModal.newJobStartTime || machineLists[mIdx]?.[rowIdx]?.startTime || '07:00',
+      };
+      const breakdown = calculateEndJobDrawBreakdown(
+        dayValue,
+        completedEntriesForDraw,
+        replacementEntry,
+        machineNoStr
+      );
+      updatedFields.draw = breakdown.newDraw;
+    }
 
     // A brand-new job has no job_id yet (blank entry from the End Job flow).
     // Assign its business Job ID immediately — BEFORE anything is saved — so
@@ -1894,6 +1977,18 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const rowDateValue = parseDisplayDate(rowDate);
     const dayValue = rowDateValue || new Date();
+                           const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+    if (endJobBreakdown) {
+      const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
+      const completedIndex = completed.indexOf(entry);
+      if (completedIndex >= 0) {
+        return endJobBreakdown.completedDraws[completedIndex] ?? 0;
+      }
+      if (machineLists[mIdx]?.[rowIdx] === entry) {
+        return endJobBreakdown.newDraw;
+      }
+    }
+
     const requiredQty = entry.requiredBottles && entry.requiredBottles > 0 ? entry.requiredBottles : entry.qty;
 
     const rawDraw = calculateDrawForProductionDay(dayValue, {
@@ -2095,11 +2190,18 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const rowDateValue = parseDisplayDate(rowDate);
     const dayValue = rowDateValue || new Date();
-    const perMachineEntries = machineLists.map((list, mIdx) => {
-      const e = list[rowIdx];
+    let totalDraw = 0;
+
+    for (let mIdx = 0; mIdx < machineLists.length; mIdx++) {
+                             const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+      if (endJobBreakdown) {
+        totalDraw += endJobBreakdown.totalDraw;
+        continue;
+      }
+
+      const e = machineLists[mIdx][rowIdx];
       const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
       const hasProduct = e && !e.isBlank && !!e.product && e.product !== 'None';
-
       const machineEntries = completed.map((job) => ({
         cut: job.cut,
         wt: job.wt,
@@ -2122,14 +2224,10 @@ export const ProductionPlanningPage: React.FC = () => {
         });
       }
 
-      if (machineEntries.length > 0) {
-        return machineEntries;
-      }
+      totalDraw += calculateDailyDrawForEntries(dayValue, machineEntries);
+    }
 
-      return [];
-    }).flat();
-
-    return calculateDailyDrawForEntries(dayValue, perMachineEntries);
+    return Number(totalDraw.toFixed(2));
   };
 
   const editingEntry = (() => {
@@ -2392,7 +2490,7 @@ export const ProductionPlanningPage: React.FC = () => {
               <thead className="sticky top-0 z-10">
                 {/* Machine group header */}
                 <tr className="bg-[#DBEAFE] border-b border-[#BFDBFE]">
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-27.5 sticky left-0 bg-[#DBEAFE]">
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[#1E40AF] border-r border-[#BFDBFE] w-15 sticky left-0 bg-[#DBEAFE]">
                     Date
                   </th>
                   {[1, 2, 3, 4].map(n => (
@@ -2537,7 +2635,7 @@ export const ProductionPlanningPage: React.FC = () => {
                             const isLowSec = completedJob.section !== undefined &&
                               validMachine.includes(completedJob.section) &&
                               completedJob.section < validMachine[validMachine.length - 1];
-                            const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                             const cellBg = 'bg-[#DBEAFE]';
                             const txt = 'text-sm text-[#6B7280]';
                             const isComplContinuation = isContinuationEntry(mIdx, rowIdx, completedJob);
@@ -2669,10 +2767,11 @@ export const ProductionPlanningPage: React.FC = () => {
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay = !isContinuing;
                           const canExtend = hasProduct;
-                          const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
-                          const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
-                          const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                          const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
+                           const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
+                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
+                           const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                           const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
 
                           return (
                             <React.Fragment key={mIdx}>
@@ -2817,12 +2916,14 @@ export const ProductionPlanningPage: React.FC = () => {
                                   if (hasProduct) {
                                     return <span className="text-sm text-[#6B7280]">{runningDraw > 0 ? runningDraw.toFixed(1) : '—'}</span>;
                                   }
-                                  // Changeover: show previous completed job's draw
-                                  if (completed.length > 0) {
-                                    const last = completed[completed.length - 1];
-                                    const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
-                                    return <span className="text-sm text-[#9CA3AF] italic">{lastDraw > 0 ? lastDraw.toFixed(1) : '—'}</span>;
-                                  }
+                                   if (completed.length > 0) {
+                                     const lastIndex = completed.length - 1;
+                                     const changeoverDraw = endJobBreakdown?.changeoverDraws[lastIndex];
+                                     const last = completed[lastIndex];
+                                     const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
+                                     const drawToShow = changeoverDraw !== undefined ? changeoverDraw : lastDraw;
+                                     return <span className="text-sm text-[#9CA3AF] italic">{drawToShow > 0 ? drawToShow.toFixed(1) : '—'}</span>;
+                                   }
                                   return <span className="text-sm text-[#6B7280]"></span>;
                                 })()}
                               </td>
