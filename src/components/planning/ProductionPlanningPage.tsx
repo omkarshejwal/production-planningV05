@@ -2511,7 +2511,7 @@ export const ProductionPlanningPage: React.FC = () => {
                         Bottle Name
                       </th>
                       {showSection && (
-                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Sec</th>
+                        <th className="px-2 py-2 text-center text-xs font-semibold text-[#7C3AED] border-r border-[#E5E7EB] w-10 bg-[#F5F3FF]">Section</th>
                       )}
                       {showWt && (
                         <th className="px-2 py-2 text-center text-xs font-semibold text-[#050505] border-r border-[#E5E7EB] w-13.75">Weight</th>
