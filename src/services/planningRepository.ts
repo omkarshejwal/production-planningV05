@@ -382,6 +382,57 @@ export const planningRepository = {
     return [];
   },
 
+  // ── Bottle Export (read-only, always fetched fresh from the DB) ──────────────
+
+  /**
+   * Reads bottle master + bottle configuration straight from the API for the
+   * "Export Bottle" feature. Deliberately NOT served from the in-memory cache:
+   * an export must always reflect the latest committed rows of
+   * production.bottle_master and production.bottle_configuration, and because
+   * this is a pure read it can never create duplicate bottle_master records.
+   *
+   * @param machineNo - Restrict the configuration read to a single machine
+   *   (integer, as stored in bottle_configuration.machine_no). Omit it to read
+   *   every machine-bottle association.
+   */
+  async fetchBottleExportData(machineNo?: number): Promise<{
+    ok: boolean;
+    error?: string;
+    bottles: BottleMasterRow[];
+    configs: BottleConfigurationRow[];
+  }> {
+    const configUrl =
+      machineNo === undefined
+        ? '/api/production/products/configurations/'
+        : `/api/production/products/configurations/?machine_no=${machineNo}`;
+
+    try {
+      // Promise.all, not allSettled: a half-read master/configuration set would
+      // silently produce an incomplete spreadsheet, so fail the whole export
+      // instead and let the caller report it.
+      const [bottlesRaw, configsRaw] = await Promise.all([
+        apiFetch('/api/production/products/bottles/'),
+        apiFetch(configUrl),
+      ]);
+      return {
+        ok: true,
+        bottles: (bottlesRaw as Record<string, unknown>[]).map((b) => ({
+          bottle_id: toStr(b.bottle_id),
+          bottle_name: toStr(b.bottle_name),
+        })),
+        configs: (configsRaw as Record<string, unknown>[]).map(mapConfigRow),
+      };
+    } catch (err: any) {
+      console.error('fetchBottleExportData failed:', err);
+      return {
+        ok: false,
+        error: err.message || 'Failed to load bottle data from the server.',
+        bottles: [],
+        configs: [],
+      };
+    }
+  },
+
   // ── Write Operations (POST to API, then caller must call init() to refresh) ─
 
   async createProductionJob(payload: ProductionJobRow): Promise<{ ok: boolean; error?: string }> {

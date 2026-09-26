@@ -71,8 +71,22 @@ def update_bottle(
     return existing
 
 @router.get("/configurations/", response_model=List[BottleConfigurationResponse])
-def get_all_configurations(db: Session = Depends(get_db), _user: AuthUser = Depends(require_any_module_read([MODULE_PRODUCTION_PLANNING, MODULE_BOTTLE_MASTER]))):
-    return db.query(BottleConfiguration).all()
+def get_all_configurations(
+    machine_no: int | None = None,
+    db: Session = Depends(get_db),
+    _user: AuthUser = Depends(require_any_module_read([MODULE_PRODUCTION_PLANNING, MODULE_BOTTLE_MASTER])),
+):
+    """List bottle configurations.
+
+    bottle_configuration is keyed on (machine_no, bottle_id, section), so a
+    machine only ever sees its own rows: pass machine_no to fetch the
+    configuration of that machine alone. Omitting it returns every row, which
+    is what the Bottle Master screen and the planning cache bootstrap need.
+    """
+    query = db.query(BottleConfiguration)
+    if machine_no is not None:
+        query = query.filter(BottleConfiguration.machine_no == machine_no)
+    return query.all()
 
 @router.post("/configurations/", response_model=BottleConfigurationResponse)
 def create_configuration(

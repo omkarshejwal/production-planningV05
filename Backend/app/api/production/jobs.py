@@ -129,15 +129,7 @@ def create_job(
             if job_in.status:
                 existing_job.status = job_in.status
 
-            # Clear old packaging for this job row
-            db.query(JobPackaging).filter_by(
-                job_id=existing_job.job_id,
-                plan_date=existing_job.plan_date,
-                machine_no=existing_job.machine_no,
-                start_time=existing_job.start_time,
-            ).delete()
-            db.flush()  # Force DELETE to execute before INSERTS
-            new_job = existing_job
+            # new_job = existing_job
         else:
             new_job = ProductionJob(
                 job_id=resolved_job_id,
@@ -160,20 +152,26 @@ def create_job(
             db.flush()
             db.refresh(new_job)
 
-        # 5. Handle Packaging (if provided)
+        # 5. Handle Packaging (if provided) — preserve existing records
         for pack in job_in.packaging:
-            db.add(JobPackaging(
+            # Only insert if a packaging record with this (job_id, packaging_type) does not already exist
+            existing_pack = db.query(JobPackaging).filter_by(
                 job_id=resolved_job_id,
-                plan_date=job_in.plan_date,
-                machine_no=job_in.machine_no,
-                bottle_id=job_in.bottle_id,
-                section=resolved_section,
-                start_time=job_in.start_time,
                 packaging_type=pack.packaging_type,
-                quantity=pack.quantity,
-                pallet_packing=pack.pallet_packing,
-                pallet_quantity=pack.pallet_quantity
-            ))
+            ).first()
+            if existing_pack is None:
+                db.add(JobPackaging(
+                    job_id=resolved_job_id,
+                    plan_date=job_in.plan_date,
+                    machine_no=job_in.machine_no,
+                    bottle_id=job_in.bottle_id,
+                    section=resolved_section,
+                    start_time=job_in.start_time,
+                    packaging_type=pack.packaging_type,
+                    quantity=pack.quantity,
+                    pallet_packing=pack.pallet_packing,
+                    pallet_quantity=pack.pallet_quantity,
+                ))
 
         db.commit()
         db.refresh(new_job)
@@ -295,13 +293,6 @@ def create_jobs_bulk(
                 existing_job.changeover_minutes = job_in.changeover_minutes
                 if job_in.status:
                     existing_job.status = job_in.status
-                db.query(JobPackaging).filter_by(
-                    job_id=resolved_job_id,
-                    plan_date=job_in.plan_date,
-                    machine_no=job_in.machine_no,
-                    start_time=job_in.start_time,
-                ).delete()
-                db.flush()
                 result_job = existing_job
             else:
                 result_job = ProductionJob(
@@ -325,20 +316,25 @@ def create_jobs_bulk(
                 db.flush()
                 db.refresh(result_job)
 
-            # Packaging
+            # Packaging — preserve existing records; only insert if not already present
             for pack in job_in.packaging:
-                db.add(JobPackaging(
+                existing_pack = db.query(JobPackaging).filter_by(
                     job_id=resolved_job_id,
-                    plan_date=job_in.plan_date,
-                    machine_no=job_in.machine_no,
-                    bottle_id=job_in.bottle_id,
-                    section=resolved_section,
-                    start_time=job_in.start_time,
                     packaging_type=pack.packaging_type,
-                    quantity=pack.quantity,
-                    pallet_packing=pack.pallet_packing,
-                    pallet_quantity=pack.pallet_quantity,
-                ))
+                ).first()
+                if existing_pack is None:
+                    db.add(JobPackaging(
+                        job_id=resolved_job_id,
+                        plan_date=job_in.plan_date,
+                        machine_no=job_in.machine_no,
+                        bottle_id=job_in.bottle_id,
+                        section=resolved_section,
+                        start_time=job_in.start_time,
+                        packaging_type=pack.packaging_type,
+                        quantity=pack.quantity,
+                        pallet_packing=pack.pallet_packing,
+                        pallet_quantity=pack.pallet_quantity,
+                    ))
 
             results.append({
                 "job_id": resolved_job_id,

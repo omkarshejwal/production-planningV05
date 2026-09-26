@@ -45,6 +45,7 @@ export const PlanningDrawer: React.FC = () => {
     bottles,
     machines,
     getBottleConfiguration,
+    getBottlesForMachine,
   } = useERP();
 
   const [machineId, setMachineId] = useState('MAC-01');
@@ -68,11 +69,23 @@ export const PlanningDrawer: React.FC = () => {
   const [palletQuantity, setPalletQuantity] = useState(0);
 
   const machine = machines.find((m) => m.id === machineId);
+
+  // Bottles selectable for THIS machine. bottle_configuration is keyed on
+  // (machine_no, bottle_id, section), so a bottle is only offered where it
+  // actually has a row for this machine - picking it here must never surface
+  // another machine's configuration. Falls back to the full Bottle Master when
+  // this machine has no configurations at all so the search box stays usable;
+  // the section list and the save guard below still block an invalid save.
+  const selectableBottles = useMemo(() => {
+    const forMachine = getBottlesForMachine(machineId);
+    return forMachine.length > 0 ? forMachine : bottles;
+  }, [getBottlesForMachine, machineId, bottles]);
+
   const bottleOptions = useMemo(() => {
     const query = bottleQuery.trim().toLowerCase();
-    if (!query) return bottles;
-    return bottles.filter((bottle) => bottle.name.toLowerCase().includes(query));
-  }, [bottleQuery, bottles]);
+    if (!query) return selectableBottles;
+    return selectableBottles.filter((bottle) => bottle.name.toLowerCase().includes(query));
+  }, [bottleQuery, selectableBottles]);
 
   const availableSections = useMemo(() => {
     return planningRepository
@@ -170,9 +183,11 @@ export const PlanningDrawer: React.FC = () => {
     }
 
     const defaultMachineId = drawerDefaultMachineId || machines[0]?.id || 'MAC-01';
-    const defaultBottle = bottles.find(
+    // Default to a bottle that really is configured on the default machine, so
+    // the drawer never opens pre-filled with another machine's bottle.
+    const defaultBottle = selectableBottles.find(
       (bottle) => planningRepository.getBottleConfigurations(defaultMachineId, bottle.id).length > 0
-    ) || bottles[0];
+    ) || selectableBottles[0];
 
     setMachineId(defaultMachineId);
     setDate(drawerDefaultDate || new Date().toISOString().split('T')[0]);
@@ -352,7 +367,7 @@ export const PlanningDrawer: React.FC = () => {
                   onChange={(event) => {
                     const nextQuery = event.target.value;
                     setBottleQuery(nextQuery);
-                    const exactMatch = bottles.find(
+                    const exactMatch = selectableBottles.find(
                       (bottle) => bottle.name.toLowerCase() === nextQuery.trim().toLowerCase()
                     );
                     setBottleId(exactMatch?.id || '');
@@ -363,12 +378,12 @@ export const PlanningDrawer: React.FC = () => {
                   required
                 />
                 <datalist id="bottle-master-options">
-                  {bottles.map((bottle) => (
+                  {selectableBottles.map((bottle) => (
                     <option key={bottle.id} value={bottle.name} />
                   ))}
                 </datalist>
 
-                {bottleQuery.trim() && bottleOptions.length > 0 && bottleOptions.length < bottles.length && (
+                {bottleQuery.trim() && bottleOptions.length > 0 && bottleOptions.length < selectableBottles.length && (
                   <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
                     {bottleOptions.slice(0, 8).map((bottle) => (
                       <button

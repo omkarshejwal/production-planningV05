@@ -26,6 +26,8 @@ interface ERPContextType {
   setActiveModule: (module: ActiveModule) => void;
   machines: ISMachine[];
   bottles: BottleMaster[];
+  bottlesByMachine: Record<string, BottleMaster[]>;
+  getBottlesForMachine: (machineId: string) => BottleMaster[];
   bottleMasterRecords: BottleMasterRecord[];
   jobs: ProductionJob[];
   productionHistory: ProductionJob[];
@@ -433,30 +435,92 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   }, [machineSectionOverrides, plannerVersion]);
 
+  /**
+   * Bottle Master identity only. Weight and cut speed are NOT bottle-master
+   * attributes: they live in bottle_configuration, which is keyed on
+   * (machine_no, bottle_id, section) and therefore differs per machine. They
+   * must never be resolved here from a single machine or by falling back to
+   * whichever machine happens to have a row, otherwise Machines 2, 3 and 4
+   * would all display Machine 1's configuration for the same bottle.
+   * Machine-scoped values come from bottlesByMachine / getBottlesForMachine,
+   * and per-section values from getBottleConfiguration(machineId, bottleId,
+   * section).
+   */
   const bottles = useMemo<BottleMaster[]>(() => {
     void plannerVersion;
-    return planningRepository.getBottles().map((row) => {
-      const config = planningRepository
-        .getBottleConfigurations('MAC-01', row.bottle_id)[0] ||
-        planningRepository
-          .getMachines()
-          .map((m) => planningRepository.getBottleConfigurations(m.machine_no, row.bottle_id)[0])
-          .find(Boolean);
-
-      return {
-        id: row.bottle_id,
-        name: row.bottle_name,
-        drawingNumber: row.bottle_id,
-        weightGrams: config?.weight || 0,
-        capacityMl: 0,
-        color: 'Flint',
-        sectionType: 'Double Gob',
-        standardCutPerMin: config?.speeds || 0,
-        customerName: '',
-        category: 'Beverage',
-      };
-    });
+    return planningRepository.getBottles().map((row) => ({
+      id: row.bottle_id,
+      name: row.bottle_name,
+      drawingNumber: row.bottle_id,
+      weightGrams: 0,
+      capacityMl: 0,
+      color: 'Flint',
+      sectionType: 'Double Gob',
+      standardCutPerMin: 0,
+      customerName: '',
+      category: 'Beverage',
+    }));
   }, [plannerVersion]);
+
+  /**
+   * Per-machine bottle list: for each machine, only the bottles that HAVE a
+   * bottle_configuration row on THAT machine, carrying that machine's own
+   * weight. Keyed by the MAC-XX machine id, so every one of the 4 machines
+   * reads its own machine_no rows and never another machine's.
+   *
+   * A bottle with no row for a machine is deliberately absent from that
+   * machine's list instead of borrowing another machine's configuration.
+   *
+   * The cut speed stays 0 on purpose: speeds are per (machine, bottle, section)
+   * and must be resolved through getBottleConfiguration(machineId, bottleId,
+   * section) so one section's speed is never displayed for another.
+   */
+  const bottlesByMachine = useMemo<Record<string, BottleMaster[]>>(() => {
+    void plannerVersion;
+    const perMachine: Record<string, BottleMaster[]> = {};
+    const allBottles = planningRepository.getBottles();
+
+    for (const machine of planningRepository.getMachines()) {
+      const machineConfigs = planningRepository.getBottleConfigurations(machine.machine_no, '*');
+      if (machineConfigs.length === 0) {
+        perMachine[machine.machine_no] = [];
+        continue;
+      }
+
+      const configsByBottle = new Map<string, BottleConfigurationRow[]>();
+      for (const config of machineConfigs) {
+        const list = configsByBottle.get(config.bottle_id);
+        if (list) list.push(config);
+        else configsByBottle.set(config.bottle_id, [config]);
+      }
+
+      perMachine[machine.machine_no] = allBottles
+        .filter((bottle) => configsByBottle.has(bottle.bottle_id))
+        .map((bottle) => {
+          const rows = (configsByBottle.get(bottle.bottle_id) ?? []).sort((a, b) => a.section - b.section);
+          const highestSection = rows[rows.length - 1];
+          return {
+            id: bottle.bottle_id,
+            name: bottle.bottle_name,
+            drawingNumber: bottle.bottle_id,
+            weightGrams: highestSection?.weight || 0,
+            capacityMl: 0,
+            color: 'Flint',
+            sectionType: 'Double Gob',
+            standardCutPerMin: 0,
+            customerName: '',
+            category: 'Beverage',
+          };
+        });
+    }
+
+    return perMachine;
+  }, [plannerVersion]);
+
+  const getBottlesForMachine = useCallback(
+    (machineId: string): BottleMaster[] => bottlesByMachine[machineId] ?? [],
+    [bottlesByMachine]
+  );
 
   const bottleMasterRecords = useMemo<BottleMasterRecord[]>(() => {
     void plannerVersion;
@@ -843,6 +907,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setActiveModule,
         machines,
         bottles,
+        bottlesByMachine,
+        getBottlesForMachine,
         bottleMasterRecords,
         jobs,
         productionHistory,

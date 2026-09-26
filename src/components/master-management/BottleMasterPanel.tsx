@@ -3,6 +3,7 @@ import { FlaskConical, Search, Check, ChevronDown, Pencil, X } from 'lucide-reac
 import { planningRepository } from '../../services/planningRepository';
 import { MachineMasterRow, BottleMasterRow, BottleConfigurationRow } from '../../data/planningSchema';
 import { useAuth, MODULES } from '../../context/AuthContext';
+import { BottleExportPanel } from './BottleExportPanel';
 
 interface BottleMasterPanelProps {
   machines: MachineMasterRow[];
@@ -18,6 +19,10 @@ interface SectionFormRow {
   isBase: boolean;
 }
 
+/** Tabs of the Bottle Master panel. 'export' is read-only, so it stays
+ *  available to viewers; 'new' and 'edit' are only rendered with edit rights. */
+type BottleTab = 'new' | 'edit' | 'export';
+
 export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   machines,
   bottles,
@@ -29,7 +34,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   // Read-only employees (can_edit = FALSE) always start in view mode: the
   // Add/Edit forms, rename and save controls are only rendered with edit
   // permission, so nothing in this panel can modify data for a viewer.
-  const [tab, setTab] = useState<'new' | 'edit'>(canEdit ? 'new' : 'edit');
+  const [tab, setTab] = useState<BottleTab>(canEdit ? 'new' : 'edit');
   const [machineNo, setMachineNo] = useState<string>('');
   const [formBottleName, setFormBottleName] = useState('');
   const [formWeight, setFormWeight] = useState('');
@@ -55,8 +60,9 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
   // Permissions can change while the app is open (the backend catalog is
   // re-read periodically): fall back to view mode the moment edit is lost.
+  // 'export' is exempt - it only reads data, so it stays available to viewers.
   useEffect(() => {
-    if (!canEdit && tab !== 'edit') setTab('edit');
+    if (!canEdit && tab !== 'edit' && tab !== 'export') setTab('edit');
   }, [canEdit, tab]);
 
   // Machine-level sections from DB (unique sections across ALL bottles on this machine)
@@ -165,7 +171,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  function switchTab(next: 'new' | 'edit') {
+  function switchTab(next: BottleTab) {
     setTab(next);
     setMachineNo('');
     setFormBottleName('');
@@ -465,9 +471,9 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
         <h2 className="text-base font-semibold text-gray-800">Bottle Master</h2>
       </div>
 
-      {canEdit && (
-        <div className="flex border-b border-gray-100 px-6">
-          {(['new', 'edit'] as const).map((t) => (
+      <div className="flex border-b border-gray-100 px-6">
+        {canEdit &&
+          (['new', 'edit'] as const).map((t) => (
             <button
               key={t}
               onClick={() => switchTab(t)}
@@ -477,380 +483,390 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
               {t === 'new' ? 'Add New' : 'Edit Existing'}
             </button>
           ))}
+        <button
+          onClick={() => switchTab('export')}
+          className={`py-3 px-0 mr-6 text-sm font-semibold border-b-2 -mb-px transition-colors ${tab === 'export' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'
+            }`}
+        >
+          Export Bottle
+        </button>
+      </div>
+
+      {tab === 'export' ? (
+        <BottleExportPanel />
+      ) : (
+        <div className="p-6 flex flex-col gap-5">
+          {showForm && canEdit ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Machine No.</label>
+                <div className="relative">
+                  <select
+                    value={machineNo}
+                    onChange={(e) => {
+                      setMachineNo(e.target.value);
+                      setFormWeight('');
+                      setSelectedBase(null);
+                      setQuery('');
+                      setSaved(false);
+                      setRenaming(false);
+                      setEditName('');
+                      setOriginalBaseName('');
+                      setOrigSnapshot(null);
+                    }}
+                    className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
+                  >
+                    <option value="">Select machine...</option>
+                    {[...machines].sort((a, b) => {
+                      const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
+                      const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
+                      return numA - numB;
+                    }).map((m) => (
+                      <option key={m.machine_no} value={m.machine_no}>
+                        Machine {m.machine_no.replace(/\D/g, '')} — {m.gob_type}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 opacity-60">
+                    <ChevronDown className="w-4 h-4" />
+                  </span>
+                </div>
+                {selectedMachine && machineSections.length > 0 && (
+                  <p className="text-[10px] text-gray-400">
+                    {machineSections.length} sections ({machineSections[machineSections.length - 1]}–{machineSections[0]})
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Bottle Name</label>
+                {tab === 'new' ? (
+                  <input
+                    type="text"
+                    placeholder="e.g. Amber 500ml"
+                    value={formBottleName}
+                    onChange={(e) => {
+                      setFormBottleName(e.target.value);
+                      setSaved(false);
+                    }}
+                    className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  />
+                ) : renaming && selectedBase ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => {
+                        setEditName(e.target.value);
+                        setSaved(false);
+                      }}
+                      autoFocus
+                      className="w-full h-10 px-3 text-sm border border-blue-400 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCancel}
+                      title="Cancel rename"
+                      className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div ref={dropRef} className="relative flex-1">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <Search className="w-3.5 h-3.5" />
+                      </span>
+                      {selectedBase ? (
+                        <button
+                          type="button"
+                          onClick={() => setDropOpen(true)}
+                          className="w-full h-10 pl-7 pr-3 text-left text-sm font-medium text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        >
+                          {selectedBase.bottle_name}
+                        </button>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
+                          value={query}
+                          onChange={(e) => {
+                            setQuery(e.target.value);
+                            setDropOpen(true);
+                            setSaved(false);
+                          }}
+                          onFocus={() => machineNo && setDropOpen(true)}
+                          disabled={!machineNo}
+                          className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
+                        />
+                      )}
+                      {dropOpen && filteredBases.length > 0 && (
+                        <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+                          {filteredBases.map((b) => (
+                            <div
+                              key={b.bottle_id}
+                              className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
+                              onMouseDown={() => selectBottle(b)}
+                            >
+                              <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
+                              <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {canEdit && selectedBase && (
+                      <button
+                        type="button"
+                        onClick={beginRename}
+                        title="Rename bottle"
+                        className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Weight (applies to all sections)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g. 450"
+                    value={formWeight}
+                    onChange={(e) => updateWeight(e.target.value)}
+                    className="w-full h-10 px-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-medium">g</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Machine No.</label>
+                <div className="relative">
+                  <select
+                    value={machineNo}
+                    onChange={(e) => {
+                      setMachineNo(e.target.value);
+                      setFormWeight('');
+                      setSelectedBase(null);
+                      setQuery('');
+                      setSaved(false);
+                      setRenaming(false);
+                      setEditName('');
+                      setOriginalBaseName('');
+                      setOrigSnapshot(null);
+                    }}
+                    className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
+                  >
+                    <option value="">Select machine...</option>
+                    {[...machines].sort((a, b) => {
+                      const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
+                      const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
+                      return numA - numB;
+                    }).map((m) => (
+                      <option key={m.machine_no} value={m.machine_no}>
+                        Machine {m.machine_no.replace(/\D/g, '')} — {m.gob_type}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 opacity-60">
+                    <ChevronDown className="w-4 h-4" />
+                  </span>
+                </div>
+                {selectedMachine && machineSections.length > 0 && (
+                  <p className="text-[10px] text-gray-400">
+                    {machineSections.length} sections ({machineSections[machineSections.length - 1]}–{machineSections[0]})
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Bottle Name</label>
+                {tab === 'new' ? (
+                  <input
+                    type="text"
+                    placeholder="e.g. Amber 500ml"
+                    value={formBottleName}
+                    onChange={(e) => {
+                      setFormBottleName(e.target.value);
+                      setSaved(false);
+                    }}
+                    className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  />
+                ) : renaming && selectedBase ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => {
+                        setEditName(e.target.value);
+                        setSaved(false);
+                      }}
+                      autoFocus
+                      className="w-full h-10 px-3 text-sm border border-blue-400 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCancel}
+                      title="Cancel rename"
+                      className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div ref={dropRef} className="relative flex-1">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <Search className="w-3.5 h-3.5" />
+                      </span>
+                      {selectedBase ? (
+                        <button
+                          type="button"
+                          onClick={() => setDropOpen(true)}
+                          className="w-full h-10 pl-7 pr-3 text-left text-sm font-medium text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        >
+                          {selectedBase.bottle_name}
+                        </button>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
+                          value={query}
+                          onChange={(e) => {
+                            setQuery(e.target.value);
+                            setDropOpen(true);
+                            setSaved(false);
+                          }}
+                          onFocus={() => machineNo && setDropOpen(true)}
+                          disabled={!machineNo}
+                          className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
+                        />
+                      )}
+                      {dropOpen && filteredBases.length > 0 && (
+                        <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+                          {filteredBases.map((b) => (
+                            <div
+                              key={b.bottle_id}
+                              className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
+                              onMouseDown={() => selectBottle(b)}
+                            >
+                              <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
+                              <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {canEdit && selectedBase && (
+                      <button
+                        type="button"
+                        onClick={beginRename}
+                        title="Rename bottle"
+                        className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {showForm && canEdit && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Section Speeds (CUT/MIN)
+                </label>
+                <span className="text-[10px] text-gray-400 font-mono">
+                  {machineSections[machineSections.length - 1]}–{machineSections[0]} (descending)
+                </span>
+              </div>
+
+              <div className="rounded-lg border border-gray-100 bg-gray-50 overflow-hidden">
+                {formRows.map((r, i) => {
+                  const isHighest = i === 0;
+                  const isOverridden = overriddenSections.has(r.section);
+                  return (
+                    <div
+                      key={r.section}
+                      className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
+                    >
+                      <div className="w-7 h-7 rounded bg-blue-600 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                        {r.section}
+                      </div>
+                      <span className="text-sm text-gray-600 font-medium min-w-17.5">
+                        Section {r.section}
+                      </span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder={isHighest ? "Enter highest CUT/MIN" : "Auto-calculated"}
+                        value={r.speeds}
+                        onChange={(e) => updateSectionSpeed(r.section, e.target.value)}
+                        className={`flex-1 h-9 px-3 text-sm border rounded-md transition ${isOverridden
+                            ? 'bg-amber-50 text-amber-800 border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent'
+                            : isHighest
+                              ? 'bg-white text-gray-800 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                              : 'bg-gray-50 text-gray-700 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                          }`}
+                      />
+                      <span className="text-xs text-gray-400 font-medium shrink-0">CUT/MIN</span>
+                      <div className="w-6 h-6 shrink-0" />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {canEdit && (
+            <div className="flex justify-end items-center gap-2 pt-2">
+              {tab === 'edit' && isDirty && (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 hover:text-gray-800 transition-all duration-200"
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                onClick={handleSave}
+                disabled={!canSave}
+                className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${saved
+                    ? 'bg-green-50 text-green-600 border border-green-200'
+                    : !canSave
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+              >
+                {saved ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    Saved
+                  </>
+                ) : tab === 'new' ? (
+                  'Save Bottle'
+                ) : (
+                  'Save Changes'
+                )}
+              </button>
+            </div>
+          )}
         </div>
       )}
-
-      <div className="p-6 flex flex-col gap-5">
-        {showForm && canEdit ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Machine No.</label>
-              <div className="relative">
-                <select
-                  value={machineNo}
-                  onChange={(e) => {
-                    setMachineNo(e.target.value);
-                    setFormWeight('');
-                    setSelectedBase(null);
-                    setQuery('');
-                    setSaved(false);
-                    setRenaming(false);
-                    setEditName('');
-                    setOriginalBaseName('');
-                    setOrigSnapshot(null);
-                  }}
-                  className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
-                >
-                  <option value="">Select machine...</option>
-                  {[...machines].sort((a, b) => {
-                    const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
-                    const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
-                    return numA - numB;
-                  }).map((m) => (
-                    <option key={m.machine_no} value={m.machine_no}>
-                      Machine {m.machine_no.replace(/\D/g, '')} — {m.gob_type}
-                    </option>
-                  ))}
-                </select>
-                <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 opacity-60">
-                  <ChevronDown className="w-4 h-4" />
-                </span>
-              </div>
-              {selectedMachine && machineSections.length > 0 && (
-                <p className="text-[10px] text-gray-400">
-                  {machineSections.length} sections ({machineSections[machineSections.length - 1]}–{machineSections[0]})
-                </p>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Bottle Name</label>
-              {tab === 'new' ? (
-                <input
-                  type="text"
-                  placeholder="e.g. Amber 500ml"
-                  value={formBottleName}
-                  onChange={(e) => {
-                    setFormBottleName(e.target.value);
-                    setSaved(false);
-                  }}
-                  className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-              ) : renaming && selectedBase ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={editName}
-                    onChange={(e) => {
-                      setEditName(e.target.value);
-                      setSaved(false);
-                    }}
-                    autoFocus
-                    className="w-full h-10 px-3 text-sm border border-blue-400 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleCancel}
-                    title="Cancel rename"
-                    className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div ref={dropRef} className="relative flex-1">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                      <Search className="w-3.5 h-3.5" />
-                    </span>
-                    {selectedBase ? (
-                      <button
-                        type="button"
-                        onClick={() => setDropOpen(true)}
-                        className="w-full h-10 pl-7 pr-3 text-left text-sm font-medium text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                      >
-                        {selectedBase.bottle_name}
-                      </button>
-                    ) : (
-                      <input
-                        type="text"
-                        placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
-                        value={query}
-                        onChange={(e) => {
-                          setQuery(e.target.value);
-                          setDropOpen(true);
-                          setSaved(false);
-                        }}
-                        onFocus={() => machineNo && setDropOpen(true)}
-                        disabled={!machineNo}
-                        className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
-                      />
-                    )}
-                    {dropOpen && filteredBases.length > 0 && (
-                      <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
-                        {filteredBases.map((b) => (
-                          <div
-                            key={b.bottle_id}
-                            className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
-                            onMouseDown={() => selectBottle(b)}
-                          >
-                            <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
-                            <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {canEdit && selectedBase && (
-                    <button
-                      type="button"
-                      onClick={beginRename}
-                      title="Rename bottle"
-                      className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Weight (applies to all sections)
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="e.g. 450"
-                  value={formWeight}
-                  onChange={(e) => updateWeight(e.target.value)}
-                  className="w-full h-10 px-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-medium">g</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Machine No.</label>
-              <div className="relative">
-                <select
-                  value={machineNo}
-                  onChange={(e) => {
-                    setMachineNo(e.target.value);
-                    setFormWeight('');
-                    setSelectedBase(null);
-                    setQuery('');
-                    setSaved(false);
-                    setRenaming(false);
-                    setEditName('');
-                    setOriginalBaseName('');
-                    setOrigSnapshot(null);
-                  }}
-                  className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition appearance-none cursor-pointer pr-8"
-                >
-                  <option value="">Select machine...</option>
-                  {[...machines].sort((a, b) => {
-                    const numA = parseInt(a.machine_no.replace(/\D/g, ''), 10);
-                    const numB = parseInt(b.machine_no.replace(/\D/g, ''), 10);
-                    return numA - numB;
-                  }).map((m) => (
-                    <option key={m.machine_no} value={m.machine_no}>
-                      Machine {m.machine_no.replace(/\D/g, '')} — {m.gob_type}
-                    </option>
-                  ))}
-                </select>
-                <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 opacity-60">
-                  <ChevronDown className="w-4 h-4" />
-                </span>
-              </div>
-              {selectedMachine && machineSections.length > 0 && (
-                <p className="text-[10px] text-gray-400">
-                  {machineSections.length} sections ({machineSections[machineSections.length - 1]}–{machineSections[0]})
-                </p>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Bottle Name</label>
-              {tab === 'new' ? (
-                <input
-                  type="text"
-                  placeholder="e.g. Amber 500ml"
-                  value={formBottleName}
-                  onChange={(e) => {
-                    setFormBottleName(e.target.value);
-                    setSaved(false);
-                  }}
-                  className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-              ) : renaming && selectedBase ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={editName}
-                    onChange={(e) => {
-                      setEditName(e.target.value);
-                      setSaved(false);
-                    }}
-                    autoFocus
-                    className="w-full h-10 px-3 text-sm border border-blue-400 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleCancel}
-                    title="Cancel rename"
-                    className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div ref={dropRef} className="relative flex-1">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                      <Search className="w-3.5 h-3.5" />
-                    </span>
-                    {selectedBase ? (
-                      <button
-                        type="button"
-                        onClick={() => setDropOpen(true)}
-                        className="w-full h-10 pl-7 pr-3 text-left text-sm font-medium text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                      >
-                        {selectedBase.bottle_name}
-                      </button>
-                    ) : (
-                      <input
-                        type="text"
-                        placeholder={machineNo ? "Search bottle_name or bottle_id..." : "Select machine first..."}
-                        value={query}
-                        onChange={(e) => {
-                          setQuery(e.target.value);
-                          setDropOpen(true);
-                          setSaved(false);
-                        }}
-                        onFocus={() => machineNo && setDropOpen(true)}
-                        disabled={!machineNo}
-                        className="w-full h-10 pl-7 pr-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400"
-                      />
-                    )}
-                    {dropOpen && filteredBases.length > 0 && (
-                      <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
-                        {filteredBases.map((b) => (
-                          <div
-                            key={b.bottle_id}
-                            className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 transition"
-                            onMouseDown={() => selectBottle(b)}
-                          >
-                            <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
-                            <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {canEdit && selectedBase && (
-                    <button
-                      type="button"
-                      onClick={beginRename}
-                      title="Rename bottle"
-                      className="flex items-center justify-center w-10 h-10 shrink-0 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {showForm && canEdit && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Section Speeds (CUT/MIN)
-              </label>
-              <span className="text-[10px] text-gray-400 font-mono">
-                {machineSections[machineSections.length - 1]}–{machineSections[0]} (descending)
-              </span>
-            </div>
-
-            <div className="rounded-lg border border-gray-100 bg-gray-50 overflow-hidden">
-              {formRows.map((r, i) => {
-                const isHighest = i === 0;
-                const isOverridden = overriddenSections.has(r.section);
-                return (
-                  <div
-                    key={r.section}
-                    className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
-                  >
-                    <div className="w-7 h-7 rounded bg-blue-600 text-white text-xs font-bold flex items-center justify-center shrink-0">
-                      {r.section}
-                    </div>
-                    <span className="text-sm text-gray-600 font-medium min-w-17.5">
-                      Section {r.section}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder={isHighest ? "Enter highest CUT/MIN" : "Auto-calculated"}
-                      value={r.speeds}
-                      onChange={(e) => updateSectionSpeed(r.section, e.target.value)}
-                      className={`flex-1 h-9 px-3 text-sm border rounded-md transition ${isOverridden
-                          ? 'bg-amber-50 text-amber-800 border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent'
-                          : isHighest
-                            ? 'bg-white text-gray-800 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
-                            : 'bg-gray-50 text-gray-700 placeholder-gray-400 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
-                        }`}
-                    />
-                    <span className="text-xs text-gray-400 font-medium shrink-0">CUT/MIN</span>
-                    <div className="w-6 h-6 shrink-0" />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {canEdit && (
-          <div className="flex justify-end items-center gap-2 pt-2">
-            {tab === 'edit' && isDirty && (
-              <button
-                type="button"
-                onClick={handleCancel}
-                className="flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 hover:text-gray-800 transition-all duration-200"
-              >
-                Cancel
-              </button>
-            )}
-            <button
-              onClick={handleSave}
-              disabled={!canSave}
-              className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${saved
-                  ? 'bg-green-50 text-green-600 border border-green-200'
-                  : !canSave
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    : 'bg-blue-600 hover:bg-blue-700 text-white'
-                }`}
-            >
-              {saved ? (
-                <>
-                  <Check className="w-3.5 h-3.5" />
-                  Saved
-                </>
-              ) : tab === 'new' ? (
-                'Save Bottle'
-              ) : (
-                'Save Changes'
-              )}
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   );
 };

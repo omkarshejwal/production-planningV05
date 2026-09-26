@@ -97,7 +97,7 @@ export const HolidayMasterPanel: React.FC = () => {
   const sorted = [...holidays].sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 flex flex-col shadow-sm min-h-0">
+    <div className="w-[min(92vw,500px)] min-w-0 max-w-none bg-white rounded-xl border border-gray-200 flex flex-col shadow-sm min-h-0">
       <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100 shrink-0">
         <span className="text-blue-600"><CalendarDays className="w-4 h-4" /></span>
         <h2 className="text-sm font-semibold text-gray-800">Holiday Master</h2>
@@ -148,13 +148,12 @@ export const HolidayMasterPanel: React.FC = () => {
               <button
                 onClick={handleSave}
                 disabled={!holidayDate || !holidayName}
-                className={`flex items-center gap-1.5 px-4 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${
-                  saved
-                    ? 'bg-green-50 text-green-600 border border-green-200'
-                    : !holidayDate || !holidayName
+                className={`flex items-center gap-1.5 px-4 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${saved
+                  ? 'bg-green-50 text-green-600 border border-green-200'
+                  : !holidayDate || !holidayName
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                     : 'bg-blue-600 hover:bg-blue-700 text-white'
-                }`}
+                  }`}
               >
                 {saved ? (
                   <>
@@ -185,11 +184,10 @@ export const HolidayMasterPanel: React.FC = () => {
             {sorted.map((h) => (
               <div
                 key={h.holiday_date}
-                className={`flex items-center justify-between px-2.5 py-2 rounded-lg border transition ${
-                  editingDate === h.holiday_date
-                    ? 'border-blue-200 bg-blue-50'
-                    : 'border-gray-100 bg-gray-50 hover:border-gray-200'
-                }`}
+                className={`flex items-center justify-between px-2.5 py-2 rounded-lg border transition ${editingDate === h.holiday_date
+                  ? 'border-blue-200 bg-blue-50'
+                  : 'border-gray-100 bg-gray-50 hover:border-gray-200'
+                  }`}
               >
                 <div className="flex items-center gap-2">
                   <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
