@@ -8,9 +8,9 @@ class DefectMaster(Base):
     __tablename__ = "defect_master"
 
     defect_id = Column(BigInteger, primary_key=True, index=True)
-    defect_type = Column(String(50), nullable=False)
+    defect_type = Column(String(20), nullable=False)
     defect_sr = Column(Integer, nullable=False)
-    defect_name = Column(String(150), nullable=False, unique=True)
+    defect_name = Column(String(255), nullable=False, unique=True)
     is_active = Column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
@@ -32,7 +32,7 @@ class ShiftMaster(Base):
     __tablename__ = "shift_master"
 
     shift_id = Column(SmallInteger, primary_key=True, index=True)
-    shift_name = Column(String(50), nullable=False, unique=True)
+    shift_name = Column(String(20), nullable=False, unique=True)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
 
@@ -45,8 +45,8 @@ class ShiftAssignment(Base):
     assignment_id = Column(BigInteger, primary_key=True, index=True)
     report_id = Column(BigInteger, ForeignKey(hpr_fk("hourly_production_report.report_id")), nullable=False)
     shift_id = Column(SmallInteger, ForeignKey(hpr_fk("shift_master.shift_id")), nullable=False)
-    supervisor = Column(String(100), nullable=True)
-    executive = Column(String(100), nullable=True)
+    supervisor = Column(String(255), nullable=True)
+    executive = Column(String(255), nullable=True)
 
     __table_args__ = (
         UniqueConstraint('report_id', 'shift_id', name='uq_report_shift'),
@@ -72,17 +72,25 @@ class HourlyProduction(Base):
     weight_avg = Column(Numeric(10, 2), nullable=True)
     speed_per_min = Column(Numeric(10, 2), nullable=True)
     
-    packing_category = Column(String(255), nullable=True)
+    # hpr.hourly_production.packing_category is VARCHAR(100): the options are
+    # joined with ", " (all five PACKING_OPTIONS = 87 chars), so anything longer
+    # would be rejected by the database and roll back the whole save.
+    packing_category = Column(String(100), nullable=True)
     packing_size = Column(Integer, nullable=True)
     cartons = Column(Integer, nullable=True)
     bottles_in_nos = Column(Integer, nullable=True)
     efficiency_percent = Column(Numeric(5, 2), nullable=True)
-    
+
     sqc = Column(Integer, nullable=True)
     qc_hold = Column(Integer, nullable=True)
     num = Column(Integer, nullable=True)
     remarks = Column(Text, nullable=True)
-    job_id = Column(String(20), nullable=True)
+    # NOT NULL in hpr.hourly_production (constraint hourly_production_job_id_not_null).
+    # There is no foreign key on this column — hpr_job is the job table and
+    # production.production_job.job_id is a BIGINT, unrelated to this VARCHAR.
+    # A row that does not belong to a job yet must therefore be stored as "",
+    # never NULL, or every row for the day is lost to a rolled-back transaction.
+    job_id = Column(String(20), nullable=False)
 
     defects = relationship("DefectMaster", secondary=lambda: HourlyProductionDefect.__table__, lazy="selectin")
 

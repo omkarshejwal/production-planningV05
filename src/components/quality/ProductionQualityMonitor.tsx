@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
 import { useAuth, MODULES } from '../../context/AuthContext';
 import { BottleMaster } from '../../types';
-import { qualityRepository, QualityHourlyEntry, QualityShiftMap, hasMeaningfulData } from '../../services/qualityRepository';
+import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QualityDayLoad, QualityDayHourly, hasMeaningfulData } from '../../services/qualityRepository';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Shift master — mirrors the production.shift_master table
@@ -814,6 +814,10 @@ export const QualityControlModule: React.FC = () => {
   const [savedFlags, setSavedFlags] = useState<Record<string, boolean>>({});
   const [loadedDates, setLoadedDates] = useState<Record<string, boolean>>({});
   const [loadErrors, setLoadErrors] = useState<Record<string, boolean>>({});
+  // Exact reason a date failed to load (expired session, permission, server
+  // error, ...). Shown in the existing error banner so a failed refresh is
+  // never mistaken for "the database is empty".
+  const [loadErrorDetails, setLoadErrorDetails] = useState<Record<string, string>>({});
   const [defectGroups, setDefectGroups] = useState<DefectGroup[]>([]);
   const [loadingDefects, setLoadingDefects] = useState<boolean>(true);
 
@@ -838,7 +842,7 @@ export const QualityControlModule: React.FC = () => {
 
   // In-flight promises used to deduplicate concurrent loads for the same date
   // (StrictMode double-effects, rapid date navigation share one request).
-  const inFlightRef = useRef<Record<string, Promise<{ hourly: Record<string, Record<string, QualityHourlyEntry>>; shifts: QualityShiftMap; ok?: boolean }> | undefined>>({});
+  const inFlightRef = useRef<Record<string, Promise<QualityDayLoad> | undefined>>({});
 
   useEffect(() => {
     let active = true;
@@ -853,8 +857,17 @@ export const QualityControlModule: React.FC = () => {
       }));
       setDefectGroups(groups);
       setLoadingDefects(false);
-    }).catch(() => {
-      if (active) setLoadingDefects(false);
+    }).catch((err) => {
+      if (active) {
+        setLoadingDefects(false);
+        // Never swallow it: without the defect list the dropdown is empty and
+        // defect selection silently stops working, so say exactly why.
+        toast.error(
+          err instanceof Error && err.message
+            ? `Could not load the defect list — ${err.message}`
+            : 'Could not load the defect list. Defects cannot be selected right now.'
+        );
+      }
     });
     return () => {
       active = false;
@@ -865,32 +878,82 @@ export const QualityControlModule: React.FC = () => {
   // mount). Every date change issues a fresh fetch — never reuse previously
   // loaded rows for a date, since records may have changed or been deleted in
   // the database. The store for the date is REPLACED with the API result (never
-  // merged with in-memory data), so a day with no DB records shows an empty
-  // grid instead of resurrecting stale rows. In-flight requests are shared
-  // between concurrent effect runs to avoid duplicate API calls.
+  // merged with previously loaded rows), so a day with no DB records shows an
+  // empty grid instead of resurrecting stale rows. Two exceptions keep data
+  // from disappearing: rows still marked touched (edited but unsaved) keep the
+  // operator's values, and a failed request leaves the store untouched instead
+  // of blanking it. In-flight requests are shared between concurrent effect
+  // runs to avoid duplicate API calls.
   useEffect(() => {
     let cancelled = false;
     const existing = inFlightRef.current[dateKey];
     const pending = existing ?? qualityRepository.load(dateKey);
     inFlightRef.current[dateKey] = pending;
-    pending.then(({ hourly, shifts, ok }) => {
+    pending.then(({ hourly, shifts, ok, error }) => {
       inFlightRef.current[dateKey] = undefined;
       if (cancelled) return;
-      setProductionStore((prev) => ({
-        ...prev,
-        [dateKey]: hourly ?? {},
-      }));
+      setLoadedDates((prev) => ({ ...prev, [dateKey]: true }));
+      setLoadErrors((prev) => ({ ...prev, [dateKey]: ok === false }));
+      setLoadErrorDetails((prev) => ({ ...prev, [dateKey]: ok === false ? (error ?? '') : '' }));
+      if (ok === false) {
+        // The request failed — there is no authoritative data to apply, so
+        // keep whatever is already in memory (including unsaved edits such as
+        // a freshly selected bottle) instead of blanking the grid. The banner
+        // tells the user the refresh could not be performed.
+        return;
+      }
       setShiftStore((prev) => ({
         ...prev,
         [dateKey]: shifts ?? {},
       }));
-      setLoadedDates((prev) => ({ ...prev, [dateKey]: true }));
-      setLoadErrors((prev) => ({ ...prev, [dateKey]: ok === false }));
-    }).catch(() => {
+      setProductionStore((prev) => {
+        const prevDate = prev[dateKey] ?? {};
+        const touched = touchedTimes.current[dateKey];
+        const serverDate = hourly ?? {};
+        const mergedDate: Record<string, Record<string, QualityHourlyEntry>> = {};
+        const machineKeys = new Set<string>([
+          ...Object.keys(serverDate),
+          ...Object.keys(prevDate),
+        ]);
+        for (const mKey of machineKeys) {
+          const serverMachine = serverDate[mKey] ?? {};
+          const localMachine = prevDate[mKey] ?? {};
+          const byTime: Record<string, QualityHourlyEntry> = {};
+          for (const tKey of new Set<string>([
+            ...Object.keys(serverMachine),
+            ...Object.keys(localMachine),
+          ])) {
+            const serverEntry = serverMachine[tKey];
+            const localEntry = localMachine[tKey];
+            if (localEntry && touched?.[mKey]?.[tKey]) {
+              // An in-flight refresh must never drop a row the operator edited
+              // but has not saved yet (a just-selected bottle, for example).
+              // Ids still come from the authoritative response.
+              byTime[tKey] = {
+                ...localEntry,
+                entry_id: localEntry.entry_id || serverEntry?.entry_id || '',
+                report_id: localEntry.report_id || serverEntry?.report_id || '',
+                job_id: localEntry.job_id || serverEntry?.job_id || '',
+              };
+            } else if (serverEntry) {
+              byTime[tKey] = serverEntry;
+            } else if (localEntry && hasMeaningfulData(localEntry)) {
+              byTime[tKey] = localEntry;
+            }
+          }
+          mergedDate[mKey] = byTime;
+        }
+        return { ...prev, [dateKey]: mergedDate };
+      });
+    }).catch((err) => {
       inFlightRef.current[dateKey] = undefined;
       if (!cancelled) {
         setLoadedDates((prev) => ({ ...prev, [dateKey]: true }));
         setLoadErrors((prev) => ({ ...prev, [dateKey]: true }));
+        setLoadErrorDetails((prev) => ({
+          ...prev,
+          [dateKey]: err instanceof Error && err.message ? err.message : '',
+        }));
       }
     });
     return () => {
@@ -1221,6 +1284,31 @@ export const QualityControlModule: React.FC = () => {
   }, [activeRows, activeMachine, calcEffFor]);
 
   // ── Save / Export / Print ────────────────────────────────────────────────
+  /**
+   * Slots the POST response does not prove were stored. The save endpoint
+   * re-queries the day it just committed and returns it, so a row we sent with a
+   * bottle that is missing (or comes back with a different bottle) means that
+   * row never reached the database — the save must be reported as a failure
+   * instead of showing a success message for data that will vanish on refresh.
+   */
+  const unconfirmedBottleRows = (
+    sent: Record<string, Record<string, QualityHourlyEntry>>,
+    saved: QualityDayHourly | undefined
+  ): string[] => {
+    const missing: string[] = [];
+    if (!saved) return missing;
+    for (const [mStr, timeMap] of Object.entries(sent)) {
+      for (const [time, entry] of Object.entries(timeMap)) {
+        if (!entry?.bottle_id) continue;
+        const stored = saved[mStr]?.[time];
+        if (!stored || String(stored.bottle_id) !== String(entry.bottle_id)) {
+          missing.push(`Machine ${mStr} · ${time}`);
+        }
+      }
+    }
+    return missing;
+  };
+
   // Builds the smallest correct payload: only rows edited in this session and
   // rows that carry real data are included — never the pre-loaded empty 24-slot
   // grid. Touched-but-cleared rows are still sent so the backend clears values
@@ -1236,7 +1324,13 @@ export const QualityControlModule: React.FC = () => {
       const mNum = parseInt(mStr, 10) || activeMachine;
       for (const [time, entry] of Object.entries(timeMap)) {
         if (!entry) continue;
-        if (!touched?.[mStr]?.[time] && !hasMeaningfulData(entry)) continue;
+        const meaningful = hasMeaningfulData(entry);
+        if (!touched?.[mStr]?.[time] && !meaningful) continue;
+        // A blank row the component invented (no entry_id from the database)
+        // carries nothing to write: sending it would be a pointless no-op at
+        // best and could blank out a stored row for the same slot at worst.
+        // Deliberately cleared rows always carry their entry_id and are kept.
+        if (!meaningful && !entry.entry_id) continue;
         (out[mStr] ??= {})[time] = {
           ...entry,
           report_id: date,
@@ -1266,6 +1360,8 @@ export const QualityControlModule: React.FC = () => {
 
       let attempted = false;
       let savedAny = false;
+      let failed = 0;
+      let lastError = '';
       for (const date of datesToSave) {
         if (Object.keys(productionStore[date] ?? {}).length === 0) continue;
         const payload = buildSavePayload(date, productionStore, touchedTimes.current[date]);
@@ -1273,7 +1369,23 @@ export const QualityControlModule: React.FC = () => {
         if (Object.keys(payload).length === 0 && Object.keys(shifts).length === 0) continue;
         const result = await qualityRepository.save(date, payload, shifts);
         attempted = true;
-        if (!result.ok) continue;
+        if (!result.ok) {
+          // Never swallow the reason: the rows for this date were NOT saved.
+          failed += 1;
+          if (result.error) lastError = result.error;
+          continue;
+        }
+        // The response is the committed database state for this day. Only call
+        // the day "saved" once every bottle row we sent is provably in it —
+        // otherwise the data would silently disappear on the next refresh.
+        const unconfirmed = unconfirmedBottleRows(payload, result.hourly);
+        if (unconfirmed.length > 0) {
+          failed += 1;
+          lastError =
+            `the server did not store ${unconfirmed.length} row(s): ` +
+            unconfirmed.slice(0, 5).join(', ');
+          continue;
+        }
         savedAny = true;
         // The database owns entry_id and job_id: write the DB-generated ids
         // returned by the save back into the live store so display and
@@ -1296,14 +1408,20 @@ export const QualityControlModule: React.FC = () => {
                 } else if (!prevEntry) {
                   byTime[tKey] = savedEntry;
                 } else {
-                  // Keep the operator's current values; only the id fields
+                  // Keep the operator's current values; the id fields
                   // (entry_id, report_id, job_id) come from the authoritative
-                  // database response.
+                  // database response. bottle_id / section are only ever
+                  // *adopted* from the response when the local row is empty, so
+                  // a saved selection can never be blanked by a stale or empty
+                  // response while an empty row can still pick up what the
+                  // database actually stored.
                   byTime[tKey] = {
                     ...prevEntry,
-                    entry_id: savedEntry.entry_id || prevEntry.entry_id || '',
+                    entry_id:  savedEntry.entry_id  || prevEntry.entry_id  || '',
                     report_id: savedEntry.report_id || prevEntry.report_id || '',
-                    job_id: savedEntry.job_id || prevEntry.job_id || '',
+                    job_id:    savedEntry.job_id    || prevEntry.job_id    || '',
+                    bottle_id: prevEntry.bottle_id  || savedEntry.bottle_id || '',
+                    section:   prevEntry.section    || savedEntry.section   || '',
                   };
                 }
               }
@@ -1317,7 +1435,13 @@ export const QualityControlModule: React.FC = () => {
         touchedTimes.current[date] = {};
         setSavedFlags((prev) => ({ ...prev, [date]: true }));
       }
-      if (savedAny) {
+      if (failed > 0) {
+        toast.error(
+          lastError
+            ? `Save failed — ${lastError}`
+            : 'Save failed — changes were not persisted. Check your connection and try again.'
+        );
+      } else if (savedAny) {
         toast.success(`Saved production quality data for ${dateLabel}`);
       } else if (attempted) {
         toast.error('Save failed — changes were not persisted. Check your connection and try again.');
@@ -1657,7 +1781,9 @@ export const QualityControlModule: React.FC = () => {
           </p>
           {loadErrors[dateKey] && (
             <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#b91c1c', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', padding: '6px 10px', display: 'inline-block' }}>
-              Could not reach the server — showing an empty grid. Edits made now cannot be saved until the connection is restored.
+              {loadErrorDetails[dateKey]
+                ? `Could not load saved data — ${loadErrorDetails[dateKey]} The grid may be out of date.`
+                : 'Could not reach the server — showing an empty grid. Edits made now cannot be saved until the connection is restored.'}
             </p>
           )}
         </div>

@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Union
 from datetime import date, time, datetime
 
@@ -29,8 +29,13 @@ class DefectMasterResponse(DefectMasterBase):
 # --- Quality Daily Aggregate Schemas ---
 
 class QualityHourlyEntrySchema(BaseModel):
-    entry_id: str
-    report_id: str
+    # entry_id / report_id are echoed back by the client for convenience only —
+    # the backend identifies rows by (machine_no, production_time) and takes the
+    # report from production_date. They are optional so a row the frontend
+    # invented locally (blank slot, "+" copy) never fails validation with a 422
+    # that would abort the whole save.
+    entry_id: Optional[Union[int, str]] = None
+    report_id: Optional[Union[int, str]] = None
     machine_no: int
     shift_id: int
     production_time: str
@@ -52,6 +57,41 @@ class QualityHourlyEntrySchema(BaseModel):
     remarks: Optional[str] = None
     defect_ids: List[str] = []
     job_id: Optional[str] = None
+
+    @field_validator(
+        "bottle_id",
+        "section",
+        "packing_size",
+        "cartons",
+        "bottles_in_nos",
+        "sqc",
+        "qc_hold",
+        "num",
+        mode="before",
+    )
+    @classmethod
+    def _whole_number(cls, value):
+        """Coerce integer columns before validation.
+
+        The grid uses free numeric inputs, so a keystroke like "12.5" arrives as
+        a fractional float. Rejecting it with a 422 would abort the WHOLE day's
+        save (every row is one request), so whole-number columns are truncated
+        here instead. Genuinely non-numeric input is still reported as a
+        validation error rather than being silently stored.
+        """
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("must be a whole number")
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValueError("must be a whole number")
+        return int(number)
 
 class QualityShiftAssignmentSchema(BaseModel):
     supervisor: str

@@ -124,9 +124,18 @@ export const hasMeaningfulData = (e?: QualityHourlyEntry | null): boolean => {
   return false;
 };
 
+/** One day load result: the DB state plus whether the request actually worked. */
+export interface QualityDayLoad {
+  hourly: QualityDayHourly;
+  shifts: QualityShiftMap;
+  ok?: boolean;
+  /** Human readable reason when `ok` is false — surfaced to the user. */
+  error?: string;
+}
+
 // Deduplicates concurrent load requests per date (StrictMode double-effects,
 // rapid date navigation, etc. all share one in-flight request).
-const inFlightLoads = new Map<string, Promise<{ hourly: QualityDayHourly; shifts: QualityShiftMap; ok?: boolean }>>();
+const inFlightLoads = new Map<string, Promise<QualityDayLoad>>();
 
 const defectNamesCache: {
   resolved: DefectMasterItem[] | null;
@@ -139,6 +148,17 @@ const toNumOrNull = (v: unknown): number | null => {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Whole-number columns (bottle_id, section, cartons, ...). The grid's numeric
+ * inputs accept any keystroke, so "12.5" would otherwise travel to the API as a
+ * fractional float, be rejected with a 422 and abort the save of the ENTIRE
+ * day. Truncating here keeps the payload inside the database's integer columns.
+ */
+const toIntOrNull = (v: unknown): number | null => {
+  const n = toNumOrNull(v);
+  return n === null ? null : Math.trunc(n);
 };
 
 const toIntOrZero = (v: unknown): number => {
@@ -184,21 +204,21 @@ const toDbEntry = (entry: QualityHourlyEntry): QualityEntryPayload => ({
   machine_no: entry.machine_no,
   shift_id: entry.shift_id,
   production_time: entry.production_time,
-  bottle_id: toNumOrNull(entry.bottle_id),
-  section: toNumOrNull(entry.section),
+  bottle_id: toIntOrNull(entry.bottle_id),
+  section: toIntOrNull(entry.section),
   weight_front: toNumOrNull(entry.weight_front),
   weight_middle: toNumOrNull(entry.weight_middle),
   weight_rear: toNumOrNull(entry.weight_rear),
   weight_avg: toNumOrNull(entry.weight_avg),
   speed_per_min: toNumOrNull(entry.speed_per_min),
   packing_category: toPackingString(entry.packing_category),
-  packing_size: toNumOrNull(entry.packing_size),
-  cartons: toNumOrNull(entry.cartons),
-  bottles_in_nos: toNumOrNull(entry.bottles_in_nos),
+  packing_size: toIntOrNull(entry.packing_size),
+  cartons: toIntOrNull(entry.cartons),
+  bottles_in_nos: toIntOrNull(entry.bottles_in_nos),
   efficiency_percentage: toNumOrNull(entry.efficiency_percentage),
-  sqc: toNumOrNull(entry.sqc),
+  sqc: toIntOrNull(entry.sqc),
   qc_hold: toIntOrZero(entry.qc_hold),
-  num: toNumOrNull(entry.num),
+  num: toIntOrNull(entry.num),
   remarks: toStrOrEmpty(entry.remarks) || null,
   defect_ids: toDefectArray(entry.defect_ids),
   job_id: entry.job_id || null,
@@ -273,15 +293,16 @@ export const qualityRepository = {
     }
     if (defectNamesCache.resolved) return defectNamesCache.resolved;
     if (!defectNamesCache.pending) {
+      // Failures propagate to the caller instead of being converted into an
+      // empty list: an empty dropdown must be reported, never mistaken for
+      // "there are no defects". Only the pending marker is always cleared, so a
+      // transient failure can be retried later.
       defectNamesCache.pending = (async () => {
         try {
           const res = await apiFetch('/api/production/quality/defects/?active_only=true');
           const list = Array.isArray(res) ? (res as DefectMasterItem[]) : [];
-          // Cache successes only, so a transient failure can be retried later.
           defectNamesCache.resolved = list;
           return list;
-        } catch {
-          return [];
         } finally {
           defectNamesCache.pending = null;
         }
@@ -303,11 +324,7 @@ export const qualityRepository = {
    * no records), so the UI correctly shows an empty grid when no rows exist.
    * Concurrent calls for the same date share one request.
    */
-  async load(dateKey: string): Promise<{
-    hourly: QualityDayHourly;
-    shifts: QualityShiftMap;
-    ok?: boolean;
-  }> {
+  async load(dateKey: string): Promise<QualityDayLoad> {
     const pending = inFlightLoads.get(dateKey);
     if (pending) return pending;
     const promise = this._load(dateKey).finally(() => {
@@ -317,11 +334,7 @@ export const qualityRepository = {
     return promise;
   },
 
-  async _load(dateKey: string): Promise<{
-    hourly: QualityDayHourly;
-    shifts: QualityShiftMap;
-    ok?: boolean;
-  }> {
+  async _load(dateKey: string): Promise<QualityDayLoad> {
     try {
       const res = await apiFetch(`/api/production/quality/daily/?date=${dateKey}`);
       if (res && typeof res === 'object') {
@@ -336,12 +349,20 @@ export const qualityRepository = {
             ok: true,
           };
         }
+        return { hourly: {}, shifts: {}, ok: false, error: 'The server returned an unexpected response.' };
       }
-    } catch {
-      // API endpoint unavailable — report the failure; never fall back to a
-      // local cache that may hold rows deleted from the database.
+      return { hourly: {}, shifts: {}, ok: false, error: 'The server returned an empty response.' };
+    } catch (err) {
+      // API endpoint unavailable or the request was rejected (expired session,
+      // missing permission, validation error). Report the reason; never fall
+      // back to a local cache that may hold rows deleted from the database.
+      return {
+        hourly: {},
+        shifts: {},
+        ok: false,
+        error: err instanceof Error && err.message ? err.message : 'Could not load saved data.',
+      };
     }
-    return { hourly: {}, shifts: {}, ok: false };
   },
 
   /**
@@ -357,7 +378,7 @@ export const qualityRepository = {
     dateKey: string,
     hourly: QualityDayHourly,
     shifts: QualityShiftMap
-  ): Promise<{ ok: boolean; persisted: boolean; hourly?: QualityDayHourly }> {
+  ): Promise<{ ok: boolean; persisted: boolean; hourly?: QualityDayHourly; error?: string }> {
     try {
       const res = await apiFetch('/api/production/quality/daily/', {
         method: 'POST',
@@ -370,14 +391,31 @@ export const qualityRepository = {
       const body = res as {
         hourly?: Record<string, Record<string, Record<string, unknown>>>;
       } | null;
+      // The backend commits the transaction and only then re-queries the day it
+      // just wrote, so a 200 response carrying that state IS the proof that the
+      // rows were persisted. Anything else is reported as a failed save instead
+      // of letting the caller show a success message for unverified data.
+      if (!body || typeof body !== 'object' || !body.hourly) {
+        return {
+          ok: false,
+          persisted: false,
+          error: 'The server did not confirm the save. Please try again.',
+        };
+      }
       return {
         ok: true,
         persisted: true,
-        hourly: body?.hourly ? normalizeDbHourly(body.hourly) : undefined,
+        hourly: normalizeDbHourly(body.hourly),
       };
-    } catch {
-      // API unreachable — nothing was persisted.
-      return { ok: false, persisted: false };
+    } catch (err) {
+      // API unreachable or the backend rejected the payload — nothing was
+      // persisted. Keep the reason so the caller can tell the user WHY the
+      // save failed instead of silently dropping the changes.
+      return {
+        ok: false,
+        persisted: false,
+        error: err instanceof Error && err.message ? err.message : 'Save request failed.',
+      };
     }
   },
 };

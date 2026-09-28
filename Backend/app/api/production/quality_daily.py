@@ -4,8 +4,8 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
-from datetime import datetime, date
-from typing import Dict, Any
+from datetime import datetime, date, time as dtime
+from typing import Dict, Any, Optional, Tuple
 
 from app.db.session import get_db
 from app.models.quality import (
@@ -38,8 +38,65 @@ PRODUCTION_TIMES = [
 MACHINES = [1, 2, 3, 4]
 SHIFTS = [1, 2, 3]
 
-def _parse_time_string(time_str: str) -> datetime.time:
-    return datetime.strptime(time_str, "%I:%M %p").time()
+def _parse_time_string(time_str: str) -> dtime:
+    """Parse a grid label ("9:00 AM") into a normalized time-of-day.
+
+    The canonical 12-hour label is tried first, then the common variants a
+    client may send ("09:00", "09:00:00", "9:00am"), so a single reformatted
+    label can never abort an entire save. Seconds and microseconds are always
+    dropped so every key built from the result compares equal.
+    """
+    raw = (time_str or "").strip().upper()
+    for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt).time().replace(second=0, microsecond=0)
+        except ValueError:
+            continue
+    raise ValueError(f"Unrecognised production time {time_str!r}")
+
+
+def _slot_time(time_str: str) -> dtime:
+    """Like `_parse_time_string` but reports a 400 instead of a 500."""
+    try:
+        return _parse_time_string(time_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid production time: {time_str!r}")
+
+
+def _norm_time(value: Any) -> Optional[dtime]:
+    """Normalize a stored/incoming `production_time` to a time-of-day.
+
+    `hpr.hourly_production.production_time` is declared as a DATETIME column,
+    but depending on the driver, the column type actually provisioned, or how a
+    row was written, the value read back may be a `datetime`, a plain `time`
+    (TIME column) or a string. Every entry-map key must be built from the same
+    normalized time-of-day on both sides — otherwise an existing row is never
+    matched, the save inserts a duplicate (or trips `uq_hpr_machine_hour` and
+    rolls the whole request back) and the previously saved `bottle_id` is lost.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.time().replace(second=0, microsecond=0)
+    if isinstance(value, dtime):
+        return value.replace(second=0, microsecond=0)
+    raw = str(value).strip()
+    # A driver may hand back the whole date-time as a string; without a date
+    # part none of the grid-label formats below match, the row is skipped and
+    # the next save inserts a duplicate for a slot that already exists.
+    try:
+        return datetime.fromisoformat(raw).time().replace(second=0, microsecond=0)
+    except ValueError:
+        pass
+    try:
+        return _parse_time_string(raw)
+    except ValueError:
+        return None
+
+
+def _entry_key(machine_no: int, production_time: Any) -> Tuple[int, Optional[dtime]]:
+    """The single canonical identity of an hourly row: machine + time-of-day."""
+    return (machine_no, _norm_time(production_time))
 
 def get_default_shape(date_str: str) -> QualityDailyResponse:
     hourly = {str(m): {} for m in MACHINES}
@@ -104,17 +161,23 @@ def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser 
 
     for entry in entries:
         m = str(entry.machine_no)
-        # Reconstruct time string "9:00 AM" etc. Note: windows strftime for no leading zero is %#I, on linux it's %-I
-        # Safest way:
-        pt_time = entry.production_time.strftime("%I:%M %p").lstrip("0")
-        if pt_time.startswith(":"):
-            pt_time = "12" + pt_time
+        response.hourly.setdefault(m, {})
+
+        # Reconstruct the canonical grid label ("9:00 AM", "10:00 PM", ...)
+        # straight from the normalized time-of-day. Building it ourselves keeps
+        # the key identical to the labels the UI renders regardless of locale or
+        # driver quirks, so a saved row can never land under a second, unknown
+        # key that the grid would show as an empty slot.
+        slot = _norm_time(entry.production_time)
+        if slot is None:
+            continue
+        pt_time = f"{slot.hour % 12 or 12}:{slot.minute:02d} {'AM' if slot.hour < 12 else 'PM'}"
 
         # packing_category is stored as comma separated string? Frontend expects array
         pc = entry.packing_category.split(",") if entry.packing_category else []
         pc = [x.strip() for x in pc if x.strip()]
-        
-        response.hourly[m][pt_time] = QualityHourlyEntrySchema(
+
+        candidate = QualityHourlyEntrySchema(
             entry_id=f"{date}:{entry.machine_no}:{pt_time}",
             report_id=date,
             machine_no=entry.machine_no,
@@ -139,6 +202,14 @@ def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser 
             defect_ids=[d.defect_name for d in entry.defects],
             job_id=entry.job_id
         )
+
+        # If duplicate historical rows map onto the same slot, keep whichever
+        # carries data instead of letting a later, emptier row hide a saved
+        # bottle selection.
+        existing_slot = response.hourly[m].get(pt_time)
+        if existing_slot is not None and _has_meaningful_data(existing_slot) and not _has_meaningful_data(candidate):
+            continue
+        response.hourly[m][pt_time] = candidate
 
     return response
 
@@ -230,32 +301,61 @@ def save_daily_quality(
         existing_entries = db.query(HourlyProduction).options(
             selectinload(HourlyProduction.defects)
         ).filter_by(report_id=report.report_id).all()
-        entry_map = {(e.machine_no, e.production_time): e for e in existing_entries}
 
-        # Snapshot of OLD job_id values from DB before any mutations occur
-        old_job_id_snapshot = {
-            (e.machine_no, e.production_time): (e.job_id.strip() if e.job_id and e.job_id.strip() else None)
-            for e in existing_entries
+        # Rows are identified by (machine_no, NORMALIZED time-of-day) — never by
+        # the raw production_time object. The column is a DATETIME, but depending
+        # on the driver / the column actually provisioned / how a row was written
+        # the value read back may be a datetime, a plain time or a string. If the
+        # key built from the database and the key built from the request are not
+        # normalized identically, an existing row is never matched: the save then
+        # inserts a duplicate (or trips uq_hpr_machine_hour and rolls the whole
+        # request back), and the previously saved bottle_id is lost.
+        entry_map: Dict[Tuple[int, Optional[dtime]], HourlyProduction] = {}
+        for e in existing_entries:
+            key = _entry_key(e.machine_no, e.production_time)
+            current = entry_map.get(key)
+            # If legacy duplicates map onto one slot, keep the row that carries a
+            # bottle so we update the meaningful row instead of an empty one.
+            if current is None or (current.bottle_id is None and e.bottle_id is not None):
+                entry_map[key] = e
+
+        # Snapshot of the OLD (job_id, bottle_id) pairs, taken from the SAME rows
+        # entry_map resolved to, before any mutations occur, so Step 4.5 can
+        # reuse a job id only when it still belongs to the same bottle.
+        old_job_snapshot: Dict[Tuple[int, Optional[dtime]], Tuple[Optional[str], Optional[int]]] = {
+            key: (e.job_id.strip() if e.job_id and e.job_id.strip() else None, e.bottle_id)
+            for key, e in entry_map.items()
         }
 
         for machine_str, m_dict in payload.hourly.items():
             machine_no = int(machine_str)
             for time_str, entry_data in m_dict.items():
-                parsed_time = _parse_time_string(time_str)
+                parsed_time = _slot_time(time_str)
                 # handle overnight shifts
                 # Shift 3 is 1am to 9am, it actually belongs to the next calendar day
                 # But typically production_date stays the same for the whole shift
                 # We combine it directly:
                 entry_dt = datetime.combine(p_date, parsed_time)
-                
-                # Check if it exists
-                entry = entry_map.get((machine_no, entry_dt))
+                map_key = (machine_no, parsed_time)
 
-                # If no row exists yet for this slot, skip if all fields are empty
-                if not entry:
-                    if not _has_meaningful_data(entry_data):
-                        continue
-                
+                # Check if it exists
+                entry = entry_map.get(map_key)
+
+                incoming_has_data = _has_meaningful_data(entry_data)
+                # The frontend stamps every row it read from the database with a
+                # synthetic entry_id. A row WITHOUT one was invented locally by a
+                # blank slot and must never blank out a stored row. An empty row
+                # that DOES carry an entry_id is an explicit clear ("−" button /
+                # "— Select bottle") and is still applied.
+                incoming_is_known_row = bool(str(entry_data.entry_id or "").strip())
+
+                if not incoming_has_data and (entry is None or not incoming_is_known_row):
+                    # Nothing to create and nothing the operator could have
+                    # deliberately cleared — leave the stored row untouched.
+                    continue
+
+                stored_bottle_id = entry.bottle_id if entry is not None else None
+
                 # prepare field values
                 b_id = entry_data.bottle_id
                 sec = entry_data.section
@@ -279,7 +379,7 @@ def save_daily_quality(
                 n_val = entry_data.num
                 rmk = entry_data.remarks
 
-                if not entry:
+                if entry is None:
                     entry = HourlyProduction(
                         report_id=report.report_id,
                         machine_no=machine_no,
@@ -290,10 +390,14 @@ def save_daily_quality(
                         speed_per_min=s_p_m, packing_category=p_c, packing_size=p_s,
                         cartons=ctns, bottles_in_nos=binos, efficiency_percent=eff,
                         sqc=sq, qc_hold=qch, num=n_val, remarks=rmk,
-                        job_id=entry_data.job_id
+                        # hourly_production.job_id is a NOT NULL column. A row that
+                        # does not belong to a job yet must be stored as an empty id
+                        # — writing NULL raises an IntegrityError, the transaction
+                        # rolls back and EVERY row for the day is silently lost.
+                        job_id=entry_data.job_id or ""
                     )
                     db.add(entry)
-                    entry_map[(machine_no, entry_dt)] = entry
+                    entry_map[map_key] = entry
                 else:
                     entry.bottle_id = b_id
                     entry.section = sec
@@ -311,10 +415,22 @@ def save_daily_quality(
                     entry.qc_hold = qch
                     entry.num = n_val
                     entry.remarks = rmk
-                    entry.job_id = entry_data.job_id
+                    if entry_data.job_id:
+                        entry.job_id = entry_data.job_id
+                    elif b_id is None and stored_bottle_id is not None:
+                        # The bottle was cleared on this row, so its job
+                        # reference no longer applies. The column is NOT NULL,
+                        # so the cleared state is an empty id, never NULL.
+                        entry.job_id = ""
+                    # Otherwise keep the stored job_id: a client that simply did
+                    # not echo it back must never blank a valid id.
 
                 # Step 4: Replace all defects
-                entry.defects = [defect_map[dname] for dname in entry_data.defect_ids]
+                # hpr.hourly_production_defect has PRIMARY KEY (entry_id, defect_id),
+                # so a repeated defect name in one row would be two inserts of the
+                # same key: an IntegrityError that rolls back the WHOLE day. The
+                # set of names is already validated above; dedup here.
+                entry.defects = list({dname: defect_map[dname] for dname in entry_data.defect_ids}.values())
 
         # Step 4.5: Compute canonical job_id and upsert HPR Job rows
         # Seed the next available sequence number once per save_daily_quality call across all machines/runs
@@ -337,15 +453,17 @@ def save_daily_quality(
                 if entry_data.bottle_id is None:
                     continue
 
-                parsed_time = _parse_time_string(time_str)
+                parsed_time = _slot_time(time_str)
                 entry_dt = datetime.combine(p_date, parsed_time)
-                old_jid = old_job_id_snapshot.get((machine_no, entry_dt))
+                old_jid, old_bottle_id = old_job_snapshot.get((machine_no, parsed_time), (None, None))
 
                 entries.append({
                     "time_str": time_str,
                     "production_time": entry_dt,
+                    "map_key": (machine_no, parsed_time),
                     "bottle_id": entry_data.bottle_id,
                     "old_job_id": old_jid,
+                    "old_bottle_id": old_bottle_id,
                 })
 
             if not entries:
@@ -372,7 +490,14 @@ def save_daily_quality(
             # 4, 5, 6. Determine canonical job_id, overwrite ORM entries, and compute run metadata
             computed_runs = []
             for run in runs:
-                old_jids = [item["old_job_id"] for item in run if item["old_job_id"]]
+                run_bottle_id = run[0]["bottle_id"]
+                # Reuse an old job id ONLY when it still belongs to this same
+                # bottle. A row whose bottle changed starts a fresh job, so the
+                # hpr_job row always describes the bottle actually running.
+                old_jids = [
+                    item["old_job_id"] for item in run
+                    if item["old_job_id"] and item["old_bottle_id"] == run_bottle_id
+                ]
                 unique_old_jids = list(dict.fromkeys(old_jids))
 
                 if unique_old_jids:
@@ -391,14 +516,14 @@ def save_daily_quality(
 
                 # 5. Overwrite job_id on every ORM entry in this run
                 for item in run:
-                    orm_entry = entry_map.get((machine_no, item["production_time"]))
+                    orm_entry = entry_map.get(item["map_key"])
                     if orm_entry:
                         orm_entry.job_id = canonical_job_id
 
                 # 6. Compute job_start_time, job_end_candidate, and bottle_id
                 job_start_time = min(e["production_time"] for e in run)
                 job_end_candidate = max(e["production_time"] for e in run)
-                bottle_id = run[0]["bottle_id"]
+                bottle_id = run_bottle_id
 
                 computed_runs.append({
                     "canonical_job_id": canonical_job_id,
@@ -416,6 +541,36 @@ def save_daily_quality(
                 else:
                     r["status"] = "COMPLETED"
                     r["job_end_time"] = r["job_end_candidate"]
+
+            # 6.5 Retire the job that is still marked RUNNING for this machine.
+            # hpr.hpr_job carries a partial unique index,
+            # uq_production_job_one_running_per_machine (machine_no) WHERE
+            # status = 'RUNNING', so the database allows only ONE running job per
+            # machine. A run that starts on a machine whose previous job was never
+            # closed (e.g. J001 from an earlier day) would be rejected outright,
+            # and because everything commits together the WHOLE day's data would
+            # be rolled back. Close the stale job first, and flush that close so
+            # it reaches the database before the new row is inserted.
+            running_ids = [r["canonical_job_id"] for r in computed_runs if r["status"] == "RUNNING"]
+            if running_ids:
+                new_job_start = min(
+                    r["job_start_time"] for r in computed_runs if r["status"] == "RUNNING"
+                )
+                stale_jobs = (
+                    db.query(HprJob)
+                    .filter(
+                        HprJob.machine_no == machine_no,
+                        HprJob.status == "RUNNING",
+                        HprJob.job_id.notin_(running_ids),
+                    )
+                    .all()
+                )
+                for stale_job in stale_jobs:
+                    stale_job.status = "COMPLETED"
+                    if stale_job.job_end_time is None and new_job_start >= stale_job.job_start_time:
+                        stale_job.job_end_time = new_job_start
+                if stale_jobs:
+                    db.flush()
 
             # 7. Upsert into hpr_job by canonical_job_id
             for r in computed_runs:
@@ -450,8 +605,21 @@ def save_daily_quality(
         db.rollback()
         raise
     except Exception as e:
+        # Nothing was persisted — roll back first, then log the full failure
+        # server-side and tell the caller exactly what happened so the UI can
+        # report it instead of pretending the day was saved.
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(
+            "Quality save failed for %s — transaction rolled back, no rows persisted",
+            payload.production_date,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Quality data for {payload.production_date} was NOT saved "
+                f"(the transaction was rolled back): {e}"
+            ),
+        )
 
     # Return using explicit re-query
     return get_daily_quality(payload.production_date, db)
