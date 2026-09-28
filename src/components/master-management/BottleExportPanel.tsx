@@ -5,9 +5,10 @@ import { planningRepository } from '../../services/planningRepository';
 /**
  * Export Bottle — read-only view of the Bottle Master tab.
  *
- * Exports the bottle list to .xlsx for one machine or for every machine. The
- * data is read from the database on every export (never from the panel's
- * cached props), so the spreadsheet always reflects the latest committed rows:
+ * Exports the bottle list to .xlsx for one machine, for every machine, or as
+ * the plain bottle list. The data is read from the database on every export
+ * (never from the panel's cached props), so the spreadsheet always reflects
+ * the latest committed rows:
  *   - production.bottle_master        → Bottle ID, Bottle Name
  *   - production.bottle_configuration → which machine(s) each bottle is set up
  *     on, plus its weight and speeds per section
@@ -21,17 +22,25 @@ import { planningRepository } from '../../services/planningRepository';
  * Machine 2 reports each machine's own values. No averaging, and never the
  * first row encountered.
  *
+ * "All Bottle List" is the exception: it ignores machine configuration
+ * completely and lists every row of bottle_master exactly once, with only the
+ * Bottle ID and Bottle Name columns.
+ *
  * This panel only ever reads: no bottle master or configuration row is created
  * or modified, so exporting can never produce a duplicate bottle.
  */
 
-/** Machine choices. 'all' spans every machine. */
+/** Machine choices. ALL_MACHINES spans every machine, ALL_BOTTLES is machine-independent. */
+const ALL_MACHINES = 'all';
+const ALL_BOTTLES = 'bottles';
+
 const EXPORT_MACHINE_OPTIONS: { value: string; label: string }[] = [
   { value: '1', label: 'Machine 1' },
   { value: '2', label: 'Machine 2' },
   { value: '3', label: 'Machine 3' },
   { value: '4', label: 'Machine 4' },
-  { value: 'all', label: 'All Machine' },
+  { value: ALL_MACHINES, label: 'All Machine' },
+  { value: ALL_BOTTLES, label: 'All Bottle List' },
 ];
 
 /** machine_master.machine_no is an integer (1-4) but reaches the UI as "MAC-01". */
@@ -45,11 +54,129 @@ const compareBottleId = (a: string, b: string): number => {
   return a.localeCompare(b, undefined, { numeric: true });
 };
 
+/** Shared header fill for every export layout. */
+const HEADER_FILL = {
+  type: 'pattern' as const,
+  pattern: 'solid' as const,
+  fgColor: { argb: 'FF2563EB' },
+};
+
+/** Shared cell border for every export layout. */
+const GRID_BORDER = {
+  top: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
+  left: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
+  bottom: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
+  right: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
+};
+
+/**
+ * Applies the header/grid styling shared by every export layout, then sets the
+ * column widths in column order.
+ */
+function styleWorksheet(worksheet: any, widths: number[]): void {
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+  headerRow.fill = HEADER_FILL;
+  headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+  headerRow.height = 22;
+
+  worksheet.eachRow((row: { eachCell: (arg0: (cell: any) => void) => void; }) => {
+    row.eachCell((cell) => {
+      cell.border = GRID_BORDER;
+    });
+  });
+
+  widths.forEach((w, i) => {
+    worksheet.getColumn(i + 1).width = w;
+  });
+}
+
+/** Serialises the workbook and hands it to the browser as a download. */
+async function downloadWorkbook(workbook: any, filename: string): Promise<void> {
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 export const BottleExportPanel: React.FC = () => {
   const [exportMachine, setExportMachine] = useState<string>('');
   const [exporting, setExporting] = useState(false);
 
-  const isAll = exportMachine === 'all';
+  const isAll = exportMachine === ALL_MACHINES;
+  const isBottleList = exportMachine === ALL_BOTTLES;
+
+  /**
+   * "All Bottle List" — every bottle in the database, once each, with only the
+   * Bottle ID and Bottle Name columns. Machine configuration is never read, so
+   * a bottle with no configuration rows (and one configured on several machines
+   * or sections) still appears exactly once.
+   */
+  async function handleBottleListExport() {
+    setExporting(true);
+    try {
+      const data = await planningRepository.fetchBottleMasterList();
+      if (!data.ok) {
+        alert(data.error || 'Failed to fetch the bottle list.');
+        return;
+      }
+
+      // bottle_master is keyed on bottle_id so it is already unique, but key the
+      // dedupe on that id anyway so a repeated row can never double up a bottle.
+      const unique = new Map<string, { bottleId: string; bottleName: string }>();
+      for (const b of data.bottles) {
+        if (!b.bottle_id || unique.has(b.bottle_id)) continue;
+        unique.set(b.bottle_id, { bottleId: b.bottle_id, bottleName: b.bottle_name });
+      }
+
+      const rows = [...unique.values()].sort((a, b) => compareBottleId(a.bottleId, b.bottleId));
+
+      if (rows.length === 0) {
+        alert('There are no bottles in the database. There is nothing to export.');
+        return;
+      }
+
+      const exceljsModule: any = await import('exceljs');
+      const ExcelJS = exceljsModule.Workbook ? exceljsModule : exceljsModule.default;
+
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('All Bottle List');
+      worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+      // Bottle ID + Bottle Name only: no machine number, weight, section or
+      // cut/speed, because none of those are part of this listing.
+      worksheet.addRow(['Bottle ID', 'Bottle Name']);
+
+      for (const r of rows) {
+        const idNum = Number(r.bottleId);
+        worksheet.addRow([isNaN(idNum) ? r.bottleId : idNum, r.bottleName]);
+      }
+
+      styleWorksheet(worksheet, [14, 42]);
+
+      const filename = 'Bottle_Master_All_Bottle_List.xlsx';
+      await downloadWorkbook(workbook, filename);
+
+      alert(
+        `Exported ${rows.length} bottle${rows.length === 1 ? '' : 's'} to ${filename}.`
+      );
+    } catch (err) {
+      console.error('Bottle list export failed:', err);
+      alert(
+        `Export failed: ${err instanceof Error ? err.message : 'unexpected error while generating the Excel file.'}`
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function handleExport() {
     if (exporting) return;
@@ -58,9 +185,15 @@ export const BottleExportPanel: React.FC = () => {
       return;
     }
 
+    // The bottle list does not depend on any machine, so it takes its own path.
+    if (isBottleList) {
+      await handleBottleListExport();
+      return;
+    }
+
     setExporting(true);
     try {
-      const all = exportMachine === 'all';
+      const all = isAll;
       const selected = all ? undefined : parseInt(exportMachine, 10);
       const scopeLabel = all ? 'all machines' : `Machine ${exportMachine}`;
 
@@ -151,51 +284,15 @@ export const BottleExportPanel: React.FC = () => {
         );
       }
 
-      const headerRow = worksheet.getRow(1);
-      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      headerRow.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF2563EB' },
-      };
-      headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
-      headerRow.height = 22;
-
-      const gridBorder = {
-        top: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
-        left: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
-        bottom: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
-        right: { style: 'thin' as const, color: { argb: 'FFE5E7EB' } },
-      };
-      worksheet.eachRow((row: { eachCell: (arg0: (cell: any) => void) => void; }) => {
-        row.eachCell((cell) => {
-          cell.border = gridBorder;
-        });
-      });
-
       // Widths follow the column order above, so Machine No. only occupies a
       // slot in the all-machines layout.
-      const widths = all ? [14, 42, 16, 12, 14] : [14, 42, 12, 14];
-      widths.forEach((w, i) => {
-        worksheet.getColumn(i + 1).width = w;
-      });
+      styleWorksheet(worksheet, all ? [14, 42, 16, 12, 14] : [14, 42, 12, 14]);
 
       const filename = all
         ? 'Bottle_Master_All_Machines.xlsx'
         : `Bottle_Master_Machine_${exportMachine}.xlsx`;
 
-      const buffer = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([buffer], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      await downloadWorkbook(workbook, filename);
 
       alert(
         all
@@ -235,11 +332,13 @@ export const BottleExportPanel: React.FC = () => {
             </span>
           </div>
           <p className="text-[10px] text-gray-400">
-            {isAll
-              ? 'One row per machine-bottle configuration, across all machines. Weight and Cut/Speed come from the highest section configured on each machine.'
-              : exportMachine
-                ? 'Only bottles configured on the selected machine are exported. Weight and Cut/Speed come from the highest section configured on it.'
-                : 'Choose a machine to enable the export.'}
+            {isBottleList
+              ? 'Every bottle in the database is listed once, with Bottle ID and Bottle Name only. Machine configuration is not included.'
+              : isAll
+                ? 'One row per machine-bottle configuration, across all machines. Weight and Cut/Speed come from the highest section configured on each machine.'
+                : exportMachine
+                  ? 'Only bottles configured on the selected machine are exported. Weight and Cut/Speed come from the highest section configured on it.'
+                  : 'Choose a machine to enable the export.'}
           </p>
         </div>
       </div>

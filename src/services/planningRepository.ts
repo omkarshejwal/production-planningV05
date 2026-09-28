@@ -278,6 +278,7 @@ export const planningRepository = {
         _bottles = (bottlesRes.value as Record<string, unknown>[]).map((b) => ({
           bottle_id: toStr(b.bottle_id),
           bottle_name: toStr(b.bottle_name),
+          weight: toNum(b.weight),
         }));
         applied = true;
       }
@@ -419,6 +420,7 @@ export const planningRepository = {
         bottles: (bottlesRaw as Record<string, unknown>[]).map((b) => ({
           bottle_id: toStr(b.bottle_id),
           bottle_name: toStr(b.bottle_name),
+          weight: toNum(b.weight),
         })),
         configs: (configsRaw as Record<string, unknown>[]).map(mapConfigRow),
       };
@@ -429,6 +431,40 @@ export const planningRepository = {
         error: err.message || 'Failed to load bottle data from the server.',
         bottles: [],
         configs: [],
+      };
+    }
+  },
+
+  /**
+   * Reads ONLY production.bottle_master, straight from the API, for the
+   * "All Bottle List" export. Like fetchBottleExportData this bypasses the
+   * in-memory cache so the spreadsheet always reflects the latest committed
+   * rows, and it never reads bottle_configuration at all — that export lists
+   * the bottles themselves, so it is independent of any machine setup.
+   *
+   * Read-only: no bottle master or configuration row is created or modified.
+   */
+  async fetchBottleMasterList(): Promise<{
+    ok: boolean;
+    error?: string;
+    bottles: BottleMasterRow[];
+  }> {
+    try {
+      const bottlesRaw = await apiFetch('/api/production/products/bottles/');
+      return {
+        ok: true,
+        bottles: (bottlesRaw as Record<string, unknown>[]).map((b) => ({
+          bottle_id: toStr(b.bottle_id),
+          bottle_name: toStr(b.bottle_name),
+          weight: toNum(b.weight),
+        })),
+      };
+    } catch (err: any) {
+      console.error('fetchBottleMasterList failed:', err);
+      return {
+        ok: false,
+        error: err.message || 'Failed to load the bottle list from the server.',
+        bottles: [],
       };
     }
   },
@@ -632,13 +668,23 @@ export const planningRepository = {
 
   // ── Bottle Master CRUD ──────────────────────────────────────────────────────
 
-  async createBottle(bottle_name: string): Promise<{ ok: boolean; id?: number; error?: string }> {
+  /**
+   * Creates a bottle identity: name + the weight every machine shares.
+   * Machine sections and cut speeds are NOT created here - they are configured
+   * per machine through bulkUpsertBottleConfigurations.
+   */
+  async createBottle(bottle_name: string, weight?: number | null): Promise<{ ok: boolean; id?: number; error?: string }> {
+    const hasWeight = typeof weight === 'number' && !isNaN(weight);
     try {
       const result = await apiFetch('/api/production/products/bottles/', {
         method: 'POST',
-        body: JSON.stringify({ bottle_name }),
+        body: JSON.stringify(hasWeight ? { bottle_name, weight } : { bottle_name }),
       });
-      _bottles.push({ bottle_id: toStr(result.bottle_id), bottle_name });
+      _bottles.push({
+        bottle_id: toStr(result.bottle_id),
+        bottle_name,
+        weight: hasWeight ? (weight as number) : undefined,
+      });
       _cacheVersion++;
       return { ok: true, id: result.bottle_id };
     } catch (err: any) {
@@ -646,15 +692,24 @@ export const planningRepository = {
     }
   },
 
-  async updateBottle(bottle_id: number, bottle_name: string): Promise<{ ok: boolean; error?: string }> {
+  /**
+   * Renames a bottle and, when `weight` is supplied, updates its shared weight.
+   * Omitting weight leaves the stored value untouched, so a rename-only call
+   * can never wipe it.
+   */
+  async updateBottle(bottle_id: number, bottle_name: string, weight?: number | null): Promise<{ ok: boolean; error?: string }> {
+    const hasWeight = typeof weight === 'number' && !isNaN(weight);
     try {
       await apiFetch(`/api/production/products/bottles/${bottle_id}`, {
         method: 'PUT',
-        body: JSON.stringify({ bottle_name }),
+        body: JSON.stringify(hasWeight ? { bottle_name, weight } : { bottle_name }),
       });
       const idStr = String(bottle_id);
       const existing = _bottles.find((b) => b.bottle_id === idStr);
-      if (existing) existing.bottle_name = bottle_name;
+      if (existing) {
+        existing.bottle_name = bottle_name;
+        if (hasWeight) existing.weight = weight as number;
+      }
       _cacheVersion++;
       return { ok: true };
     } catch (err: any) {

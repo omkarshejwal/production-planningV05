@@ -1,7 +1,7 @@
 # pyrefly: ignore [missing-import]
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from app.core.config import settings
 
 # Import the router we just built!
@@ -32,6 +32,33 @@ from app.models.quality import DefectMaster, HourlyProductionReport, ShiftMaster
 # touches the server-provisioned auth.users / module_master / permissions tables.
 from app.models.auth import AuthBase
 
+def _ensure_bottle_master_weight_column() -> None:
+    """Adds bottle_master.weight to databases that predate the column.
+
+    Base.metadata.create_all() only creates missing TABLES; it never adds a
+    column to a table that already exists, so an already-provisioned
+    bottle_master would otherwise keep its old two-column shape and every
+    insert that sets weight would fail. The check is read-only and any failure
+    is reported and swallowed, so a database user without ALTER rights can
+    still boot the API exactly as before.
+    """
+    schema = settings.production_schema
+    try:
+        columns = {c["name"] for c in inspect(engine).get_columns("bottle_master", schema=schema or None)}
+        if "weight" in columns:
+            return
+    except Exception as exc:
+        print(f"Warning: could not inspect bottle_master columns: {exc}")
+        return
+
+    target = f'"{schema}"."bottle_master"' if schema else "bottle_master"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE {target} ADD COLUMN weight NUMERIC(10, 2)"))
+    except Exception as exc:
+        print(f"Warning: could not add bottle_master.weight column: {exc}")
+
+
 def initialize_database() -> None:
     if settings.production_schema:
         with engine.begin() as connection:
@@ -40,6 +67,7 @@ def initialize_database() -> None:
         with engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.hpr_schema}"'))
     Base.metadata.create_all(bind=engine)
+    _ensure_bottle_master_weight_column()
     # Safe no-op against the production Postgres (auth tables already exist);
     # creates a local sqlite fallback so local development still works.
     AuthBase.metadata.create_all(bind=engine)

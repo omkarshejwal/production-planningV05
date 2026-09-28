@@ -18,6 +18,7 @@ export interface MachineMasterRow {
 export interface BottleMasterRow {
   bottle_id: string;    // e.g. "123" (integer from DB as string)
   bottle_name: string;  // e.g. "100 ml Dropper"
+  weight?: number;      // grams, shared by every machine (null on legacy rows)
 }
 
 export interface BottleConfigurationRow {

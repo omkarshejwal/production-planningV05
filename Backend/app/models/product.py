@@ -7,6 +7,11 @@ class BottleMaster(Base):
 
     bottle_id = Column(Integer, primary_key=True, index=True)
     bottle_name = Column(String(150), nullable=False)
+    # Weight in grams is a property of the bottle itself and is therefore shared
+    # by every machine it runs on (only the CUT/MIN speeds are machine specific
+    # and live in bottle_configuration). Nullable so bottles created before this
+    # column existed keep working.
+    weight = Column(Numeric(10, 2), nullable=True)
 
 
 class BottleConfiguration(Base):

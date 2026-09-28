@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from typing import List
@@ -34,7 +34,22 @@ def create_bottle(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(require_module_edit(MODULE_BOTTLE_MASTER)),
 ):
-    new_bottle = BottleMaster(bottle_name=bottle_in.bottle_name)
+    """Creates a bottle identity (name + shared weight).
+
+    A bottle is NOT created per machine: bottle_master holds the name and the
+    weight that every machine uses, and the per-machine section speeds are
+    configured separately through bottle_configuration.
+    """
+    duplicate = db.query(BottleMaster).filter(
+        func.lower(BottleMaster.bottle_name) == bottle_in.bottle_name.strip().lower()
+    ).first()
+    if duplicate:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A bottle named '{bottle_in.bottle_name.strip()}' already exists.",
+        )
+
+    new_bottle = BottleMaster(bottle_name=bottle_in.bottle_name.strip(), weight=bottle_in.weight)
     db.add(new_bottle)
     db.commit()
     db.refresh(new_bottle)
@@ -42,7 +57,7 @@ def create_bottle(
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="CREATED_BOTTLE",
-        details=f"User ({current_user.employee_id}) created Bottle '{new_bottle.bottle_name}' with ID {new_bottle.bottle_id}"
+        details=f"User ({current_user.employee_id}) created Bottle '{new_bottle.bottle_name}' with ID {new_bottle.bottle_id} and weight {new_bottle.weight}"
     ))
     db.commit()
 
@@ -59,12 +74,27 @@ def update_bottle(
     if not existing:
         raise HTTPException(status_code=404, detail="Bottle not found.")
 
-    existing.bottle_name = bottle_in.bottle_name
+    new_name = bottle_in.bottle_name.strip()
+    duplicate = db.query(BottleMaster).filter(
+        BottleMaster.bottle_id != bottle_id,
+        func.lower(BottleMaster.bottle_name) == new_name.lower(),
+    ).first()
+    if duplicate:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A bottle named '{new_name}' already exists.",
+        )
+
+    existing.bottle_name = new_name
+    # weight is only overwritten when the caller actually sends one, so a
+    # rename-only update never clears the shared weight.
+    if bottle_in.weight is not None:
+        existing.weight = bottle_in.weight
 
     db.add(AuditLog(
         user_id=current_user.employee_id,
         action="UPDATED_BOTTLE",
-        details=f"User ({current_user.employee_id}) updated Bottle {bottle_id} to '{bottle_in.bottle_name}'"
+        details=f"User ({current_user.employee_id}) updated Bottle {bottle_id} to '{new_name}'"
     ))
     db.commit()
     db.refresh(existing)
