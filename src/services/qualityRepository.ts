@@ -373,15 +373,22 @@ export const qualityRepository = {
    * The backend owns job_id: on success it returns the full day's state with
    * the DB-generated job ids, which are returned to the caller so the frontend
    * can reuse them verbatim.
+   *
+   * `options.keepalive` marks the request as one the browser must let finish
+   * even if the page is being torn down. It is used by the module's unload
+   * flush; the payload there is a handful of changed rows, so it stays well
+   * inside the browser's keepalive size limit.
    */
   async save(
     dateKey: string,
     hourly: QualityDayHourly,
-    shifts: QualityShiftMap
+    shifts: QualityShiftMap,
+    options: { keepalive?: boolean } = {}
   ): Promise<{ ok: boolean; persisted: boolean; hourly?: QualityDayHourly; error?: string }> {
     try {
       const res = await apiFetch('/api/production/quality/daily/', {
         method: 'POST',
+        keepalive: options.keepalive === true,
         body: JSON.stringify({
           production_date: dateKey,
           hourly: buildDbHourly(hourly),

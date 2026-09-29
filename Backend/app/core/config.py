@@ -5,6 +5,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./vitrumglass.db"
 
+    # Idle window before an untouched session is discarded. The application
+    # deliberately does NOT log a user out while they are working: a session is
+    # renewed on every authenticated request (see app/api/auth.py), so an
+    # operator stays signed in for as long as they keep using the app and is
+    # only signed out manually. This long default exists purely so abandoned
+    # browser tabs do not accumulate valid tokens forever.
+    SESSION_IDLE_TIMEOUT_DAYS: int = 30
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

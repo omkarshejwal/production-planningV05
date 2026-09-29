@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.access import load_access
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.auth import AuthUser
 from app.models.user import User as ProductionUser
@@ -18,7 +19,13 @@ security = HTTPBearer(auto_error=False)
 
 SESSIONS: dict[str, tuple[str, datetime]] = {}
 
-SESSION_LIFETIME = timedelta(hours=8)
+# Sessions are NOT timed out while the user is working. The expiry below is an
+# IDLE window that is pushed forward on every authenticated request (see
+# get_current_user), so a user who keeps working - for example all through a
+# shift in the Quality Monitor - is never logged out. Logging out only happens
+# when the user asks for it, or after a long period of no activity at all
+# (which just discards an abandoned browser tab's token).
+SESSION_LIFETIME = timedelta(days=settings.SESSION_IDLE_TIMEOUT_DAYS)
 
 
 class LoginRequest(BaseModel):
@@ -91,6 +98,15 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has expired",
         )
+
+    # Sliding expiry: every authenticated request proves the user is still
+    # there, so the idle deadline moves forward. A session therefore only ever
+    # expires after a long stretch of NO activity - working continuously in the
+    # Quality Monitor (or any other module) keeps it alive indefinitely.
+    SESSIONS[credentials.credentials] = (
+        session[0],
+        datetime.now(timezone.utc) + SESSION_LIFETIME,
+    )
 
     user = db.get(AuthUser, session[0])
 
