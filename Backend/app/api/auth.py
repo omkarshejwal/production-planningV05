@@ -1,9 +1,11 @@
-﻿import secrets
+﻿import re
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.api.access import load_access
@@ -29,6 +31,7 @@ SESSION_LIFETIME = timedelta(days=settings.SESSION_IDLE_TIMEOUT_DAYS)
 
 
 class LoginRequest(BaseModel):
+    # The Employee ID, email address or mobile number typed on the login form.
     user_id: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=1, max_length=1024)
 
@@ -135,20 +138,68 @@ def get_permissions(
     return load_access(user.employee_id, db)
 
 
+def find_user_by_identifier(identifier: str, db: Session) -> AuthUser | None:
+    """
+    Resolve a sign-in identifier against auth.users.
+
+    Any of the three identifiers already stored on the row is accepted: the
+    employee_id, the email address or the phone number (mobile number). No new
+    columns or tables are involved - the same rows back all three login
+    methods.
+
+    The employee_id is matched on its own first so that signing in with an
+    Employee ID keeps resolving to exactly the same account as it always has,
+    even in the unlikely case that the same text also appears in some other
+    user's email or phone_number column.
+    """
+    employee_id = identifier.strip()
+    user = db.query(AuthUser).filter(AuthUser.employee_id == employee_id).first()
+
+    if user is not None:
+        return user
+
+    # The remaining two identifiers are matched on shape, so that a value is
+    # only ever resolved as the one kind of identifier it can actually be.
+    alternatives = []
+
+    # Signup validates that an email contains an "@" and stores it lower-cased,
+    # so match emails without regard to case and never on an entry without one.
+    if "@" in employee_id:
+        alternatives.append(func.lower(AuthUser.email) == employee_id.lower())
+
+    # Mobile numbers are typed with spaces, dashes or a +91 prefix more often
+    # than not, so also try the digits on their own. The digit count floor
+    # keeps short employee-id-like text out of the phone comparison.
+    digits = re.sub(r"\D", "", employee_id)
+    if len(digits) >= 6:
+        alternatives.append(AuthUser.phone_number == employee_id)
+        if digits != employee_id:
+            alternatives.append(AuthUser.phone_number == digits)
+
+    if not alternatives:
+        return None
+
+    matches = db.query(AuthUser).filter(or_(*alternatives)).limit(2).all()
+
+    # Neither email nor phone_number carries a uniqueness constraint, so if the
+    # entry matches more than one account it cannot be resolved safely. Report
+    # it as a failed sign-in rather than picking an account at random.
+    return matches[0] if len(matches) == 1 else None
+
+
 @router.post("/login")
 def login(
     payload: LoginRequest,
     db: Session = Depends(get_db),
 ):
-    # Auth is driven by the auth.users table: employee_id is the login ID.
-    user = db.query(AuthUser).filter(
-        AuthUser.employee_id == payload.user_id.strip()
-    ).first()
+    # Auth is driven by the auth.users table: a user signs in with their
+    # employee_id, their email or their phone_number.
+    user = find_user_by_identifier(payload.user_id, db)
 
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid employee ID or password",
+            detail="Invalid Employee ID / email / mobile number or password",
         )
 
     # auth.users.password is nullable; the initial password for every employee
@@ -169,7 +220,7 @@ def login(
     if payload.password != user.password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid employee ID or password",
+            detail="Invalid Employee ID / email / mobile number or password",
         )
 
     token = secrets.token_urlsafe(32)

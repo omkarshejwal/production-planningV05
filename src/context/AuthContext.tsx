@@ -57,7 +57,7 @@ interface AuthContextType {
   canReadModule: (module: string) => boolean;
   /** Re-reads module catalog + permissions from the database. */
   refreshPermissions: () => Promise<void>;
-  login: (userId: string, password: string) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<void>;
   signup: (
     details: Omit<AuthUser, 'role' | 'permissions' | 'modules'> & {
       password: string;
@@ -126,8 +126,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [user, refreshPermissions]);
 
-  const login = async (userId: string, password: string) => {
-    const result = await apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify({ user_id: userId, password }) });
+  /**
+   * `identifier` is the Employee ID, email address or mobile number the user
+   * typed on the login form. The backend resolves any of the three against
+   * auth.users, so the value is sent through as-is.
+   */
+  const login = async (identifier: string, password: string) => {
+    const result = await apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify({ user_id: identifier, password }) });
     localStorage.setItem('authToken', result.token);
     setUser({ ...result.user, modules: result.user.modules ?? [], permissions: result.user.permissions ?? {} });
   };
