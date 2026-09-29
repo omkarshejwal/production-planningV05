@@ -2825,7 +2825,7 @@ doc.text(title, 14, 25);
                                         onMouseEnter={e => hasProduct && !isRunContinuation ? showTooltip(e, entry, mIdx, rowIdx) : undefined}
                                         onMouseMove={hasProduct ? moveTooltip : undefined}
                                         onMouseLeave={hasProduct ? hideTooltip : undefined}
-                                        className={`text-[16px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
+                                        className={`text-[18px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                         {hasProduct ? (isRunContinuation ? '' : entry.product) : 'No bottle set'}
                                       </p>
                                       {/* Job ID badge under bottle name */}
