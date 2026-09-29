@@ -1390,20 +1390,20 @@ export const ProductionPlanningPage: React.FC = () => {
       const doc = new jsPDF('landscape');
 
       // ── Report header: company name + dynamic report title, centred ─────
-      const reportHeader = getReportHeaderLines(startIso);
-      const centerX = doc.internal.pageSize.getWidth() / 2;
+const reportHeader = getReportHeaderLines(startIso);
+const centerX = doc.internal.pageSize.getWidth() / 2;
 
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8); // Reduced company name size
-      doc.text(reportHeader.company, centerX, 11, { align: 'center' });
+doc.setFont('helvetica', 'bold');
+doc.setFontSize(8); // Reduced company name size
+doc.text(reportHeader.company, centerX, 11, { align: 'center' });
 
-      doc.setFontSize(6); // Reduced subtitle size
-      doc.text(reportHeader.title, centerX, 16.5, { align: 'center' });
+doc.setFontSize(6); // Reduced subtitle size
+doc.text(reportHeader.title, centerX, 16.5, { align: 'center' });
 
-      const title = `Production Planning (${startIso} to ${endIso})`;
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8); // Reduced main title size
-      doc.text(title, 14, 25);
+const title = `Production Planning (${startIso} to ${endIso})`;
+doc.setFont('helvetica', 'normal');
+doc.setFontSize(8); // Reduced main title size
+doc.text(title, 14, 25);
 
       const head: any[] = [
         [
@@ -2017,7 +2017,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const rowDateValue = parseDisplayDate(rowDate);
     const dayValue = rowDateValue || new Date();
-    const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+                           const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
     if (endJobBreakdown) {
       const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
       const completedIndex = completed.indexOf(entry);
@@ -2233,7 +2233,7 @@ export const ProductionPlanningPage: React.FC = () => {
     let totalDraw = 0;
 
     for (let mIdx = 0; mIdx < machineLists.length; mIdx++) {
-      const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+                             const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
       if (endJobBreakdown) {
         totalDraw += endJobBreakdown.totalDraw;
         continue;
@@ -2675,7 +2675,7 @@ export const ProductionPlanningPage: React.FC = () => {
                             const isLowSec = completedJob.section !== undefined &&
                               validMachine.includes(completedJob.section) &&
                               completedJob.section < validMachine[validMachine.length - 1];
-                            const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                             const cellBg = 'bg-[#DBEAFE]';
                             const txt = 'text-sm text-[#6B7280]';
                             const isComplContinuation = isContinuationEntry(mIdx, rowIdx, completedJob);
@@ -2807,11 +2807,11 @@ export const ProductionPlanningPage: React.FC = () => {
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay = !isContinuing;
                           const canExtend = hasProduct;
-                          const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
-                          const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
-                          const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
-                          const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                          const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
+                           const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
+                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
+                           const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                           const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
 
                           return (
                             <React.Fragment key={mIdx}>
@@ -2825,15 +2825,15 @@ export const ProductionPlanningPage: React.FC = () => {
                                         onMouseEnter={e => hasProduct && !isRunContinuation ? showTooltip(e, entry, mIdx, rowIdx) : undefined}
                                         onMouseMove={hasProduct ? moveTooltip : undefined}
                                         onMouseLeave={hasProduct ? hideTooltip : undefined}
-                                        className={`text-[11px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
+                                        className={`text-[16px] font-semibold truncate leading-tight flex-1 cursor-default ${hasProduct ? 'text-[#111827]' : 'text-[#9CA3AF] italic'}`}>
                                         {hasProduct ? (isRunContinuation ? '' : entry.product) : 'No bottle set'}
                                       </p>
                                       {/* Job ID badge under bottle name */}
-                                      {hasProduct && entry.jobId && (
+                                      {/* {hasProduct && entry.jobId && (
                                         <span className="text-[8px] font-mono text-[#6B7280] leading-none">
                                           Job {entry.jobId}
                                         </span>
-                                      )}
+                                      )} */}
                                       {/* Quick-edit shortcut beside "No bottle set" */}
                                       {canEdit && !hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Add bottle to this job"
@@ -2866,7 +2866,7 @@ export const ProductionPlanningPage: React.FC = () => {
                                     {entry.startTime && (
                                       <div className="flex items-center gap-0.5 mb-1">
                                         <Clock size={7} className="text-[#6B7280] shrink-0" />
-                                        <span className="text-[8px] text-[#6B7280]">{fmtTime(entry.startTime)}</span>
+                                        <span className="text-[9px] text-[#6B7280]">{fmtTime(entry.startTime)}</span>
                                       </div>
                                     )}
                                     <div className="flex items-center gap-1 flex-wrap">
@@ -2883,13 +2883,13 @@ export const ProductionPlanningPage: React.FC = () => {
                                           <Plus size={8} />
                                         </button>
                                       )}
-                                      {canEdit && hasProduct && isLastDay && (
+                                      {/* {canEdit && hasProduct && isLastDay && (
                                         <button onClick={() => handleAddJob(mIdx, rowIdx)}
                                           title="Schedule a new job after this one finishes"
                                           className="flex items-center gap-0.5 h-5 px-1.5 text-[9px] font-semibold text-[#7C3AED] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#DDD6FE] rounded transition-colors whitespace-nowrap">
                                           <ClipboardPlus size={8} /> End Job
                                         </button>
-                                      )}
+                                      )} */}
                                     </div>
                                   </>
                                 ) : (
@@ -2956,14 +2956,14 @@ export const ProductionPlanningPage: React.FC = () => {
                                   if (hasProduct) {
                                     return <span className="text-sm text-[#6B7280]">{runningDraw > 0 ? runningDraw.toFixed(1) : '—'}</span>;
                                   }
-                                  if (completed.length > 0) {
-                                    const lastIndex = completed.length - 1;
-                                    const changeoverDraw = endJobBreakdown?.changeoverDraws[lastIndex];
-                                    const last = completed[lastIndex];
-                                    const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
-                                    const drawToShow = changeoverDraw !== undefined ? changeoverDraw : lastDraw;
-                                    return <span className="text-sm text-[#9CA3AF] italic">{drawToShow > 0 ? drawToShow.toFixed(1) : '—'}</span>;
-                                  }
+                                   if (completed.length > 0) {
+                                     const lastIndex = completed.length - 1;
+                                     const changeoverDraw = endJobBreakdown?.changeoverDraws[lastIndex];
+                                     const last = completed[lastIndex];
+                                     const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
+                                     const drawToShow = changeoverDraw !== undefined ? changeoverDraw : lastDraw;
+                                     return <span className="text-sm text-[#9CA3AF] italic">{drawToShow > 0 ? drawToShow.toFixed(1) : '—'}</span>;
+                                   }
                                   return <span className="text-sm text-[#6B7280]"></span>;
                                 })()}
                               </td>
@@ -3240,7 +3240,7 @@ export const ProductionPlanningPage: React.FC = () => {
               <div className="py-2.5 border-b border-[#334155]">
                 <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
                   Total Required Bottles <br />
-                  (Total quantity/24hr)
+                   (Total quantity/24hr)
                 </p>
 
                 <p className="font-bold text-[#FCD34D] text-sm mt-1">
