@@ -502,7 +502,10 @@ export const planningRepository = {
     }
   },
 
-  async createProductionJobsBatch(payloads: ProductionJobRow[]): Promise<{ ok: boolean; error?: string }> {
+  async createProductionJobsBatch(
+    payloads: ProductionJobRow[],
+    options?: { keepalive?: boolean }
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
       // Send all changed rows in ONE request to the backend bulk endpoint.
       // The backend processes rows in order so job_id assignment is
@@ -512,6 +515,7 @@ export const planningRepository = {
       const results = await apiFetch('/api/production/jobs/bulk/', {
         method: 'POST',
         body: JSON.stringify({ jobs }),
+        ...(options?.keepalive ? { keepalive: true } : {}),
       });
       // Merge the rows the backend persisted into the in-memory cache so the
       // caller can refresh the grid without re-fetching the full dataset.
@@ -605,7 +609,8 @@ export const planningRepository = {
     machine_no: string,
     start_time: string,
     job_id?: string,
-    section?: number
+    section?: number,
+    options?: { keepalive?: boolean }
   ): Promise<{ ok: boolean; error?: string }> {
     try {
       const machineInt = this._machineIdToInt(machine_no);
@@ -620,7 +625,7 @@ export const planningRepository = {
       const qs = query.toString();
       await apiFetch(
         `/api/production/jobs/${plan_date}/${machineInt}/${encodeURIComponent(start_time)}${qs ? `?${qs}` : ''}`,
-        { method: 'DELETE', }
+        { method: 'DELETE', ...(options?.keepalive ? { keepalive: true } : {}) }
       );
       // Drop the deleted row(s) from the in-memory cache so the grid reflects
       // the deletion without a full dataset re-fetch. When job_id/section are
@@ -628,23 +633,86 @@ export const planningRepository = {
       // same (plan_date, machine_no, start_time) slot stay in the cache.
       const machineId = this._machineIdToStr(machineInt);
       const normStart = start_time.includes('T') ? start_time.split('T')[1].substring(0, 5) : start_time;
-      const prevLen = _jobs.length;
-      const filterFn = (j: ProductionJobRow) => !(
+      this._dropCachedRows((j) => !(
         j.plan_date === plan_date &&
         j.machine_no === machineId &&
         j.start_time === normStart &&
         (job_id == null || toStr(j.job_id) === toStr(job_id)) &&
         (section == null || j.section === section)
-      );
-      _jobs = _jobs.filter(filterFn);
-      if (_jobs.length !== prevLen) {
-        _cacheVersion++;
-        if (_allJobsLoaded) _allJobs = _allJobs.filter(filterFn);
-      }
+      ));
       return { ok: true };
     } catch (err: any) {
       console.error('deleteProductionJob failed:', err);
       return { ok: false, error: err.message || 'Failed to delete job' };
+    }
+  },
+
+  /**
+   * Removes many job slots in ONE request (single backend transaction)
+   * instead of one DELETE round-trip per row. Keys use the same
+   * `plan_date|machine_no|start_time|job_id|section` shape the planning grid
+   * tracks for deletions. Missing rows stay idempotent no-ops server-side.
+   *
+   * Returns `fallbackNeeded` when the backend does not expose the bulk
+   * endpoint (404/405) so the caller can replay the keys one by one.
+   */
+  async deleteProductionJobsBatch(
+    keys: Array<{ plan_date: string; machine_no: string; start_time: string; job_id?: string; section?: number }>,
+    options?: { keepalive?: boolean }
+  ): Promise<{ ok: boolean; error?: string; fallbackNeeded?: boolean }> {
+    if (keys.length === 0) return { ok: true };
+    try {
+      const payload = keys.map((k) => {
+        const machineInt = this._machineIdToInt(k.machine_no);
+        const normStart = k.start_time.includes('T') ? k.start_time.split('T')[1].substring(0, 5) : k.start_time;
+        const parsedJobId = k.job_id ? parseInt(k.job_id, 10) : NaN;
+        return {
+          plan_date: k.plan_date,
+          machine_no: machineInt,
+          start_time: normStart,
+          machine_id: this._machineIdToStr(machineInt),
+          ...(Number.isFinite(parsedJobId) ? { job_id: parsedJobId } : {}),
+          ...(typeof k.section === 'number' && Number.isFinite(k.section) ? { section: k.section } : {}),
+        };
+      });
+
+      await apiFetch('/api/production/jobs/bulk-delete/', {
+        method: 'POST',
+        body: JSON.stringify({
+          keys: payload.map(({ machine_id: _ignored, ...rest }) => rest),
+        }),
+        ...(options?.keepalive ? { keepalive: true } : {}),
+      });
+
+      this._dropCachedRows((j) => !payload.some((k) =>
+        j.plan_date === k.plan_date &&
+        j.machine_no === k.machine_id &&
+        j.start_time === k.start_time &&
+        (k.job_id === undefined || toStr(j.job_id) === String(k.job_id)) &&
+        (k.section === undefined || j.section === k.section)
+      ));
+      return { ok: true };
+    } catch (err: any) {
+      const message = err.message || 'Failed to delete jobs batch';
+      const endpointMissing =
+        message.includes('404') ||
+        message.includes('405') ||
+        /not found/i.test(message) ||
+        /method not allowed/i.test(message);
+      if (endpointMissing) {
+        return { ok: false, error: message, fallbackNeeded: true };
+      }
+      console.error('deleteProductionJobsBatch failed:', err);
+      return { ok: false, error: message };
+    }
+  },
+
+  _dropCachedRows(keep: (job: ProductionJobRow) => boolean): void {
+    const prevLen = _jobs.length;
+    _jobs = _jobs.filter(keep);
+    if (_jobs.length !== prevLen) {
+      _cacheVersion++;
+      if (_allJobsLoaded) _allJobs = _allJobs.filter(keep);
     }
   },
 

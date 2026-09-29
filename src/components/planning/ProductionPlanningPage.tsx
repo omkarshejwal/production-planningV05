@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState, useEffect } from 'react';
+import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 
 import { toast } from 'sonner';
 import { useERP } from '../../context/ERPContext';
@@ -313,6 +313,29 @@ const reapplyBottleConfig = (
   };
 };
 
+// ─── Auto-save ────────────────────────────────────────────────────────────────
+
+const AUTO_SAVE_DEBOUNCE_MS = 1000;
+const AUTO_SAVE_MAX_WAIT_MS = 3000;
+const AUTO_SAVE_STATUS_RESET_MS = 4000;
+const AUTO_SAVE_RETRY_DELAYS_MS = [2000, 5000, 10000, 20000, 30000];
+
+type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type SaveRunReason = 'manual' | 'auto' | 'retry' | 'unload';
+
+interface SaveRunOptions {
+  silent?: boolean;
+  reason: SaveRunReason;
+}
+
+const AUTO_SAVE_STATUS_VIEW: Record<AutoSaveStatus, { label: string; color: string }> = {
+  idle: { label: '', color: '#94a3b8' },
+  pending: { label: 'Unsaved changes', color: '#b45309' },
+  saving: { label: 'Saving...', color: '#2563eb' },
+  saved: { label: 'Saved', color: '#15803d' },
+  error: { label: 'Save failed', color: '#b91c1c' },
+};
+
 // ─── Production Planning Page ─────────────────────────────────────────────────
 
 const STORAGE_KEY = 'vitrum_production_data_v4';
@@ -417,6 +440,120 @@ export const ProductionPlanningPage: React.FC = () => {
   const [machineLists, setMachineLists] = useState<MachineLists>(INITIAL_MACHINE_LISTS);
   const [completedJobMap, setCompletedJobMap] = useState<CompletedJobMap>({});
 
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Incremental-save tracking (only the records the user actually changed).
+  //   dirtyJobIds   — logical job_ids (job_master) whose rows were modified and
+  //                   must be re-sent to the backend. Rows without a job_id are
+  //                   brand-new jobs and are always included in the save payload.
+  //   deletedJobKeys— DB rows the user removed, keyed by
+  //                   `${plan_date}|${machine_no}|${start_time}|${job_id}|${section}`
+  //                   (DELETEd on save). The full row identity is stored because
+  //                   production_job.job_id is NOT unique: an extended job shares
+  //                   the same job_id across many dates, so job_id alone can not
+  //                   identify which day was removed.
+  const [dirtyJobIds, setDirtyJobIds] = useState<Set<string>>(new Set());
+  const [deletedJobKeys, setDeletedJobKeys] = useState<Set<string>>(new Set());
+
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
+  const statusResetTimerRef = useRef<number | null>(null);
+  const firstQueuedAtRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
+  const savingRef = useRef(false);
+  const changeSeqRef = useRef(0);
+  const isDirtyRef = useRef(false);
+  const runSaveRef = useRef<(opts: SaveRunOptions) => Promise<void>>(async () => {});
+
+  const clearAutoSaveTimer = useCallback(() => {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+  }, []);
+
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
+  const clearStatusResetTimer = useCallback(() => {
+    if (statusResetTimerRef.current !== null) {
+      window.clearTimeout(statusResetTimerRef.current);
+      statusResetTimerRef.current = null;
+    }
+  }, []);
+
+  const armStatusReset = useCallback(() => {
+    clearStatusResetTimer();
+    statusResetTimerRef.current = window.setTimeout(() => {
+      statusResetTimerRef.current = null;
+      setAutoSaveStatus('idle');
+    }, AUTO_SAVE_STATUS_RESET_MS);
+  }, [clearStatusResetTimer]);
+
+  const cancelPendingAutoSave = useCallback(() => {
+    clearAutoSaveTimer();
+    clearRetryTimer();
+    clearStatusResetTimer();
+    firstQueuedAtRef.current = null;
+    retryAttemptRef.current = 0;
+    setAutoSaveStatus('idle');
+  }, [clearAutoSaveTimer, clearRetryTimer, clearStatusResetTimer]);
+
+  // The backend bulk endpoint upserts by (plan_date, machine_no, start_time,
+  // section) and the DELETE endpoints are idempotent, so replaying the same
+  // payload after a failure can never create duplicates.
+  const scheduleRetry = useCallback(() => {
+    const attempt = retryAttemptRef.current;
+    if (attempt >= AUTO_SAVE_RETRY_DELAYS_MS.length) {
+      setAutoSaveStatus('error');
+      return;
+    }
+    const delay = AUTO_SAVE_RETRY_DELAYS_MS[attempt];
+    retryAttemptRef.current = attempt + 1;
+    setAutoSaveStatus('error');
+    clearRetryTimer();
+    retryTimerRef.current = window.setTimeout(() => {
+      retryTimerRef.current = null;
+      if (!isDirtyRef.current) {
+        retryAttemptRef.current = 0;
+        return;
+      }
+      void runSaveRef.current({ silent: true, reason: 'retry' });
+    }, delay);
+  }, [clearRetryTimer]);
+
+  // Every mutation funnels through here: a fresh edit restarts the quiet
+  // period so a burst of changes collapses into one request, while the max
+  // wait keeps continuous editing from postponing the save indefinitely.
+  const queueAutoSave = useCallback(() => {
+    if (!canEdit) return;
+    changeSeqRef.current++;
+    setAutoSaveStatus('pending');
+    clearStatusResetTimer();
+    retryAttemptRef.current = 0;
+    clearRetryTimer();
+    clearAutoSaveTimer();
+    const now = Date.now();
+    if (firstQueuedAtRef.current === null) firstQueuedAtRef.current = now;
+    const deadline = firstQueuedAtRef.current + AUTO_SAVE_MAX_WAIT_MS;
+    const delay = Math.max(0, Math.min(AUTO_SAVE_DEBOUNCE_MS, deadline - now));
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      firstQueuedAtRef.current = null;
+      void runSaveRef.current({ silent: true, reason: 'auto' });
+    }, delay);
+  }, [canEdit, clearAutoSaveTimer, clearRetryTimer, clearStatusResetTimer]);
+
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
+
   // Pending extend: queued when the target date is outside the current dateRows
   // and the range needs expanding + data reloading before the extend can proceed.
   const pendingExtendRef = React.useRef<{
@@ -436,6 +573,7 @@ export const ProductionPlanningPage: React.FC = () => {
   React.useEffect(() => {
     const prevRows = prevDateRowsRef.current;
     const currRows = dateRows;
+    const dateRowsChanged = currRows !== prevRows;
     prevDateRowsRef.current = currRows;
 
     const isGrowth =
@@ -566,6 +704,13 @@ export const ProductionPlanningPage: React.FC = () => {
         return next;
       });
 
+      return;
+    }
+
+    // A jobs/master-data refresh must not wipe edits that only live in this
+    // grid (auto-save has not committed them yet). Date-range changes still
+    // rebuild: the grid shape has to follow dateRows. Growth was handled above.
+    if (!dateRowsChanged && isDirty) {
       return;
     }
 
@@ -701,21 +846,6 @@ export const ProductionPlanningPage: React.FC = () => {
   const [editModal, setEditModal] = useState<{ mIdx: number; rowIdx: number; newJobStartTime?: string; completedIndex?: number; isContinuation?: boolean; isEndJobReplacement?: boolean } | null>(null);
   const [endJobModal, setEndJobModal] = useState<{ mIdx: number; rowIdx: number } | null>(null);
   const [deleteModal, setDeleteModal] = useState<{ planDate: string; machineNo: string; startTime: string; jobId?: string; section?: number; isCompleted?: boolean } | null>(null);
-  const [isDirty, setIsDirty] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-
-  // Incremental-save tracking (only the records the user actually changed).
-  //   dirtyJobIds   — logical job_ids (job_master) whose rows were modified and
-  //                   must be re-sent to the backend. Rows without a job_id are
-  //                   brand-new jobs and are always included in the save payload.
-  //   deletedJobKeys— DB rows the user removed, keyed by
-  //                   `${plan_date}|${machine_no}|${start_time}|${job_id}|${section}`
-  //                   (DELETEd on save). The full row identity is stored because
-  //                   production_job.job_id is NOT unique: an extended job shares
-  //                   the same job_id across many dates, so job_id alone can not
-  //                   identify which day was removed.
-  const [dirtyJobIds, setDirtyJobIds] = useState<Set<string>>(new Set());
-  const [deletedJobKeys, setDeletedJobKeys] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<{ entry: MachineEntry; mIdx: number; rowIdx: number; x: number; y: number } | null>(null);
   const [showSection, setShowSection] = useState(false);
   const [showWt, setShowWt] = useState(false);
@@ -784,12 +914,45 @@ export const ProductionPlanningPage: React.FC = () => {
     );
   };
 
-  const handleSaveToDb = async () => {
+  const runSave = async (opts: SaveRunOptions): Promise<void> => {
+    const { reason } = opts;
+    const silent = opts.silent === true;
+    const isAuto = reason === 'auto' || reason === 'retry';
+    const keepalive = reason === 'unload';
+
     if (!canEdit) {
-      toast.error('You do not have permission to edit production planning.');
+      if (!silent) toast.error('You do not have permission to edit production planning.');
       return;
     }
+
+    if (savingRef.current) {
+      if (isAuto) {
+        clearAutoSaveTimer();
+        autoSaveTimerRef.current = window.setTimeout(() => {
+          autoSaveTimerRef.current = null;
+          void runSaveRef.current({ silent: true, reason: 'auto' });
+        }, AUTO_SAVE_DEBOUNCE_MS);
+      }
+      return;
+    }
+
+    clearAutoSaveTimer();
+    clearRetryTimer();
+    firstQueuedAtRef.current = null;
+    if (reason === 'manual') retryAttemptRef.current = 0;
+
+    savingRef.current = true;
     setIsSaving(true);
+    clearStatusResetTimer();
+    setAutoSaveStatus('saving');
+
+    // Snapshots of everything this request will persist: only these are
+    // cleared on success, so edits made while the request is in flight stay
+    // marked dirty and are picked up by the next auto-save.
+    const sentJobIds = new Set(dirtyJobIds);
+    const sentDeletedKeys = new Set(deletedJobKeys);
+    const sentSeq = changeSeqRef.current;
+
     try {
       const calculateChangeover = (mIdx: number, rowIdx: number, startTime: string) => {
         const key = `${mIdx}-${rowIdx}`;
@@ -849,8 +1012,12 @@ export const ProductionPlanningPage: React.FC = () => {
 
       if (rowsToSave.length === 0 && deletedNow.length === 0) {
         // Nothing changed — make zero save API requests.
+        setDirtyJobIds(new Set());
+        setDeletedJobKeys(new Set());
         setIsDirty(false);
-        toast.info('No changes to save.');
+        setAutoSaveStatus('saved');
+        armStatusReset();
+        if (!silent) toast.info('No changes to save.');
         return;
       }
 
@@ -965,55 +1132,111 @@ export const ProductionPlanningPage: React.FC = () => {
         .map(({ entry, mIdx, rowIdx }) => buildRow(entry, mIdx, rowIdx))
         .filter((row): row is ProductionJobRow => row !== null);
 
-      console.log("[SAVE] Sending only changed rows:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time, job_id: (r as any).job_id })), null, 2));
+      if (!silent) {
+        console.log("[SAVE] Sending only changed rows:", JSON.stringify(payloadRows.map(r => ({ plan_date: (r as any).plan_date, machine_no: (r as any).machine_no, start_time: (r as any).start_time, job_id: (r as any).job_id })), null, 2));
+      }
 
       if (rowErrors.length > 0) {
         // Abort instead of sending rows that would violate the
         // bottle_configuration (bottle_id, machine_no, section) foreign key.
-        rowErrors.forEach(msg => toast.error(msg, { duration: 7000 }));
-        toast.error(
-          `Save aborted: ${rowErrors.length} row(s) have no matching bottle configuration. Fix them and retry.`,
-          { duration: 7000 }
-        );
-        setIsSaving(false);
+        if (!silent || reason === 'auto') {
+          rowErrors.forEach(msg => toast.error(msg, { duration: 7000 }));
+          toast.error(
+            `Save aborted: ${rowErrors.length} row(s) have no matching bottle configuration. Fix them and retry.`,
+            { duration: 7000 }
+          );
+        }
+        setAutoSaveStatus('error');
         return;
       }
 
       if (payloadRows.length > 0) {
         // ONE bulk request containing only the changed jobs.
-        const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any);
-        console.log("[SAVE] createProductionJobsBatch result:", batchResult);
+        const batchResult = await planningRepository.createProductionJobsBatch(payloadRows as any, { keepalive });
+        if (!silent) console.log("[SAVE] createProductionJobsBatch result:", batchResult);
 
         if (!batchResult.ok) {
           // Save failed — keep the dirty trackers so the user can retry.
-          toast.error(batchResult.error || 'Save failed. Please try again.', { duration: 5000 });
-          setIsSaving(false);
+          setAutoSaveStatus('error');
+          if (!silent || reason === 'auto') {
+            toast.error(batchResult.error || 'Save failed. Please try again.', { duration: 5000 });
+          }
+          if (isAuto) scheduleRetry();
           return;
         }
       }
 
-      // Persist only the rows the user explicitly deleted.
+      // Persist only the rows the user explicitly deleted — ONE bulk request,
+      // falling back to per-row DELETEs if the backend lacks the bulk endpoint.
       const failedDeletes = new Set<string>();
-      await Promise.all(
-        deletedNow.map(async (key) => {
+      let deleteErrorMessage = '';
+      if (deletedNow.length > 0) {
+        const parsedKeys = deletedNow.map((key) => {
           const [planDate, machineNo, startTime, jobIdRaw, sectionRaw] = key.split('|');
-          const jobId = jobIdRaw && jobIdRaw !== '-' ? jobIdRaw : undefined;
-          const sectionNum = sectionRaw && sectionRaw !== '-' ? Number(sectionRaw) : undefined;
-          const del = await planningRepository.deleteProductionJob(planDate, machineNo, startTime, jobId, sectionNum);
-          if (!del.ok) failedDeletes.add(key);
-        })
-      );
+          return {
+            key,
+            plan_date: planDate,
+            machine_no: machineNo,
+            start_time: startTime,
+            job_id: jobIdRaw && jobIdRaw !== '-' ? jobIdRaw : undefined,
+            section: sectionRaw && sectionRaw !== '-' ? Number(sectionRaw) : undefined,
+          };
+        });
 
-      // Successful save: reset the dirty state for the saved records.  Rows
-      // that could not be deleted stay marked so the user can retry.
-      setDirtyJobIds(new Set());
-      setDeletedJobKeys(failedDeletes);
+        const bulkDelete = await planningRepository.deleteProductionJobsBatch(parsedKeys, { keepalive });
+        if (bulkDelete.ok) {
+          // All requested rows removed in one request.
+        } else if (bulkDelete.fallbackNeeded) {
+          await Promise.all(
+            parsedKeys.map(async (k) => {
+              const del = await planningRepository.deleteProductionJob(
+                k.plan_date, k.machine_no, k.start_time, k.job_id, k.section, { keepalive }
+              );
+              if (!del.ok) failedDeletes.add(k.key);
+            })
+          );
+        } else {
+          parsedKeys.forEach((k) => failedDeletes.add(k.key));
+          deleteErrorMessage = bulkDelete.error || '';
+        }
+      }
+
+      // Clear ONLY what this request persisted; anything dirtied while the
+      // request was in flight survives and re-arms the debounce.
+      setDirtyJobIds(prev => {
+        const next = new Set(prev);
+        sentJobIds.forEach(id => next.delete(id));
+        return next;
+      });
+      setDeletedJobKeys(prev => {
+        const next = new Set(prev);
+        sentDeletedKeys.forEach(k => next.delete(k));
+        failedDeletes.forEach(k => next.add(k));
+        return next;
+      });
+
+      const hasNewChanges = changeSeqRef.current > sentSeq;
+      const stillDirty = hasNewChanges || failedDeletes.size > 0;
+      setIsDirty(stillDirty);
 
       if (failedDeletes.size > 0) {
-        setIsDirty(true);
-        toast.error(`Saved changes, but ${failedDeletes.size} deleted job(s) could not be removed from the database. Please retry.`, { duration: 5000 });
+        setAutoSaveStatus('error');
+        if (!silent || reason === 'auto') {
+          toast.error(
+            deleteErrorMessage ||
+            `Saved changes, but ${failedDeletes.size} deleted job(s) could not be removed from the database. Please retry.`,
+            { duration: 5000 }
+          );
+        }
+        if (isAuto) scheduleRetry();
+      } else if (hasNewChanges) {
+        setAutoSaveStatus('pending');
       } else {
-        setIsDirty(false);
+        setAutoSaveStatus('saved');
+        armStatusReset();
+      }
+
+      if (reason === 'manual' && failedDeletes.size === 0) {
         toast.success('Production data saved successfully to AWS Database.', { duration: 3000 });
       }
 
@@ -1023,11 +1246,69 @@ export const ProductionPlanningPage: React.FC = () => {
       refreshPlanner();
     } catch (e) {
       console.error("[SAVE] ERROR:", e);
-      toast.error('Save failed. Please try again.');
+      setAutoSaveStatus('error');
+      if (!silent || reason === 'auto') toast.error('Save failed. Please try again.');
+      if (isAuto) scheduleRetry();
     } finally {
+      savingRef.current = false;
       setIsSaving(false);
     }
   };
+
+  const handleSaveToDb = () => {
+    void runSave({ reason: 'manual' });
+  };
+
+  useEffect(() => {
+    runSaveRef.current = runSave;
+  });
+
+  // Any change to the grid while there are unsaved edits queues a debounced
+  // auto-save. Save bookkeeping itself never touches machineLists or
+  // completedJobMap, so a finished save does not re-trigger this effect.
+  useEffect(() => {
+    if (!isDirty) return;
+    queueAutoSave();
+  }, [isDirty, machineLists, completedJobMap, queueAutoSave]);
+
+  // Best-effort flush for a closing/backgrounded tab or a module change: send
+  // whatever is still dirty immediately, with `keepalive` so the browser lets
+  // the request finish while the page goes away. A tab close with pending
+  // changes also asks for confirmation so nothing is silently lost.
+  useEffect(() => {
+    const flushNow = () => {
+      if (!isDirtyRef.current || savingRef.current) return;
+      clearAutoSaveTimer();
+      void runSaveRef.current({ silent: true, reason: 'unload' });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flushNow();
+    };
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!isDirtyRef.current) return;
+      flushNow();
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flushNow);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flushNow);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+  }, [clearAutoSaveTimer]);
+
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current !== null && isDirtyRef.current && !savingRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+        void runSaveRef.current({ silent: true, reason: 'unload' });
+      }
+    };
+  }, []);
 
   // Keyboard shortcut: Ctrl+S (Windows/Linux) or Cmd+S (Mac) to trigger Save
   useEffect(() => {
@@ -1096,6 +1377,7 @@ export const ProductionPlanningPage: React.FC = () => {
     setIsDirty(false);
     setDirtyJobIds(new Set());
     setDeletedJobKeys(new Set());
+    cancelPendingAutoSave();
     // Trigger a fresh scoped fetch for the custom range
     if (draftFromDate && draftToDate) {
       reloadJobsForWindow(draftFromDate, draftToDate);
@@ -1145,6 +1427,7 @@ export const ProductionPlanningPage: React.FC = () => {
     setIsDirty(false);
     setDirtyJobIds(new Set());
     setDeletedJobKeys(new Set());
+    cancelPendingAutoSave();
     // Trigger a fresh scoped fetch for the new month
     reloadJobsForWindow(monthStart, monthEnd);
   };
@@ -2999,20 +3282,36 @@ doc.text(title, 14, 25);
               : 'All changes are saved.'}
           </span>
         </div>
-        {canEdit && (
-          <button
-            onClick={handleSaveToDb}
-            disabled={!isDirty || isSaving}
-            className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
+        <div className="flex items-center gap-3">
+          {autoSaveStatus !== 'idle' && (
+            <span
+              className="flex items-center gap-1.5 text-xs font-semibold whitespace-nowrap"
+              style={{ color: AUTO_SAVE_STATUS_VIEW[autoSaveStatus].color }}
+              role="status"
+              aria-live="polite"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${autoSaveStatus === 'saving' ? 'animate-pulse' : ''}`}
+                style={{ backgroundColor: AUTO_SAVE_STATUS_VIEW[autoSaveStatus].color }}
+              />
+              {AUTO_SAVE_STATUS_VIEW[autoSaveStatus].label}
+            </span>
+          )}
+          {canEdit && (
+            <button
+              onClick={handleSaveToDb}
+              disabled={!isDirty || isSaving}
+              className={`h-10 flex items-center gap-2 px-5 text-sm font-semibold rounded-md transition-colors
               ${isDirty && !isSaving
                 ? 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
                 : 'bg-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed'
               }`}
-          >
-            <Save size={15} />
-            {isSaving ? 'Saving…' : 'Save'}
-          </button>
-        )}
+            >
+              <Save size={15} />
+              {isSaving ? 'Saving…' : 'Save'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Edit Modal */}

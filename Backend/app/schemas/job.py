@@ -37,6 +37,19 @@ class ExtendJobRequest(BaseModel):
 class ProductionJobBulkRequest(BaseModel):
     jobs: List[ProductionJobCreate]
 
+class ProductionJobBulkDeleteKey(BaseModel):
+    plan_date: date
+    machine_no: int
+    start_time: str
+    job_id: Optional[int] = None
+    section: Optional[int] = None
+
+class ProductionJobBulkDeleteRequest(BaseModel):
+    keys: List[ProductionJobBulkDeleteKey]
+
+class ProductionJobBulkDeleteResponse(BaseModel):
+    deleted: int
+
 class ProductionJobResponse(BaseModel):
     job_id: int
     plan_date: date

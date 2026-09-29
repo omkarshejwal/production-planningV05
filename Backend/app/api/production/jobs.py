@@ -13,7 +13,7 @@ from app.models.job import JobMaster, ProductionJob, JobPackaging, MachineJobSeq
 from app.models.machine import MachineMaster
 from app.models.product import BottleConfiguration
 from app.models.audit_log import AuditLog
-from app.schemas.job import ProductionJobResponse, ProductionJobCreate, ExtendJobRequest, ProductionJobBulkRequest
+from app.schemas.job import ProductionJobResponse, ProductionJobCreate, ExtendJobRequest, ProductionJobBulkRequest, ProductionJobBulkDeleteRequest, ProductionJobBulkDeleteResponse
 from app.api.permissions import require_module_read, require_module_edit, MODULE_PRODUCTION_PLANNING
 from app.models.auth import AuthUser
 
@@ -590,17 +590,15 @@ def extend_job(
     )
     return affected
 
-@router.delete("/{plan_date}/{machine_no}/{start_time}", status_code=204)
-def delete_job(
+def _delete_job_slot(
+    db: Session,
     plan_date: str,
     machine_no: int,
     start_time: str,
     job_id: Optional[int] = None,
     section: Optional[int] = None,
-    db: Session = Depends(get_db),
-    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
-    user_role: Optional[str] = None,
-):
+    commit: bool = True,
+) -> bool:
     """
     Delete the production job row(s) belonging to ONE specific day/slot.
 
@@ -611,12 +609,16 @@ def delete_job(
     for other dates that share the same job_id are never touched and job_master
     is only removed once NO production_job rows reference it anymore.
 
-    - Missing rows are an idempotent no-op (204): the caller may remove a day
-      that was never persisted, and should not be told it "could not be removed".
+    - Missing rows are an idempotent no-op (returns False): the caller may
+      remove a day that was never persisted, and should not be told it
+      "could not be removed".
     - The backward-shift that closes a scheduling gap is applied ONLY for
       standalone jobs. When the removed day belongs to a multi-day extended job
       (other dates still reference the same job_id), the remaining continuation
       days stay exactly where they are.
+
+    Returns True when at least one row was deleted.  With ``commit=False`` the
+    caller owns the transaction (used by the bulk endpoint to commit once).
     """
     try:
         parsed_date = datetime.strptime(plan_date, "%Y-%m-%d").date()
@@ -639,7 +641,7 @@ def delete_job(
 
     # Idempotent delete: the exact day rows are already absent, nothing to do.
     if not matched:
-        return
+        return False
 
     affected_job_ids = {row.job_id for row in matched}
 
@@ -756,4 +758,65 @@ def delete_job(
             ).delete()
             db.flush()
 
-    db.commit()
+    if commit:
+        db.commit()
+    return True
+
+
+@router.delete("/{plan_date}/{machine_no}/{start_time}", status_code=204)
+def delete_job(
+    plan_date: str,
+    machine_no: int,
+    start_time: str,
+    job_id: Optional[int] = None,
+    section: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
+    user_role: Optional[str] = None,
+):
+    """
+    Delete ONE day/slot of a production job.  Idempotent: an absent day is a
+    204 no-op.  See _delete_job_slot for the scoping and shift rules.
+    """
+    _delete_job_slot(db, plan_date, machine_no, start_time, job_id, section)
+
+
+@router.post("/bulk-delete/", response_model=ProductionJobBulkDeleteResponse)
+def delete_jobs_bulk(
+    req: ProductionJobBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    _user: AuthUser = Depends(require_module_edit(MODULE_PRODUCTION_PLANNING)),
+    user_role: Optional[str] = None,
+):
+    """
+    Delete many production job slots in ONE transaction.
+
+    Applies exactly the same per-slot logic as DELETE /jobs/{plan_date}/{machine_no}/{start_time}
+    (extended-job protection, scheduling-gap close, job_master cleanup) in the
+    order the keys are sent, but avoids one HTTP round-trip and one commit per
+    row.  Missing rows stay idempotent no-ops.
+    """
+    if not req.keys:
+        return {"deleted": 0}
+
+    deleted = 0
+    try:
+        for key in req.keys:
+            if _delete_job_slot(
+                db,
+                key.plan_date.isoformat(),
+                key.machine_no,
+                key.start_time,
+                key.job_id,
+                key.section,
+                commit=False,
+            ):
+                deleted += 1
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to bulk delete jobs: {str(e)}")
+    return {"deleted": deleted}
