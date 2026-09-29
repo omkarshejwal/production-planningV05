@@ -53,6 +53,7 @@ import {
 } from '../../utils/planningCalculations';
 import { addCalendarDays } from '../../utils/calculations';
 import { buildExportData, calculateAverageTotalDraw } from '../../utils/exportData';
+import { getReportHeaderLines } from '../../utils/reportHeader';
 import { EditSavePayload, DateRow } from '../../types/planning';
 import { EditMachineModal } from './EditMachineModal';
 import { EndJobModal } from './EndJobModal';
@@ -1177,9 +1178,29 @@ export const ProductionPlanningPage: React.FC = () => {
       const averageTotalDraw = calculateAverageTotalDraw(exportRows);
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Production Planning');
-      worksheet.views = [{ state: 'frozen', ySplit: 2 }];
+      worksheet.views = [{ state: 'frozen', ySplit: 4 }];
 
-      // Row 1: Grouped Headers
+      // ── Report header: 2 rows above the table ───────────────────────────
+      // Row 1: company name. Row 2: report title with the reporting month.
+      // Both are merged across the full table width so they stay centred
+      // above the columns and never push the table layout around.
+      const reportHeader = getReportHeaderLines(startIso);
+
+      worksheet.addRow([reportHeader.company]);
+      worksheet.addRow([reportHeader.title]);
+      worksheet.mergeCells('A1:Z1');
+      worksheet.mergeCells('A2:Z2');
+
+      const reportHeaderRow1 = worksheet.getRow(1);
+      const reportHeaderRow2 = worksheet.getRow(2);
+      reportHeaderRow1.height = 22;
+      reportHeaderRow2.height = 18;
+      reportHeaderRow1.font = { bold: true, size: 10 };
+      reportHeaderRow2.font = { bold: true, size: 8 };
+      reportHeaderRow1.alignment = { horizontal: 'center', vertical: 'middle' };
+      reportHeaderRow2.alignment = { horizontal: 'center', vertical: 'middle' };
+
+      // Row 3: Grouped Headers
       const topRow = ['Date'];
       for (let i = 1; i <= 4; i++) {
         topRow.push(`Machine No ${i}`, '', '', '', '', '');
@@ -1187,7 +1208,7 @@ export const ProductionPlanningPage: React.FC = () => {
       topRow.push('Total Draw');
       worksheet.addRow(topRow);
 
-      // Row 2: Sub-headers
+      // Row 4: Sub-headers
       const subRow = [''];
       for (let i = 1; i <= 4; i++) {
         subRow.push('Bottle Name', 'Sec', 'Wt', 'Cut', 'Qty', 'Draw');
@@ -1196,12 +1217,12 @@ export const ProductionPlanningPage: React.FC = () => {
       worksheet.addRow(subRow);
 
       // Merge grouped headers
-      worksheet.mergeCells('A1:A2'); // Date
-      worksheet.mergeCells('B1:G1'); // Machine 1
-      worksheet.mergeCells('H1:M1'); // Machine 2
-      worksheet.mergeCells('N1:S1'); // Machine 3
-      worksheet.mergeCells('T1:Y1'); // Machine 4
-      worksheet.mergeCells('Z1:Z2'); // Total Draw
+      worksheet.mergeCells('A3:A4'); // Date
+      worksheet.mergeCells('B3:G3'); // Machine 1
+      worksheet.mergeCells('H3:M3'); // Machine 2
+      worksheet.mergeCells('N3:S3'); // Machine 3
+      worksheet.mergeCells('T3:Y3'); // Machine 4
+      worksheet.mergeCells('Z3:Z4'); // Total Draw
 
       const dateColIndex = 1;
 
@@ -1238,32 +1259,38 @@ export const ProductionPlanningPage: React.FC = () => {
       const averageRow = worksheet.addRow(averageValues);
 
       // Format Header Rows
-      const headerRow1 = worksheet.getRow(1);
-      const headerRow2 = worksheet.getRow(2);
+      const headerRow1 = worksheet.getRow(3);
+      const headerRow2 = worksheet.getRow(4);
       headerRow1.font = { bold: true };
       headerRow2.font = { bold: true };
       headerRow1.alignment = { horizontal: 'center', vertical: 'middle' };
       headerRow2.alignment = { horizontal: 'center', vertical: 'middle' };
 
+      // Rows 1-2 are the report header, so they get no cell borders and are
+      // skipped by the data formatting below.
+      const firstTableRow = 5;
+
       worksheet.eachRow((row: ExcelJS.Row, rowNumber: number) => {
         row.eachCell((cell: ExcelJS.Cell, colNumber: number) => {
-          cell.border = {
-            top: { style: 'thin' },
-            left: { style: 'thin' },
-            bottom: { style: 'thin' },
-            right: { style: 'thin' },
-          };
+          if (rowNumber >= 3) {
+            cell.border = {
+              top: { style: 'thin' },
+              left: { style: 'thin' },
+              bottom: { style: 'thin' },
+              right: { style: 'thin' },
+            };
 
-          if (rowNumber > 2) {
-            if (colNumber === dateColIndex && cell.value instanceof Date) {
-              cell.numFmt = 'dd-mmm-yyyy';
-              cell.alignment = { horizontal: 'left', vertical: 'middle' };
-            } else if (typeof cell.value === 'number') {
-              const isInteger = Number.isInteger(cell.value);
-              cell.numFmt = isInteger ? '#,##0' : '#,##0.00';
-              cell.alignment = { horizontal: 'center', vertical: 'middle' };
-            } else {
-              cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+            if (rowNumber >= firstTableRow) {
+              if (colNumber === dateColIndex && cell.value instanceof Date) {
+                cell.numFmt = 'dd-mmm-yyyy';
+                cell.alignment = { horizontal: 'left', vertical: 'middle' };
+              } else if (typeof cell.value === 'number') {
+                const isInteger = Number.isInteger(cell.value);
+                cell.numFmt = isInteger ? '#,##0' : '#,##0.00';
+                cell.alignment = { horizontal: 'center', vertical: 'middle' };
+              } else {
+                cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+              }
             }
           }
         });
@@ -1273,24 +1300,25 @@ export const ProductionPlanningPage: React.FC = () => {
       averageRow.getCell(1).alignment = { horizontal: 'right', vertical: 'middle' };
       averageRow.getCell(26).alignment = { horizontal: 'center', vertical: 'middle' };
 
-      worksheet.columns = worksheet.columns.map((column: ExcelJS.Column) => {
+      // Auto-fit widths from the table only. The two merged report-header rows
+      // are skipped so the long company/title strings never inflate column A.
+      const lastRowNumber = worksheet.rowCount;
+
+      worksheet.columns = worksheet.columns.map((column: ExcelJS.Column, colIndex: number) => {
         let max = 10;
 
-        column.eachCell?.(
-          { includeEmpty: true },
-          (cell: ExcelJS.Cell) => {
-            const value = cell.value;
+        for (let rowNumber = 3; rowNumber <= lastRowNumber; rowNumber++) {
+          const value = worksheet.getRow(rowNumber).getCell(colIndex + 1).value;
 
-            const text =
-              value instanceof Date
-                ? value.toLocaleDateString('en-GB')
-                : value === null || value === undefined
-                  ? ''
-                  : String(value);
+          const text =
+            value instanceof Date
+              ? value.toLocaleDateString('en-GB')
+              : value === null || value === undefined
+                ? ''
+                : String(value);
 
-            max = Math.max(max, text.length + 2);
-          }
-        );
+          max = Math.max(max, text.length + 2);
+        }
 
         return {
           ...column,
@@ -1361,9 +1389,21 @@ export const ProductionPlanningPage: React.FC = () => {
       const averageTotalDraw = calculateAverageTotalDraw(exportRows);
       const doc = new jsPDF('landscape');
 
+      // ── Report header: company name + dynamic report title, centred ─────
+      const reportHeader = getReportHeaderLines(startIso);
+      const centerX = doc.internal.pageSize.getWidth() / 2;
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8); // Reduced company name size
+      doc.text(reportHeader.company, centerX, 11, { align: 'center' });
+
+      doc.setFontSize(6); // Reduced subtitle size
+      doc.text(reportHeader.title, centerX, 16.5, { align: 'center' });
+
       const title = `Production Planning (${startIso} to ${endIso})`;
-      doc.setFontSize(14);
-      doc.text(title, 14, 15);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8); // Reduced main title size
+      doc.text(title, 14, 25);
 
       const head: any[] = [
         [
@@ -1411,7 +1451,7 @@ export const ProductionPlanningPage: React.FC = () => {
       autoTable(doc, {
         head,
         body,
-        startY: 20,
+        startY: 30,
         theme: 'grid',
         styles: { fontSize: 7, cellPadding: 1 },
         headStyles: { fillColor: [243, 244, 246], textColor: [17, 24, 39], fontStyle: 'bold' }
@@ -1977,7 +2017,7 @@ export const ProductionPlanningPage: React.FC = () => {
 
     const rowDateValue = parseDisplayDate(rowDate);
     const dayValue = rowDateValue || new Date();
-                           const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+    const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
     if (endJobBreakdown) {
       const completed = completedJobMap[`${mIdx}-${rowIdx}`] ?? [];
       const completedIndex = completed.indexOf(entry);
@@ -2193,7 +2233,7 @@ export const ProductionPlanningPage: React.FC = () => {
     let totalDraw = 0;
 
     for (let mIdx = 0; mIdx < machineLists.length; mIdx++) {
-                             const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+      const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
       if (endJobBreakdown) {
         totalDraw += endJobBreakdown.totalDraw;
         continue;
@@ -2635,7 +2675,7 @@ export const ProductionPlanningPage: React.FC = () => {
                             const isLowSec = completedJob.section !== undefined &&
                               validMachine.includes(completedJob.section) &&
                               completedJob.section < validMachine[validMachine.length - 1];
-                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                            const accentColor = isLowSec ? '#EF4444' : '#16A34A';
                             const cellBg = 'bg-[#DBEAFE]';
                             const txt = 'text-sm text-[#6B7280]';
                             const isComplContinuation = isContinuationEntry(mIdx, rowIdx, completedJob);
@@ -2767,11 +2807,11 @@ export const ProductionPlanningPage: React.FC = () => {
                             nextEntry.product === entry.product && nextEntry.product !== 'None';
                           const isLastDay = !isContinuing;
                           const canExtend = hasProduct;
-                           const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
-                           const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
-                           const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
-                           const accentColor = isLowSec ? '#EF4444' : '#16A34A';
-                           const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
+                          const isRunContinuation = isContinuationEntry(mIdx, rowIdx, entry);
+                          const runningDraw = getDrawForDateRow(rowIdx, entry, mIdx);
+                          const endJobBreakdown = getEndJobBreakdown(rowIdx, mIdx);
+                          const accentColor = isLowSec ? '#EF4444' : '#16A34A';
+                          const cellBg = isHoliday ? 'bg-red-100' : isSunday ? 'bg-[#ffe4b7]/40' : 'bg-white';
 
                           return (
                             <React.Fragment key={mIdx}>
@@ -2916,14 +2956,14 @@ export const ProductionPlanningPage: React.FC = () => {
                                   if (hasProduct) {
                                     return <span className="text-sm text-[#6B7280]">{runningDraw > 0 ? runningDraw.toFixed(1) : '—'}</span>;
                                   }
-                                   if (completed.length > 0) {
-                                     const lastIndex = completed.length - 1;
-                                     const changeoverDraw = endJobBreakdown?.changeoverDraws[lastIndex];
-                                     const last = completed[lastIndex];
-                                     const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
-                                     const drawToShow = changeoverDraw !== undefined ? changeoverDraw : lastDraw;
-                                     return <span className="text-sm text-[#9CA3AF] italic">{drawToShow > 0 ? drawToShow.toFixed(1) : '—'}</span>;
-                                   }
+                                  if (completed.length > 0) {
+                                    const lastIndex = completed.length - 1;
+                                    const changeoverDraw = endJobBreakdown?.changeoverDraws[lastIndex];
+                                    const last = completed[lastIndex];
+                                    const lastDraw = getDrawForDateRow(rowIdx, last, mIdx);
+                                    const drawToShow = changeoverDraw !== undefined ? changeoverDraw : lastDraw;
+                                    return <span className="text-sm text-[#9CA3AF] italic">{drawToShow > 0 ? drawToShow.toFixed(1) : '—'}</span>;
+                                  }
                                   return <span className="text-sm text-[#6B7280]"></span>;
                                 })()}
                               </td>
@@ -3200,7 +3240,7 @@ export const ProductionPlanningPage: React.FC = () => {
               <div className="py-2.5 border-b border-[#334155]">
                 <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
                   Total Required Bottles <br />
-                   (Total quantity/24hr)
+                  (Total quantity/24hr)
                 </p>
 
                 <p className="font-bold text-[#FCD34D] text-sm mt-1">

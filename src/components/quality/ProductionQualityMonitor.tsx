@@ -5,6 +5,7 @@ import { useERP } from '../../context/ERPContext';
 import { useAuth, MODULES } from '../../context/AuthContext';
 import { BottleMaster } from '../../types';
 import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QualityDayLoad, QualityDayHourly, hasMeaningfulData } from '../../services/qualityRepository';
+import { COMPANY_NAME, getReportHeaderLines } from '../../utils/reportHeader';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Shift master — mirrors the production.shift_master table
@@ -802,6 +803,10 @@ export const QualityControlModule: React.FC = () => {
   const dateKey = toIso(navDate);
   const dateLabel = toDisplay(navDate);
 
+  // Two-line report header (company + report title) shown on every printed and
+  // exported report. The month/year follows the reporting date in view.
+  const reportHeader = useMemo(() => getReportHeaderLines(dateKey), [dateKey]);
+
   // Gob type drives the Weight F/M/R columns (3-gob ⇒ middle column).
   const gobCount =
     machines.find((m) => m.code === `MAC-${String(activeMachine).padStart(2, '0')}`)?.gobCount ??
@@ -1228,7 +1233,7 @@ export const QualityControlModule: React.FC = () => {
   const gobCountFor = useCallback((machineNo: number): number =>
     machines.find((m) => m.code === `MAC-${String(machineNo).padStart(2, '0')}`)?.gobCount ??
     (DB_MACHINE_MASTER.find((m) => m.machine_no === machineNo)?.gob_type === '3-gob' ? 3 : 2),
-  [machines]);
+    [machines]);
 
   const calcBottlesInNosFor = useCallback((e?: QualityHourlyEntry): string => calcBottlesInNos(e), []);
 
@@ -1236,7 +1241,7 @@ export const QualityControlModule: React.FC = () => {
 
   const calcRowAvgFor = useCallback((e: QualityHourlyEntry | undefined, machineNo: number): string =>
     calcRowAverage(e, gobCountFor(machineNo)),
-  [gobCountFor]);
+    [gobCountFor]);
 
   // Memoized day summary stats. Recompute only when the active machine's rows
   // actually change, instead of re-scanning all 24 slots on every render and
@@ -1417,11 +1422,11 @@ export const QualityControlModule: React.FC = () => {
                   // database actually stored.
                   byTime[tKey] = {
                     ...prevEntry,
-                    entry_id:  savedEntry.entry_id  || prevEntry.entry_id  || '',
+                    entry_id: savedEntry.entry_id || prevEntry.entry_id || '',
                     report_id: savedEntry.report_id || prevEntry.report_id || '',
-                    job_id:    savedEntry.job_id    || prevEntry.job_id    || '',
-                    bottle_id: prevEntry.bottle_id  || savedEntry.bottle_id || '',
-                    section:   prevEntry.section    || savedEntry.section   || '',
+                    job_id: savedEntry.job_id || prevEntry.job_id || '',
+                    bottle_id: prevEntry.bottle_id || savedEntry.bottle_id || '',
+                    section: prevEntry.section || savedEntry.section || '',
                   };
                 }
               }
@@ -1454,6 +1459,19 @@ export const QualityControlModule: React.FC = () => {
 
   const handleExport = () => {
     const rows: string[] = [];
+
+   // Report header: company name + selected date and day
+rows.push(reportHeader.company);
+
+const [day, month, year] = dateLabel.split('-');
+const reportDate = new Date(`${year}-${month}-${day}T00:00:00`);
+
+const dateAndDay = `${dateLabel} - ${reportDate.toLocaleDateString('en-US', {
+  weekday: 'long',
+})}`;
+
+rows.push(dateAndDay);
+
     const header = [
       'Shift', 'Time', 'Machine', 'Bottle Name', 'Section', 'Weight F', 'Weight M', 'Weight R',
       'AVG', 'Speed/Min', 'Packing Category', 'Packing Size', 'Cartons', 'Bottles in Nos.',
@@ -1537,32 +1555,49 @@ export const QualityControlModule: React.FC = () => {
 
       const doc = new jsPDF('landscape');
 
-      // ── Header: title, date, machine + shift assignments ────────────────
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(15);
-      doc.text('Hourly Production Monitor', 10, 13);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10.5);
-      doc.text(`Date: ${dateLabel}    Machine: No. ${activeMachine}`, 10, 19);
+      // ── Header: report title block, date, machine + shift assignments ───
+      // Report header — company name + selected date and day, centred.
+const centerX = doc.internal.pageSize.getWidth() / 2;
 
-      let y = 25;
+doc.setFont('helvetica', 'bold');
+doc.setFontSize(10);
+doc.text(reportHeader.company, centerX, 10, { align: 'center' });
+
+const [day, month, year] = dateLabel.split('-');
+const reportDate = new Date(`${year}-${month}-${day}T00:00:00`);
+
+const dateAndDay = `${dateLabel} - ${reportDate.toLocaleDateString('en-US', {
+  weekday: 'long',
+})}`;
+
+doc.setFontSize(8);
+doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
+
+      doc.setFontSize(10);
+      doc.text('Hourly Production Monitor', 10, 22);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.text(`Date: ${dateLabel}    Machine: No. ${activeMachine}`, 10, 27.5);
+      let y = 32;
+
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.text('Shift Assignments (Supervisor / Executive):', 10, y);
-      y += 4;
-      doc.setFont('helvetica', 'normal');
-      for (const sh of DB_SHIFT_MASTER) {
-        const a = getShiftAssignment(sh.shift_id);
-        doc.setFontSize(8);
-        doc.text(
-          `${sh.shift_name} (${sh.display_time}):  Supervisor — ${a.supervisor || '—'}    Executive — ${a.executive || '—'}`,
-          10,
-          y
-        );
-        y += 3.8;
-      }
-      const startY = y + 3;
 
+      y += 4;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+
+      const shiftAssignments = DB_SHIFT_MASTER.map((sh) => {
+        const a = getShiftAssignment(sh.shift_id);
+
+        return `${sh.shift_name}: Sup. ${a.supervisor || '—'} | Exec. ${a.executive || '—'}`;
+      });
+
+      doc.text(shiftAssignments.join('     |     '), 10, y);
+
+      const startY = y + 5;
       // ── Table header (two rows; Weight F/M/R depends on machine gob type) ─
       const headRowBase: any[] = [
         { content: 'Time', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
@@ -1763,6 +1798,12 @@ export const QualityControlModule: React.FC = () => {
 
       {/* Print-only header */}
       <div className="print-header" style={{ display: 'none', marginBottom: '6px', textAlign: 'center', borderBottom: '2px solid #1e293b', paddingBottom: '6px' }}>
+        <h2 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#1e293b' }}>
+          {COMPANY_NAME}
+        </h2>
+        <p style={{ margin: '1px 0 3px', fontSize: '11px', fontWeight: 600, color: '#1e293b' }}>
+          {reportHeader.title}
+        </p>
         <h2 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#1e293b' }}>
           Machine {activeMachine} — Production Quality Report
         </h2>
