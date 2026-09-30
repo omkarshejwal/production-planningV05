@@ -2862,7 +2862,7 @@ doc.text(title, 14, 25);
                       : displayIdx % 2 === 0
                         ? 'bg-white'
                         : 'bg-[#F8FAFC]';
-                  const dateBg = isHoliday ? 'bg-red-200' : isSunday ? 'bg-[#fafa05]' : baseBg;
+                  const dateBg = isHoliday ? 'bg-red-200' : isSunday ? 'bg-[#fcd99f]' : baseBg;
 
                   const fmtTime = (t?: string) => {
                     if (!t) return '—';
@@ -2896,20 +2896,20 @@ doc.text(title, 14, 25);
                         {isFirstSlot && (
                           <td
                             rowSpan={maxSlots}
-                            className={`px-3 text-[11px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-2.5 ${dateBg}`}
+                            className={`px-2 text-[13px] text-[#111827] border-r border-[#E5E7EB] font-semibold whitespace-nowrap sticky left-0 align-top pt-1 ${dateBg}`}
                           >
                             <div
                               className="relative group cursor-default"
                               title={isHoliday && holidayName ? holidayName : undefined}
                             >
                               <div>{dateRow?.date ?? ''}</div>
-                              <div className="text-[10px] font-normal text-[#6B7280]">
+                              <div className="text-[12px] font-normal text-[#6B7280]">
                                 {dateRow?.weekday ?? ''}
                               </div>
 
                               {isHoliday && holidayName && (
                                 <div className="absolute left-full top-0 ml-2 z-50 hidden group-hover:block">
-                                  <div className="bg-[#111827] text-white text-[10px] font-medium px-2 py-1 rounded shadow-lg whitespace-nowrap">
+                                  <div className="bg-[#e71212] text-white text-[10px] font-medium px-2 py-1 rounded shadow-lg whitespace-nowrap">
                                     {holidayName}
                                   </div>
                                 </div>
