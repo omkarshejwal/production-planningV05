@@ -50,6 +50,19 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   const [formBottleName, setFormBottleName] = useState('');
   const [newWeight, setNewWeight] = useState('');
 
+  // Add New › Edit Bottle Name — renames an existing bottle_master row in place.
+  // renameTargetId is the bottle being renamed (its bottle_id never changes),
+  // renameValue is the editable name and renameSaved drives the confirmation
+  // state of this section's own button so it cannot collide with the
+  // Add New bottle save feedback.
+  const [renameTargetId, setRenameTargetId] = useState('');
+  const [renameValue, setRenameValue] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameSaved, setRenameSaved] = useState(false);
+  const [renameDropOpen, setRenameDropOpen] = useState(false);
+  const [renameQuery, setRenameQuery] = useState('');
+  const renameDropRef = useRef<HTMLDivElement>(null);
+
   // Edit Machine — machine-specific configuration
   const [machineNo, setMachineNo] = useState<string>('');
   const [formRows, setFormRows] = useState<SectionFormRow[]>([]);
@@ -72,12 +85,25 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
   const selectedMachine = machines.find((m) => m.machine_no === machineNo) ?? null;
 
+  const renameTarget = useMemo(
+    () => bottles.find((b) => b.bottle_id === renameTargetId) ?? null,
+    [bottles, renameTargetId]
+  );
+
   // Permissions can change while the app is open (the backend catalog is
   // re-read periodically): fall back to view mode the moment edit is lost.
   // 'export' is exempt - it only reads data, so it stays available to viewers.
   useEffect(() => {
     if (!canEdit && tab !== 'edit' && tab !== 'export') setTab('edit');
   }, [canEdit, tab]);
+
+  // Load the current name of the chosen bottle into the rename box. It keys off
+  // the stored name (a string) rather than the row object, so a background
+  // refresh cannot wipe what the user is currently typing.
+  useEffect(() => {
+    setRenameValue(renameTarget ? renameTarget.bottle_name : '');
+    setRenameSaved(false);
+  }, [renameTargetId, renameTarget?.bottle_name]);
 
   // Machine-level sections from DB (unique sections across ALL bottles on this machine)
   const machineSections = useMemo(() => {
@@ -122,17 +148,34 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     return withWeight ? withWeight.weight : null;
   }, [selectedBase, machineNo, configIndex]);
 
-  // Every bottle in the database is offered: the same bottle can be configured
-  // on any number of machines, so the list is never narrowed to the bottles
-  // that already have a row on the selected machine.
+  // bottle_ids that have at least one bottle_configuration row on the selected
+  // machine. bottle_configuration is keyed on (machine_no, bottle_id, section),
+  // so a Set collapses a bottle configured on several sections of the same
+  // machine into a single entry, while a bottle that exists in bottle_master but
+  // has no row for this machine is simply absent.
+  const machineBottleIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!machineNo) return ids;
+    for (const c of configs) {
+      if (c.machine_no === machineNo) ids.add(c.bottle_id);
+    }
+    return ids;
+  }, [machineNo, configs]);
+
+  // Bottles offered in the Edit Machine picker: joined through
+  // bottle_configuration.bottle_id -> bottle_master.bottle_id, so only bottles
+  // configured on the currently selected machine appear. The search by name or
+  // ID still applies on top of that.
   const filteredBases = useMemo(
     () =>
-      bottles.filter(
-        (b) =>
-          b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
-          b.bottle_id.toLowerCase().includes(query.toLowerCase())
-      ),
-    [bottles, query]
+      bottles
+        .filter((b) => machineBottleIds.has(b.bottle_id))
+        .filter(
+          (b) =>
+            b.bottle_name.toLowerCase().includes(query.toLowerCase()) ||
+            b.bottle_id.toLowerCase().includes(query.toLowerCase())
+        ),
+    [bottles, machineBottleIds, query]
   );
 
   const sortedMachines = useMemo(
@@ -144,6 +187,25 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
       }),
     [machines]
   );
+
+  // The rename dropdown lists every bottle in bottle_master by name.
+  const sortedBottles = useMemo(
+    () =>
+      [...bottles].sort((a, b) =>
+        a.bottle_name.localeCompare(b.bottle_name, undefined, { sensitivity: 'base' })
+      ),
+    [bottles]
+  );
+
+  // Search inside the rename dropdown: matches on name or ID, like the
+  // Edit Machine bottle picker.
+  const renameMatches = useMemo(() => {
+    const q = renameQuery.trim().toLowerCase();
+    if (!q) return sortedBottles;
+    return sortedBottles.filter(
+      (b) => b.bottle_name.toLowerCase().includes(q) || b.bottle_id.toLowerCase().includes(q)
+    );
+  }, [sortedBottles, renameQuery]);
 
   // Rebuild the section rows once a machine AND a bottle are both chosen, so
   // each machine shows - and saves - only its own configuration for that bottle.
@@ -186,7 +248,9 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
   useEffect(() => {
     function handler(e: MouseEvent) {
-      if (dropRef.current && !dropRef.current.contains(e.target as Node)) setDropOpen(false);
+      const target = e.target as Node;
+      if (dropRef.current && !dropRef.current.contains(target)) setDropOpen(false);
+      if (renameDropRef.current && !renameDropRef.current.contains(target)) setRenameDropOpen(false);
     }
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -197,6 +261,11 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setMachineNo('');
     setFormBottleName('');
     setNewWeight('');
+    setRenameTargetId('');
+    setRenameValue('');
+    setRenameSaved(false);
+    setRenameDropOpen(false);
+    setRenameQuery('');
     setFormRows([]);
     setFormWeight('');
     setQuery('');
@@ -208,6 +277,53 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setEditName('');
     setOriginalBaseName('');
     setOrigSnapshot(null);
+  }
+
+  function selectRenameTarget(bottleId: string) {
+    setRenameTargetId(bottleId);
+    const next = bottles.find((b) => b.bottle_id === bottleId) ?? null;
+    setRenameValue(next ? next.bottle_name : '');
+    setRenameSaved(false);
+    setRenameDropOpen(false);
+    setRenameQuery('');
+  }
+
+  /**
+   * Renames the selected bottle_master row. The PUT sends the name only, so the
+   * backend leaves bottle_id, weight and every bottle_configuration row alone:
+   * no new bottle is created and no machine/section/speed data is touched.
+   */
+  async function handleRenameSave() {
+    if (!canEdit || renameSaving || !renameTarget) return;
+
+    const newName = renameValue.trim();
+    if (!newName) {
+      alert('Bottle name cannot be empty.');
+      return;
+    }
+    if (newName === renameTarget.bottle_name) return;
+
+    const duplicate = bottles.some(
+      (b) => b.bottle_name.trim().toLowerCase() === newName.toLowerCase() && b.bottle_id !== renameTarget.bottle_id
+    );
+    if (duplicate) {
+      alert('A bottle with this name already exists.');
+      return;
+    }
+
+    setRenameSaving(true);
+    const result = await planningRepository.updateBottle(parseInt(renameTarget.bottle_id, 10), newName);
+    setRenameSaving(false);
+
+    if (!result.ok) {
+      alert(result.error || 'Failed to update bottle name.');
+      return;
+    }
+
+    setRenameValue(newName);
+    setRenameSaved(true);
+    setTimeout(() => setRenameSaved(false), 2500);
+    onRefresh();
   }
 
   function changeMachine(next: string) {
@@ -590,8 +706,8 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
               type="button"
               disabled={!machineNo}
               onClick={() => {
-                // Re-opening always lists every bottle; the search box inside
-                // the dropdown is what narrows the list down.
+                // Re-opening always lists every bottle configured on this
+                // machine; the search box inside the dropdown narrows it down.
                 setQuery('');
                 setDropOpen((open) => !open);
               }}
@@ -623,7 +739,11 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                 </div>
                 <div className="max-h-48 overflow-y-auto">
                   {filteredBases.length === 0 ? (
-                    <p className="px-3 py-3 text-xs text-gray-400">No bottles found.</p>
+                    <p className="px-3 py-3 text-xs text-gray-400">
+                      {machineBottleIds.size === 0
+                        ? 'No bottles configured for this machine.'
+                        : 'No bottles found.'}
+                    </p>
                   ) : (
                     filteredBases.map((b) => (
                       <div
@@ -641,7 +761,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
               </div>
             )}
           </div>
-          {canEdit && selectedBase && (
+          {/* {canEdit && selectedBase && (
             <button
               type="button"
               onClick={beginRename}
@@ -650,7 +770,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
             >
               <Pencil className="w-4 h-4" />
             </button>
-          )}
+          )} */}
         </div>
       )}
     </div>
@@ -783,6 +903,120 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
               {saveButton}
             </div>
           )}
+
+          {/* Edit Bottle Name: renames an existing bottle in place. Nothing
+              below is sent to the server except bottle_name. */}
+          <div className="border-t border-gray-100 pt-5 flex flex-col gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-blue-600"><Pencil className="w-3.5 h-3.5" /></span>
+              <h3 className="text-sm font-semibold text-gray-800">Edit Bottle Name</h3>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Select Existing Bottle
+                </label>
+                <div ref={renameDropRef} className="relative">
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 z-10">
+                    <Search className="w-3.5 h-3.5" />
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Re-opening always lists every bottle; the search box
+                      // inside the dropdown is what narrows the list down.
+                      setRenameQuery('');
+                      setRenameDropOpen((open) => !open);
+                    }}
+                    className={`w-full h-10 pl-7 pr-3 text-left text-sm rounded-lg border focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition ${renameTarget
+                      ? 'font-medium text-gray-800 bg-white border-gray-200'
+                      : 'text-gray-400 bg-white border-gray-200'
+                      }`}
+                  >
+                    {renameTarget ? renameTarget.bottle_name : 'Select or search bottle...'}
+                  </button>
+                  {renameDropOpen && (
+                    <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                      <div className="p-2 border-b border-gray-100">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={renameQuery}
+                          onChange={(e) => setRenameQuery(e.target.value)}
+                          placeholder="Search bottle name or ID..."
+                          className="w-full h-8 px-2.5 text-sm border border-gray-200 rounded-md bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        />
+                      </div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {renameMatches.length === 0 ? (
+                          <p className="px-3 py-3 text-xs text-gray-400">No bottles found.</p>
+                        ) : (
+                          renameMatches.map((b) => (
+                            <div
+                              key={b.bottle_id}
+                              className={`flex items-center justify-between px-3 py-2 text-sm cursor-pointer transition ${b.bottle_id === renameTargetId ? 'bg-blue-50' : 'hover:bg-blue-50'
+                                }`}
+                              onMouseDown={() => selectRenameTarget(b.bottle_id)}
+                            >
+                              <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
+                              <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Bottle Name
+                </label>
+                <input
+                  type="text"
+                  placeholder={renameTarget ? renameTarget.bottle_name : 'Select a bottle to rename'}
+                  value={renameValue}
+                  disabled={!renameTarget}
+                  onChange={(e) => {
+                    setRenameValue(e.target.value);
+                    setRenameSaved(false);
+                  }}
+                  className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
+                />
+                <p className="text-[10px] text-gray-400">
+                  {renameTarget
+                    ? `Only the name is updated. Bottle ID ${renameTarget.bottle_id}, weight and machine configurations stay the same.`
+                    : 'Pick an existing bottle to load its current name.'}
+                </p>
+              </div>
+            </div>
+
+            {canEdit && (
+              <div className="flex justify-end items-center gap-2">
+                <button
+                  onClick={handleRenameSave}
+                  disabled={!renameTarget || renameSaving || renameValue.trim() === '' || renameValue.trim() === renameTarget?.bottle_name}
+                  className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${renameSaved
+                    ? 'bg-green-50 text-green-600 border border-green-200'
+                    : !renameTarget || renameSaving || renameValue.trim() === '' || renameValue.trim() === renameTarget?.bottle_name
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                    }`}
+                >
+                  {renameSaved ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      Saved
+                    </>
+                  ) : (
+                    'Save Changes'
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         // Edit Machine: one machine, one bottle, that machine's own speeds.

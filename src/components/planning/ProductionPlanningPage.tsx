@@ -3141,7 +3141,7 @@ doc.text(title, 14, 25);
                                             setDeleteModal({ planDate, machineNo, startTime: entry.startTime, jobId: entry.jobId, section: entry.section });
                                           }}
                                           title="Remove this job"
-                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                          className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-[#DC2626] bg-[#ffffff] hover:bg-[#ffffff] border border-[#fdd1d1] transition-colors">
                                           <Minus size={7} />
                                         </button>
                                       )}
@@ -3155,14 +3155,14 @@ doc.text(title, 14, 25);
                                     <div className="flex items-center gap-1 flex-wrap">
                                       {canEdit && hasProduct && (
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
-                                          className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                          className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#ffffff] hover:bg-[#d2e9ff] border border-[#ffffff] transition-colors">
                                           <Pencil size={8} />
                                         </button>
                                       )}
                                       {canEdit && canExtend && (
                                         <button onClick={() => handleExtendJob(mIdx, rowIdx, 1)}
                                           title="Extend this job by one day to the next blank date"
-                                          className="w-5 h-5 flex items-center justify-center rounded text-[#16A34A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border border-[#BBF7D0] transition-colors">
+                                          className="w-5 h-5 flex items-center justify-center rounded text-[#047a30] bg-[#fdfdfd] hover:bg-[#d9ffde] border border-[#ffffff] transition-colors">
                                           <Plus size={8} />
                                         </button>
                                       )}
@@ -3185,7 +3185,7 @@ doc.text(title, 14, 25);
                                         </button>
                                         {isBlank && (
                                           <button onClick={() => deleteBlankEntry(mIdx, rowIdx)} title="Remove row"
-                                            className="w-5 h-5 flex items-center justify-center rounded text-[#DC2626] bg-[#FEF2F2] hover:bg-[#FEE2E2] border border-[#FECACA] transition-colors">
+                                            className="w-5 h-5 flex items-center justify-center rounded text-[#DC2626] bg-[#ffffff] hover:bg-[#ffffff] border border-[#ffffff] transition-colors">
                                             <Minus size={8} />
                                           </button>
                                         )}
@@ -3291,8 +3291,11 @@ doc.text(title, 14, 25);
               aria-live="polite"
             >
               <span
-                className={`w-1.5 h-1.5 rounded-full shrink-0 ${autoSaveStatus === 'saving' ? 'animate-pulse' : ''}`}
-                style={{ backgroundColor: AUTO_SAVE_STATUS_VIEW[autoSaveStatus].color }}
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{
+                  backgroundColor: AUTO_SAVE_STATUS_VIEW[autoSaveStatus].color,
+                  animation: autoSaveStatus === 'saving' ? 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite' : undefined,
+                }}
               />
               {AUTO_SAVE_STATUS_VIEW[autoSaveStatus].label}
             </span>
