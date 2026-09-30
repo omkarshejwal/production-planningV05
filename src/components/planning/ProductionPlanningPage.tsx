@@ -3180,7 +3180,7 @@ doc.text(title, 14, 25);
                                     {canEdit && (
                                       <>
                                         <button onClick={() => openEdit(mIdx, rowIdx)} title="Edit"
-                                          className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] transition-colors">
+                                          className="w-5 h-5 flex items-center justify-center rounded text-[#2563EB] bg-[#ffffff] hover:bg-[#DBEAFE] border border-[#ffffff] transition-colors">
                                           <Pencil size={8} />
                                         </button>
                                         {isBlank && (
@@ -3464,165 +3464,169 @@ doc.text(title, 14, 25);
         );
       })()}
 
-      {/* Fixed-position tooltip — renders above ALL table overflow */}
-      {/* Fixed-position tooltip */}
-      {tooltip && (() => {
-        const entry = tooltip.entry;
-
-        // Production calculation
-        const metrics = calcProductionMetrics(
-          entry.cut,
-          entry.wt,
-          tooltip.mIdx + 1
-        );
-
-        const goodLiters = metrics.goodLiters;
-        const goodBottles = metrics.goodBottles;
-
-
-        // REQUIRED BOTTLES
-
-        const requiredBottles = Number(
-          entry.requiredBottles ??
-          0
-        );
-
-
-        // Packing allocation data preparation
-        const packingAllocationsData = typeof entry?.packingAllocations === 'string'
-          ? JSON.parse(entry.packingAllocations)
-          : entry?.packingAllocations;
-
-        const packing = packingAllocationsData && typeof packingAllocationsData === 'object'
-          ? Object.entries(packingAllocationsData)
-          : [];
-
-        const packingNames: Record<string, string> = {
-          ST: 'Shrink Tray',
-          SN: 'Shrink Naked',
-          SB: 'Shrink Box',
-          BT: 'Bottom Tray'
-        };
-        return (
-          <div
-            className="pointer-events-none fixed z-9999"
-            style={{
-              left: tooltip.x + 14,
-              top: tooltip.y - 8,
-              transform: 'translateY(-100%)'
-            }}
-          >
-            <div className="relative bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 w-70 text-xs">
-
-              {/* BOTTLE */}
-              <div className="pb-2.5 border-b border-[#334155]">
-                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
-                  Bottle
-                </p>
-
-                <p className="font-bold text-white text-sm mt-1">
-                  {entry.product || '—'}
-                </p>
-              </div>
-
-
-              {/* DAILY GOOD BOTTLES
-              <div className="py-2.5 border-b border-[#334155]">
-                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
-                  Daily Good Bottles (90%)
-                </p>
-
-                <p className="font-bold text-[#38BDF8] text-sm mt-1">
-                  {goodLiters.toFixed(2)} L ({goodBottles.toLocaleString()} bottles)
-                </p>
-              </div> */}
-
-
-              {/* TOTAL REQUIRED BOTTLES */}
-              <div className="py-2.5 border-b border-[#334155]">
-                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
-                  Total Required Bottles <br />
-                   (Total quantity/24hr)
-                </p>
-
-                <p className="font-bold text-[#FCD34D] text-sm mt-1">
-                  {requiredBottles > 0
-                    ? requiredBottles.toLocaleString()
-                    : '—'}
-                </p>
-              </div>
-
-
-              {/* PACKING ALLOCATION */}
-              <div className="py-2.5 border-b border-[#334155]">
-                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest mb-2">
-                  Packing Allocation
-                </p>
-
-                {packing.length > 0 ? (
-                  <div className="space-y-1.5">
-                    {packing.map(([key, value]) => (
-                      <div
-                        key={key}
-                        className="flex items-center justify-between gap-2"
-                      >
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="bg-[#475569] text-white px-1.5 py-0.5 rounded text-[9px] font-bold">
-                            {key}
-                          </span>
-
-                          <span className="text-white truncate">
-                            {packingNames[key] || key}
-                          </span>
-                        </div>
-
-                        <span className="text-[#38BDF8] font-semibold shrink-0">
-                          {Number(value).toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <span className="text-[#64748B]">
-                    —
-                  </span>
-                )}
-              </div>
-
-
-              {/* PALLET PACKING QTY */}
-              <div className="pt-2.5">
-                <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
-                  Pallet Packing Qty
-                </p>
-
-                <p className="text-white font-semibold text-sm mt-1">
-                  {entry.palletPackingQty
-                    ? entry.palletPackingQty.toLocaleString()
-                    : '—'}
-                </p>
-              </div>
-
-
-              {/* Tooltip arrow */}
-              <div
-                className="
-            absolute
-            top-full
-            left-4
-            border-l-[5px]
-            border-r-[5px]
-            border-t-[5px]
-            border-l-transparent
-            border-r-transparent
-            border-t-[#1E293B]
-          "
-              />
-
-            </div>
-          </div>
-        );
-      })()}
+      {/* Dark hover tooltip/popover DISABLED: original render block is commented out below. To restore, remove the `// ` prefixes and the three wrapper lines. */}
+      {(
+      // {/* Fixed-position tooltip — renders above ALL table overflow */}
+      // {/* Fixed-position tooltip */}
+      // {tooltip && (() => {
+        // const entry = tooltip.entry;
+//
+        // // Production calculation
+        // const metrics = calcProductionMetrics(
+          // entry.cut,
+          // entry.wt,
+          // tooltip.mIdx + 1
+        // );
+//
+        // const goodLiters = metrics.goodLiters;
+        // const goodBottles = metrics.goodBottles;
+//
+//
+        // // REQUIRED BOTTLES
+//
+        // const requiredBottles = Number(
+          // entry.requiredBottles ??
+          // 0
+        // );
+//
+//
+        // // Packing allocation data preparation
+        // const packingAllocationsData = typeof entry?.packingAllocations === 'string'
+          // ? JSON.parse(entry.packingAllocations)
+          // : entry?.packingAllocations;
+//
+        // const packing = packingAllocationsData && typeof packingAllocationsData === 'object'
+          // ? Object.entries(packingAllocationsData)
+          // : [];
+//
+        // const packingNames: Record<string, string> = {
+          // ST: 'Shrink Tray',
+          // SN: 'Shrink Naked',
+          // SB: 'Shrink Box',
+          // BT: 'Bottom Tray'
+        // };
+        // return (
+          // <div
+            // className="pointer-events-none fixed z-9999"
+            // style={{
+              // left: tooltip.x + 14,
+              // top: tooltip.y - 8,
+              // transform: 'translateY(-100%)'
+            // }}
+          // >
+            // <div className="relative bg-[#1E293B] text-white rounded-xl shadow-2xl p-3.5 w-70 text-xs">
+//
+              // {/* BOTTLE */}
+              // <div className="pb-2.5 border-b border-[#334155]">
+                // <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  // Bottle
+                // </p>
+//
+                // <p className="font-bold text-white text-sm mt-1">
+                  // {entry.product || '—'}
+                // </p>
+              // </div>
+//
+//
+              // {/* DAILY GOOD BOTTLES
+              // <div className="py-2.5 border-b border-[#334155]">
+                // <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  // Daily Good Bottles (90%)
+                // </p>
+//
+                // <p className="font-bold text-[#38BDF8] text-sm mt-1">
+                  // {goodLiters.toFixed(2)} L ({goodBottles.toLocaleString()} bottles)
+                // </p>
+              // </div> */}
+//
+//
+              // {/* TOTAL REQUIRED BOTTLES */}
+              // <div className="py-2.5 border-b border-[#334155]">
+                // <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  // Total Required Bottles <br />
+                   // (Total quantity/24hr)
+                // </p>
+//
+                // <p className="font-bold text-[#FCD34D] text-sm mt-1">
+                  // {requiredBottles > 0
+                    // ? requiredBottles.toLocaleString()
+                    // : '—'}
+                // </p>
+              // </div>
+//
+//
+              // {/* PACKING ALLOCATION */}
+              // <div className="py-2.5 border-b border-[#334155]">
+                // <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest mb-2">
+                  // Packing Allocation
+                // </p>
+//
+                // {packing.length > 0 ? (
+                  // <div className="space-y-1.5">
+                    // {packing.map(([key, value]) => (
+                      // <div
+                        // key={key}
+                        // className="flex items-center justify-between gap-2"
+                      // >
+                        // <div className="flex items-center gap-1.5 min-w-0">
+                          // <span className="bg-[#475569] text-white px-1.5 py-0.5 rounded text-[9px] font-bold">
+                            // {key}
+                          // </span>
+//
+                          // <span className="text-white truncate">
+                            // {packingNames[key] || key}
+                          // </span>
+                        // </div>
+//
+                        // <span className="text-[#38BDF8] font-semibold shrink-0">
+                          // {Number(value).toLocaleString()}
+                        // </span>
+                      // </div>
+                    // ))}
+                  // </div>
+                // ) : (
+                  // <span className="text-[#64748B]">
+                    // —
+                  // </span>
+                // )}
+              // </div>
+//
+//
+              // {/* PALLET PACKING QTY */}
+              // <div className="pt-2.5">
+                // <p className="text-[#94A3B8] text-[9px] font-medium uppercase tracking-widest">
+                  // Pallet Packing Qty
+                // </p>
+//
+                // <p className="text-white font-semibold text-sm mt-1">
+                  // {entry.palletPackingQty
+                    // ? entry.palletPackingQty.toLocaleString()
+                    // : '—'}
+                // </p>
+              // </div>
+//
+//
+              // {/* Tooltip arrow */}
+              // <div
+                // className="
+            // absolute
+            // top-full
+            // left-4
+            // border-l-[5px]
+            // border-r-[5px]
+            // border-t-[5px]
+            // border-l-transparent
+            // border-r-transparent
+            // border-t-[#1E293B]
+          // "
+              // />
+//
+            // </div>
+          // </div>
+        // );
+      // })()}
+      null
+      )}
     </div>
   );
 };
