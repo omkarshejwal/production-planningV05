@@ -50,13 +50,14 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   const [formBottleName, setFormBottleName] = useState('');
   const [newWeight, setNewWeight] = useState('');
 
-  // Add New › Edit Bottle Name — renames an existing bottle_master row in place.
-  // renameTargetId is the bottle being renamed (its bottle_id never changes),
-  // renameValue is the editable name and renameSaved drives the confirmation
-  // state of this section's own button so it cannot collide with the
-  // Add New bottle save feedback.
+  // Add New › Edit Bottle Name — updates an existing bottle_master row in place.
+  // renameTargetId is the bottle being edited (its bottle_id never changes),
+  // renameValue / renameWeight are the editable shared name and weight, and
+  // renameSaved drives the confirmation state of this section's own button so
+  // it cannot collide with the Add New bottle save feedback.
   const [renameTargetId, setRenameTargetId] = useState('');
   const [renameValue, setRenameValue] = useState('');
+  const [renameWeight, setRenameWeight] = useState('');
   const [renameSaving, setRenameSaving] = useState(false);
   const [renameSaved, setRenameSaved] = useState(false);
   const [renameDropOpen, setRenameDropOpen] = useState(false);
@@ -75,6 +76,17 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Edit Machine › Add Bottle to This Machine — puts any bottle from
+  // bottle_master onto the selected machine by creating one
+  // bottle_configuration row per machine section. addTargetId is only the
+  // pending choice in the dropdown; it is cleared once the rows exist.
+  const [addTargetId, setAddTargetId] = useState('');
+  const [addQuery, setAddQuery] = useState('');
+  const [addDropOpen, setAddDropOpen] = useState(false);
+  const [addSaving, setAddSaving] = useState(false);
+  const [addSaved, setAddSaved] = useState(false);
+  const addDropRef = useRef<HTMLDivElement>(null);
+
   // Rename mode for Edit Machine: editName holds the editable bottle name,
   // originalBaseName is the DB name for revert, origSnapshot captures the
   // section speeds at the moment edits begin so Cancel can restore them.
@@ -90,6 +102,29 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     [bottles, renameTargetId]
   );
 
+  // Every bottle_configuration row of the chosen bottle, across all machines
+  // and sections. The Edit Bottle Name section is not machine-scoped, so all of
+  // them are shown and saved together.
+  const renameTargetConfigs = useMemo(
+    () => (renameTargetId ? configs.filter((c) => c.bottle_id === renameTargetId) : []),
+    [configs, renameTargetId]
+  );
+
+  // The bottle's current weight, read straight from bottle_configuration.weight.
+  // A bottle normally has one row per machine and section and every row carries
+  // the same shared weight, so the first row holding a positive weight is
+  // representative. bottle_master.weight is only a display fallback for bottles
+  // that have no configuration row yet - there is nothing in
+  // bottle_configuration to read or write for those.
+  const renameTargetWeight = useMemo(() => {
+    const fromConfig = renameTargetConfigs.find((c) => c.weight > 0) ?? renameTargetConfigs[0];
+    if (fromConfig && typeof fromConfig.weight === 'number' && !isNaN(fromConfig.weight)) {
+      return String(fromConfig.weight);
+    }
+    const master = renameTarget?.weight;
+    return typeof master === 'number' && !isNaN(master) ? String(master) : '';
+  }, [renameTargetConfigs, renameTarget]);
+
   // Permissions can change while the app is open (the backend catalog is
   // re-read periodically): fall back to view mode the moment edit is lost.
   // 'export' is exempt - it only reads data, so it stays available to viewers.
@@ -97,13 +132,16 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     if (!canEdit && tab !== 'edit' && tab !== 'export') setTab('edit');
   }, [canEdit, tab]);
 
-  // Load the current name of the chosen bottle into the rename box. It keys off
-  // the stored name (a string) rather than the row object, so a background
-  // refresh cannot wipe what the user is currently typing.
+  // Load the current name and weight of the chosen bottle into the edit boxes.
+  // They key off the stored values (strings) rather than the row object, so a
+  // background refresh cannot wipe what the user is currently typing. The
+  // success flash is only reset when a bottle is actually loaded, so it stays
+  // visible while the section clears itself after a successful save.
   useEffect(() => {
     setRenameValue(renameTarget ? renameTarget.bottle_name : '');
-    setRenameSaved(false);
-  }, [renameTargetId, renameTarget?.bottle_name]);
+    setRenameWeight(renameTargetWeight);
+    if (renameTarget) setRenameSaved(false);
+  }, [renameTargetId, renameTarget?.bottle_name, renameTargetWeight]);
 
   // Machine-level sections from DB (unique sections across ALL bottles on this machine)
   const machineSections = useMemo(() => {
@@ -118,17 +156,23 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
 
   // Pre-index the full configs list once so render-time/effect lookups are O(1)
   // instead of repeatedly scanning the whole list with .find()/.some().
+  // byBottle is NOT machine-scoped: it holds every machine's rows for a bottle,
+  // which is what the Add Bottle flow reads the bottle's weight from.
   const configIndex = useMemo(() => {
     const byKey = new Map<string, BottleConfigurationRow>();
     const byMachineBottle = new Map<string, BottleConfigurationRow[]>();
+    const byBottle = new Map<string, BottleConfigurationRow[]>();
     for (const c of configs) {
       byKey.set(`${c.machine_no}|${c.bottle_id}|${c.section}`, c);
       const mbKey = `${c.machine_no}|${c.bottle_id}`;
       const list = byMachineBottle.get(mbKey);
       if (list) list.push(c);
       else byMachineBottle.set(mbKey, [c]);
+      const bList = byBottle.get(c.bottle_id);
+      if (bList) bList.push(c);
+      else byBottle.set(c.bottle_id, [c]);
     }
-    return { byKey, byMachineBottle };
+    return { byKey, byMachineBottle, byBottle };
   }, [configs]);
 
   /**
@@ -207,6 +251,33 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     );
   }, [sortedBottles, renameQuery]);
 
+  // The Add Bottle dropdown lists EVERY bottle in bottle_master, not just the
+  // ones already configured on the selected machine - that is the whole point
+  // of the flow. Bottles already on this machine are still shown so the list is
+  // complete, but are marked and cannot be picked again.
+  const addMatches = useMemo(() => {
+    const q = addQuery.trim().toLowerCase();
+    if (!q) return sortedBottles;
+    return sortedBottles.filter(
+      (b) => b.bottle_name.toLowerCase().includes(q) || b.bottle_id.toLowerCase().includes(q)
+    );
+  }, [sortedBottles, addQuery]);
+
+  const addTarget = useMemo(
+    () => bottles.find((b) => b.bottle_id === addTargetId) ?? null,
+    [bottles, addTargetId]
+  );
+
+  // A bottle already on this machine can never be added again: re-sending its
+  // rows would overwrite its stored cut speeds with 0.
+  const addTargetAlreadyHere = !!addTarget && machineBottleIds.has(addTarget.bottle_id);
+
+  // Bottles in the list that still need adding, for the dropdown's summary line.
+  const addAvailableCount = useMemo(
+    () => addMatches.filter((b) => !machineBottleIds.has(b.bottle_id)).length,
+    [addMatches, machineBottleIds]
+  );
+
   // Rebuild the section rows once a machine AND a bottle are both chosen, so
   // each machine shows - and saves - only its own configuration for that bottle.
   useEffect(() => {
@@ -251,6 +322,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
       const target = e.target as Node;
       if (dropRef.current && !dropRef.current.contains(target)) setDropOpen(false);
       if (renameDropRef.current && !renameDropRef.current.contains(target)) setRenameDropOpen(false);
+      if (addDropRef.current && !addDropRef.current.contains(target)) setAddDropOpen(false);
     }
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -263,6 +335,7 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setNewWeight('');
     setRenameTargetId('');
     setRenameValue('');
+    setRenameWeight('');
     setRenameSaved(false);
     setRenameDropOpen(false);
     setRenameQuery('');
@@ -270,6 +343,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setFormWeight('');
     setQuery('');
     setDropOpen(false);
+    setAddTargetId('');
+    setAddQuery('');
+    setAddDropOpen(false);
+    setAddSaved(false);
     setSelectedBase(null);
     setOverriddenSections(new Set());
     setSaved(false);
@@ -283,15 +360,53 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setRenameTargetId(bottleId);
     const next = bottles.find((b) => b.bottle_id === bottleId) ?? null;
     setRenameValue(next ? next.bottle_name : '');
+    // Weight is read from bottle_configuration, the same place it is saved to.
+    const rows = configs.filter((c) => c.bottle_id === bottleId);
+    const w = (rows.find((c) => c.weight > 0) ?? rows[0])?.weight ?? next?.weight;
+    setRenameWeight(typeof w === 'number' && !isNaN(w) ? String(w) : '');
     setRenameSaved(false);
     setRenameDropOpen(false);
     setRenameQuery('');
   }
 
+  /** Resets the whole Edit Bottle Name section back to its initial state. */
+  function resetRenameForm() {
+    setRenameTargetId('');
+    setRenameValue('');
+    setRenameWeight('');
+    setRenameDropOpen(false);
+    setRenameQuery('');
+  }
+
+  // The weight box is dirty when it holds a valid positive number that differs
+  // from what bottle_configuration already stores. It only counts when the
+  // bottle actually has configuration rows, because those rows are what the
+  // weight is written to. A blank box is not a change: bottle_configuration.
+  // weight is non-null, so an empty field leaves the stored weights untouched
+  // instead of clearing them.
+  const renameWeightDirty =
+    renameTargetConfigs.length > 0 &&
+    parseWeightInput(renameWeight) !== null &&
+    renameWeight.trim() !== renameTargetWeight;
+
+  const renameNameDirty =
+    !!renameTarget && renameValue.trim() !== '' && renameValue.trim() !== renameTarget.bottle_name;
+
+  const canSaveRename =
+    !!renameTarget && !renameSaving && (renameNameDirty || renameWeightDirty);
+
   /**
-   * Renames the selected bottle_master row. The PUT sends the name only, so the
-   * backend leaves bottle_id, weight and every bottle_configuration row alone:
-   * no new bottle is created and no machine/section/speed data is touched.
+   * Updates the name of the bottle_master row and the weight of its existing
+   * bottle_configuration rows, in place.
+   *
+   * Name  - PUT /bottles/{id} with bottle_name only. Weight is omitted, so the
+   *         bottle_master row's own weight and the bottle_id are untouched and
+   *         no new bottle record is created.
+   * Weight - one bulk upsert that re-sends ONLY the configuration rows this
+   *         bottle already has. Each row echoes its stored machine_no, section
+   *         and speeds back unchanged, and because every (machine_no, bottle_id,
+   *         section) key already exists the backend's ON CONFLICT clause updates
+   *         in place instead of inserting - so no duplicate row can appear.
    */
   async function handleRenameSave() {
     if (!canEdit || renameSaving || !renameTarget) return;
@@ -301,28 +416,74 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
       alert('Bottle name cannot be empty.');
       return;
     }
-    if (newName === renameTarget.bottle_name) return;
 
-    const duplicate = bottles.some(
-      (b) => b.bottle_name.trim().toLowerCase() === newName.toLowerCase() && b.bottle_id !== renameTarget.bottle_id
-    );
-    if (duplicate) {
-      alert('A bottle with this name already exists.');
+    const nameChanged = newName !== renameTarget.bottle_name;
+
+    // Weight is only meaningful when there are rows to store it in, so it is
+    // validated and saved together with them.
+    const hasConfigRows = renameTargetConfigs.length > 0;
+    const weightNum = parseWeightInput(renameWeight);
+    const hasWeight = hasConfigRows && weightNum !== null && weightNum > 0;
+    if (hasConfigRows && weightNum !== null && !hasWeight) {
+      alert('Weight must be a number greater than 0.');
       return;
     }
+    const weightChanged = hasWeight && renameWeight.trim() !== renameTargetWeight;
 
+    if (!nameChanged && !weightChanged) return;
+
+    if (nameChanged) {
+      const duplicate = bottles.some(
+        (b) => b.bottle_name.trim().toLowerCase() === newName.toLowerCase() && b.bottle_id !== renameTarget.bottle_id
+      );
+      if (duplicate) {
+        alert('A bottle with this name already exists.');
+        return;
+      }
+    }
+
+    const bottleIdInt = parseInt(renameTarget.bottle_id, 10);
     setRenameSaving(true);
-    const result = await planningRepository.updateBottle(parseInt(renameTarget.bottle_id, 10), newName);
+
+    let ok = true;
+    let errorMessage = '';
+
+    if (nameChanged) {
+      const result = await planningRepository.updateBottle(bottleIdInt, newName);
+      if (!result.ok) {
+        ok = false;
+        errorMessage = result.error || 'Failed to update bottle name.';
+      }
+    }
+
+    if (ok && weightChanged) {
+      const result = await planningRepository.bulkUpsertBottleConfigurations(
+        renameTargetConfigs.map((c) => ({
+          machine_no: parseInt(c.machine_no.replace(/\D/g, ''), 10),
+          bottle_id: bottleIdInt,
+          section: c.section,
+          weight: weightNum as number,
+          speeds: c.speeds,
+        }))
+      );
+      if (!result.ok) {
+        ok = false;
+        errorMessage = result.error || 'Failed to update bottle weight.';
+      }
+    }
+
     setRenameSaving(false);
 
-    if (!result.ok) {
-      alert(result.error || 'Failed to update bottle name.');
+    if (!ok) {
+      alert(errorMessage);
       return;
     }
 
-    setRenameValue(newName);
     setRenameSaved(true);
     setTimeout(() => setRenameSaved(false), 2500);
+    // Re-read Bottle Master so the panel shows the persisted values, then drop
+    // the selection and both inputs so the section is ready for the next bottle.
+    resetRenameForm();
     onRefresh();
   }
 
@@ -330,6 +491,11 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setMachineNo(next);
     setQuery('');
     setDropOpen(false);
+    // The add-bottle choice belongs to the machine it was made on.
+    setAddTargetId('');
+    setAddQuery('');
+    setAddDropOpen(false);
+    setAddSaved(false);
     setSelectedBase(null);
     setFormRows([]);
     setFormWeight('');
@@ -351,6 +517,86 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
     setEditName('');
     setOriginalBaseName('');
     setOrigSnapshot(null);
+  }
+
+  function selectAddTarget(bottleId: string) {
+    setAddTargetId(bottleId);
+    setAddSaved(false);
+    setAddDropOpen(false);
+    setAddQuery('');
+  }
+
+  /**
+   * Puts the chosen bottle onto the selected machine by creating one
+   * bottle_configuration row per section that machine already uses.
+   *
+   * bottle_id / machine_no / section come from the bottle and the machine, and
+   * weight is copied from the bottle's existing bottle_configuration rows on
+   * OTHER machines (falling back to bottle_master.weight only for a bottle that
+   * has no configuration anywhere yet) - both columns already exist, so no new
+   * weight source is introduced. speeds starts at 0 and is filled in through
+   * the section speeds grid below, exactly like a bottle configured from
+   * scratch.
+   *
+   * Only rows for (this machine, this bottle) are ever sent, so the bottle's
+   * configurations on other machines are left completely alone. The keys are
+   * guaranteed new here, and the backend upserts on
+   * (machine_no, bottle_id, section) anyway, so no duplicate row can appear.
+   */
+  async function handleAddBottle() {
+    if (!canEdit || addSaving || !selectedMachine || !addTarget) return;
+
+    // Guarded in the dropdown too, but re-checked here so a stale selection can
+    // never overwrite an existing configuration's cut speeds.
+    if (machineBottleIds.has(addTarget.bottle_id)) {
+      alert('This bottle is already configured on this machine.');
+      setAddTargetId('');
+      return;
+    }
+    if (machineSections.length === 0) {
+      alert('This machine has no sections to configure.');
+      return;
+    }
+
+    const existingRows = configIndex.byBottle.get(addTarget.bottle_id) ?? [];
+    const source = existingRows.find((c) => c.weight > 0) ?? existingRows[0];
+    const masterWeight = addTarget.weight;
+    const weight =
+      source && typeof source.weight === 'number' && !isNaN(source.weight)
+        ? source.weight
+        : typeof masterWeight === 'number' && !isNaN(masterWeight)
+          ? masterWeight
+          : 0;
+
+    const machineInt = parseInt(selectedMachine.machine_no.replace(/\D/g, ''), 10);
+    const bottleIdInt = parseInt(addTarget.bottle_id, 10);
+
+    setAddSaving(true);
+    const result = await planningRepository.bulkUpsertBottleConfigurations(
+      machineSections.map((sec) => ({
+        machine_no: machineInt,
+        bottle_id: bottleIdInt,
+        section: sec,
+        weight,
+        speeds: 0,
+      }))
+    );
+    setAddSaving(false);
+
+    if (!result.ok) {
+      alert(result.error || 'Failed to add bottle to this machine.');
+      return;
+    }
+
+    setAddSaved(true);
+    setTimeout(() => setAddSaved(false), 2500);
+    setAddTargetId('');
+    setAddQuery('');
+    setAddDropOpen(false);
+    // Re-read Bottle Master so the bottle is in the machine's bottle list, then
+    // select it so its section speeds are ready to be entered right away.
+    onRefresh();
+    selectBottle(addTarget);
   }
 
   // Enter rename mode. Original values are tracked via origSnapshot.
@@ -904,8 +1150,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
             </div>
           )}
 
-          {/* Edit Bottle Name: renames an existing bottle in place. Nothing
-              below is sent to the server except bottle_name. */}
+          {/* Edit Bottle Name: updates an existing bottle's name in
+              bottle_master and the weight of its existing
+              bottle_configuration rows. bottle_id, machine_no, section and
+              speeds are never changed. */}
           <div className="border-t border-gray-100 pt-5 flex flex-col gap-4">
             <div className="flex items-center gap-2">
               <span className="text-blue-600"><Pencil className="w-3.5 h-3.5" /></span>
@@ -987,8 +1235,34 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                 />
                 <p className="text-[10px] text-gray-400">
                   {renameTarget
-                    ? `Only the name is updated. Bottle ID ${renameTarget.bottle_id}, weight and machine configurations stay the same.`
-                    : 'Pick an existing bottle to load its current name.'}
+                    ? `Only the name and weight are updated. Bottle ID ${renameTarget.bottle_id} and its machine configurations stay the same.`
+                    : 'Pick an existing bottle to load its current name and weight.'}
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Weight (grams)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder={renameTarget ? 'e.g. 450' : 'Select a bottle to load its weight'}
+                    value={renameWeight}
+                    disabled={!renameTarget}
+                    onChange={(e) => {
+                      setRenameWeight(e.target.value);
+                      setRenameSaved(false);
+                    }}
+                    className="w-full h-10 px-3 pr-8 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-medium">g</span>
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  {renameTargetConfigs.length > 0
+                    ? `Shared by every machine: saves to all ${renameTargetConfigs.length} configuration record${renameTargetConfigs.length === 1 ? '' : 's'}. Cut speeds are not changed.`
+                    : 'This bottle has no machine configuration yet, so there is no weight to save.'}
                 </p>
               </div>
             </div>
@@ -997,10 +1271,10 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
               <div className="flex justify-end items-center gap-2">
                 <button
                   onClick={handleRenameSave}
-                  disabled={!renameTarget || renameSaving || renameValue.trim() === '' || renameValue.trim() === renameTarget?.bottle_name}
+                  disabled={!canSaveRename}
                   className={`flex items-center gap-1.5 px-5 h-9 rounded-lg text-sm font-medium transition-all duration-200 ${renameSaved
                     ? 'bg-green-50 text-green-600 border border-green-200'
-                    : !renameTarget || renameSaving || renameValue.trim() === '' || renameValue.trim() === renameTarget?.bottle_name
+                    : !canSaveRename
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                       : 'bg-blue-600 hover:bg-blue-700 text-white'
                     }`}
@@ -1045,6 +1319,118 @@ export const BottleMasterPanel: React.FC<BottleMasterPanelProps> = ({
                 </div>
                 <p className="text-[10px] text-gray-400">
                   Applied to every machine that runs this bottle.
+                </p>
+              </div>
+            )}
+
+            {/* Add Bottle to This Machine: puts any bottle from bottle_master
+                onto this machine. Kept in the same grid so it sits next to the
+                machine picker without moving anything else. */}
+            {selectedMachine && canEdit && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Add Bottle to This Machine
+                </label>
+                <div className="flex items-center gap-2">
+                  <div ref={addDropRef} className="relative flex-1">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 z-10">
+                      <Search className="w-3.5 h-3.5" />
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Re-opening always lists every bottle in bottle_master;
+                        // the search box inside narrows it down.
+                        setAddQuery('');
+                        setAddDropOpen((open) => !open);
+                      }}
+                      className={`w-full h-10 pl-7 pr-3 text-left text-sm rounded-lg border focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition ${addTarget
+                        ? 'font-medium text-gray-800 bg-white border-gray-200'
+                        : 'text-gray-400 bg-white border-gray-200'
+                        }`}
+                    >
+                      {addTarget ? addTarget.bottle_name : 'Select or search any bottle...'}
+                    </button>
+                    {addDropOpen && (
+                      <div className="absolute z-20 top-11 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                        <div className="p-2 border-b border-gray-100">
+                          <input
+                            type="text"
+                            autoFocus
+                            value={addQuery}
+                            onChange={(e) => setAddQuery(e.target.value)}
+                            placeholder="Search bottle name or ID..."
+                            className="w-full h-8 px-2.5 text-sm border border-gray-200 rounded-md bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                          />
+                        </div>
+                        <div className="max-h-48 overflow-y-auto">
+                          {addMatches.length === 0 ? (
+                            <p className="px-3 py-3 text-xs text-gray-400">No bottles found.</p>
+                          ) : (
+                            addMatches.map((b) => {
+                              const already = machineBottleIds.has(b.bottle_id);
+                              return (
+                                <div
+                                  key={b.bottle_id}
+                                  title={already ? 'Already configured on this machine' : undefined}
+                                  className={`flex items-center justify-between px-3 py-2 text-sm transition ${already
+                                    ? 'opacity-50 cursor-not-allowed'
+                                    : b.bottle_id === addTargetId
+                                      ? 'bg-blue-50 cursor-pointer'
+                                      : 'hover:bg-blue-50 cursor-pointer'
+                                    }`}
+                                  onMouseDown={() => {
+                                    if (!already) selectAddTarget(b.bottle_id);
+                                  }}
+                                >
+                                  <span className="text-xs font-medium text-gray-800">{b.bottle_name}</span>
+                                  <span className="flex items-center gap-2 shrink-0">
+                                    {already && (
+                                      <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600">
+                                        <Check className="w-3 h-3" />
+                                        Added
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] text-gray-400 font-mono">{b.bottle_id}</span>
+                                  </span>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                        <div className="px-3 py-2 border-t border-gray-100 text-[10px] text-gray-400">
+                          {addAvailableCount} of {addMatches.length} listed not yet on this machine
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleAddBottle}
+                    disabled={!addTarget || addSaving || addTargetAlreadyHere}
+                    className={`flex items-center gap-1.5 px-5 h-10 rounded-lg text-sm font-medium transition-all duration-200 shrink-0 ${addSaved
+                      ? 'bg-green-50 text-green-600 border border-green-200'
+                      : !addTarget || addSaving || addTargetAlreadyHere
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                      }`}
+                  >
+                    {addSaved ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        Added
+                      </>
+                    ) : addSaving ? (
+                      'Adding...'
+                    ) : (
+                      'Add'
+                    )}
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  Creates one configuration per section ({machineSections.length} on this machine) using the
+                  bottle&apos;s existing weight. Its other machines are untouched.
                 </p>
               </div>
             )}
