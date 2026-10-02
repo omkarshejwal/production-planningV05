@@ -59,6 +59,26 @@ def _ensure_bottle_master_weight_column() -> None:
         print(f"Warning: could not add bottle_master.weight column: {exc}")
 
 
+def _ensure_hourly_production_weight_efficiency_column() -> None:
+    """Adds hourly_production.weight_efficiency to databases that predate the column."""
+    schema = settings.hpr_schema
+    table_name = "hourly_production"
+    try:
+        columns = {c["name"] for c in inspect(engine).get_columns(table_name, schema=schema or None)}
+        if "weight_efficiency" in columns:
+            return
+    except Exception as exc:
+        print(f"Warning: could not inspect {table_name} columns: {exc}")
+        return
+
+    target = f'"{schema}"."{table_name}"' if schema else table_name
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE {target} ADD COLUMN weight_efficiency NUMERIC(10, 2)"))
+    except Exception as exc:
+        print(f"Warning: could not add {table_name}.weight_efficiency column: {exc}")
+
+
 def initialize_database() -> None:
     if settings.production_schema:
         with engine.begin() as connection:
@@ -68,6 +88,7 @@ def initialize_database() -> None:
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.hpr_schema}"'))
     Base.metadata.create_all(bind=engine)
     _ensure_bottle_master_weight_column()
+    _ensure_hourly_production_weight_efficiency_column()
     # Safe no-op against the production Postgres (auth tables already exist);
     # creates a local sqlite fallback so local development still works.
     AuthBase.metadata.create_all(bind=engine)

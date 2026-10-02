@@ -64,8 +64,7 @@ class HourlyProduction(Base):
     production_time = Column(DateTime, nullable=False)
     
     bottle_id = Column(Integer, ForeignKey(production_fk("bottle_master.bottle_id")), nullable=True)
-    section = Column(Integer, nullable=True)
-    
+
     weight_front = Column(Numeric(10, 2), nullable=True)
     weight_middle = Column(Numeric(10, 2), nullable=True)
     weight_rear = Column(Numeric(10, 2), nullable=True)
@@ -80,6 +79,7 @@ class HourlyProduction(Base):
     cartons = Column(Integer, nullable=True)
     bottles_in_nos = Column(Integer, nullable=True)
     efficiency_percent = Column(Numeric(5, 2), nullable=True)
+    weight_efficiency = Column(Numeric(10, 2), nullable=True)
 
     sqc = Column(Integer, nullable=True)
     qc_hold = Column(Integer, nullable=True)

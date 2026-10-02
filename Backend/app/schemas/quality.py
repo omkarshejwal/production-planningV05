@@ -40,7 +40,6 @@ class QualityHourlyEntrySchema(BaseModel):
     shift_id: int
     production_time: str
     bottle_id: Optional[int] = None
-    section: Optional[int] = None
     weight_front: Optional[float] = None
     weight_middle: Optional[float] = None
     weight_rear: Optional[float] = None
@@ -51,6 +50,7 @@ class QualityHourlyEntrySchema(BaseModel):
     cartons: Optional[int] = None
     bottles_in_nos: Optional[int] = None
     efficiency_percentage: Optional[float] = None
+    weight_efficiency: Optional[float] = None
     sqc: Optional[int] = None
     qc_hold: Optional[int] = None
     num: Optional[int] = None
@@ -60,7 +60,6 @@ class QualityHourlyEntrySchema(BaseModel):
 
     @field_validator(
         "bottle_id",
-        "section",
         "packing_size",
         "cartons",
         "bottles_in_nos",

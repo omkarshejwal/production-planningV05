@@ -141,7 +141,6 @@ def get_default_shape(date_str: str) -> QualityDailyResponse:
                 shift_id=pt['shift_id'],
                 production_time=pt['time'],
                 bottle_id=None,
-                section=None,
                 weight_front=None,
                 weight_middle=None,
                 weight_rear=None,
@@ -152,6 +151,7 @@ def get_default_shape(date_str: str) -> QualityDailyResponse:
                 cartons=None,
                 bottles_in_nos=None,
                 efficiency_percentage=None,
+                weight_efficiency=None,
                 sqc=None,
                 qc_hold=None,
                 num=None,
@@ -216,7 +216,6 @@ def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser 
             shift_id=entry.shift_id,
             production_time=pt_time,
             bottle_id=entry.bottle_id,
-            section=entry.section,
             weight_front=entry.weight_front,
             weight_middle=entry.weight_middle,
             weight_rear=entry.weight_rear,
@@ -227,6 +226,7 @@ def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser 
             cartons=entry.cartons,
             bottles_in_nos=entry.bottles_in_nos,
             efficiency_percentage=float(entry.efficiency_percent) if entry.efficiency_percent is not None else None,
+            weight_efficiency=float(entry.weight_efficiency) if getattr(entry, 'weight_efficiency', None) is not None else None,
             sqc=entry.sqc,
             qc_hold=int(entry.qc_hold) if entry.qc_hold is not None else None,
             num=entry.num,
@@ -249,7 +249,6 @@ def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser 
 def _has_meaningful_data(entry_data: QualityHourlyEntrySchema) -> bool:
     fields = [
         entry_data.bottle_id,
-        entry_data.section,
         entry_data.weight_front,
         entry_data.weight_middle,
         entry_data.weight_rear,
@@ -532,7 +531,6 @@ def save_daily_quality(
 
                 # prepare field values
                 b_id = entry_data.bottle_id
-                sec = entry_data.section
                 w_f = entry_data.weight_front
                 w_m = entry_data.weight_middle
                 w_r = entry_data.weight_rear
@@ -548,6 +546,12 @@ def save_daily_quality(
                         eff = round(min(max(float(eff), 0.0), 999.99), 2)
                     except (ValueError, TypeError):
                         eff = None
+                weff = entry_data.weight_efficiency
+                if weff is not None:
+                    try:
+                        weff = round(float(weff), 2)
+                    except (ValueError, TypeError):
+                        weff = None
                 sq = entry_data.sqc
                 qch = entry_data.qc_hold
                 n_val = entry_data.num
@@ -559,10 +563,11 @@ def save_daily_quality(
                         machine_no=machine_no,
                         shift_id=entry_data.shift_id,
                         production_time=entry_dt,
-                        bottle_id=b_id, section=sec,
+                        bottle_id=b_id,
                         weight_front=w_f, weight_middle=w_m, weight_rear=w_r, weight_avg=w_a,
                         speed_per_min=s_p_m, packing_category=p_c, packing_size=p_s,
                         cartons=ctns, bottles_in_nos=binos, efficiency_percent=eff,
+                        weight_efficiency=weff,
                         sqc=sq, qc_hold=qch, num=n_val, remarks=rmk,
                         # hourly_production.job_id is a NOT NULL column. A row that
                         # does not belong to a job yet must be stored as an empty id
@@ -574,7 +579,6 @@ def save_daily_quality(
                     entry_map[map_key] = entry
                 else:
                     entry.bottle_id = b_id
-                    entry.section = sec
                     entry.weight_front = w_f
                     entry.weight_middle = w_m
                     entry.weight_rear = w_r
@@ -585,6 +589,10 @@ def save_daily_quality(
                     entry.cartons = ctns
                     entry.bottles_in_nos = binos
                     entry.efficiency_percent = eff
+                    if getattr(entry, 'weight_efficiency', None) is not None or weff is not None:
+                        entry.weight_efficiency = weff
+                    elif 'weff' in locals():
+                        entry.weight_efficiency = weff
                     entry.sqc = sq
                     entry.qc_hold = qch
                     entry.num = n_val
@@ -843,7 +851,6 @@ def save_daily_quality(
                         production_time=next_9am_dt,
                         bottle_id=entry_8am.bottle_id,
                         job_id=entry_8am.job_id,
-                        section=entry_8am.section,
                         weight_front=entry_8am.weight_front,
                         weight_middle=entry_8am.weight_middle,
                         weight_rear=entry_8am.weight_rear,
@@ -854,6 +861,7 @@ def save_daily_quality(
                         cartons=entry_8am.cartons,
                         bottles_in_nos=entry_8am.bottles_in_nos,
                         efficiency_percent=entry_8am.efficiency_percent,
+                        weight_efficiency=getattr(entry_8am, 'weight_efficiency', None),
                         sqc=entry_8am.sqc,
                         qc_hold=entry_8am.qc_hold,
                         num=entry_8am.num,
@@ -879,7 +887,6 @@ def save_daily_quality(
                     shift_id=entry.shift_id,
                     production_time=pt_time,
                     bottle_id=entry.bottle_id,
-                    section=entry.section,
                     weight_front=entry.weight_front,
                     weight_middle=entry.weight_middle,
                     weight_rear=entry.weight_rear,
@@ -890,11 +897,12 @@ def save_daily_quality(
                     cartons=entry.cartons,
                     bottles_in_nos=entry.bottles_in_nos,
                     efficiency_percentage=float(entry.efficiency_percent) if entry.efficiency_percent is not None else None,
+                    weight_efficiency=float(getattr(entry, 'weight_efficiency', None)) if getattr(entry, 'weight_efficiency', None) is not None else None,
                     sqc=entry.sqc,
                     qc_hold=int(entry.qc_hold) if entry.qc_hold is not None else None,
                     num=entry.num,
                     remarks=entry.remarks,
-                    defect_ids=[],
+                    defect_ids=[d.defect_name for d in entry.defects],
                     job_id=entry.job_id
                 )
 

@@ -34,7 +34,6 @@ export interface QualityHourlyEntry {
   shift_id: number;
   production_time: string;
   bottle_id: string;
-  section: string;
   weight_front: string;
   weight_middle: string;
   weight_rear: string;
@@ -45,6 +44,7 @@ export interface QualityHourlyEntry {
   cartons: string;
   bottles_in_nos: string;
   efficiency_percentage: string;
+  weight_efficiency: string;
   sqc: string;
   qc_hold: number;
   num: string;
@@ -65,7 +65,7 @@ export interface DefectMasterItem {
  * Database-shaped hourly entry used for request payloads and API responses.
  * Field names and types mirror the database schema exactly:
  * hourly_production (entry_id, report_id, machine_no, shift_id,
- * production_time, bottle_id, section, weight_front, weight_middle,
+ * production_time, bottle_id, weight_front, weight_middle,
  * weight_rear, weight_avg, speed_per_min, packing_category, packing_size,
  * cartons, bottles_in_nos, efficiency_percentage, sqc, qc_hold, num, remarks)
  * plus defect_ids (the per-entry defect names; hourly_production_defect is
@@ -78,7 +78,6 @@ export interface QualityEntryPayload {
   shift_id: number;
   production_time: string;
   bottle_id: number | null;
-  section: number | null;
   weight_front: number | null;
   weight_middle: number | null;
   weight_rear: number | null;
@@ -89,6 +88,7 @@ export interface QualityEntryPayload {
   cartons: number | null;
   bottles_in_nos: number | null;
   efficiency_percentage: number | null;
+  weight_efficiency: number | null;
   sqc: number | null;
   qc_hold: number;
   num: number | null;
@@ -114,9 +114,9 @@ export type QualityDayHourly =
 // they never shadow real local rows and never bloat a save payload.
 export const hasMeaningfulData = (e?: QualityHourlyEntry | null): boolean => {
   if (!e) return false;
-  if (e.bottle_id || e.section || e.job_id) return true;
+  if (e.bottle_id || e.job_id) return true;
   if (e.weight_front || e.weight_middle || e.weight_rear || e.weight_avg) return true;
-  if (e.speed_per_min || e.packing_size || e.cartons || e.bottles_in_nos || e.efficiency_percentage) return true;
+  if (e.speed_per_min || e.packing_size || e.cartons || e.bottles_in_nos || e.efficiency_percentage || e.weight_efficiency) return true;
   if (e.sqc || e.num || e.remarks) return true;
   if (Number(e.qc_hold ?? 0) !== 0) return true;
   if ((e.packing_category?.length ?? 0) > 0) return true;
@@ -191,7 +191,7 @@ const toNumOrNull = (v: unknown): number | null => {
 };
 
 /**
- * Whole-number columns (bottle_id, section, cartons, ...). The grid's numeric
+ * Whole-number columns (bottle_id, cartons, ...). The grid's numeric
  * inputs accept any keystroke, so "12.5" would otherwise travel to the API as a
  * fractional float, be rejected with a 422 and abort the save of the ENTIRE
  * day. Truncating here keeps the payload inside the database's integer columns.
@@ -245,7 +245,6 @@ const toDbEntry = (entry: QualityHourlyEntry): QualityEntryPayload => ({
   shift_id: entry.shift_id,
   production_time: entry.production_time,
   bottle_id: toIntOrNull(entry.bottle_id),
-  section: toIntOrNull(entry.section),
   weight_front: toNumOrNull(entry.weight_front),
   weight_middle: toNumOrNull(entry.weight_middle),
   weight_rear: toNumOrNull(entry.weight_rear),
@@ -256,6 +255,7 @@ const toDbEntry = (entry: QualityHourlyEntry): QualityEntryPayload => ({
   cartons: toIntOrNull(entry.cartons),
   bottles_in_nos: toIntOrNull(entry.bottles_in_nos),
   efficiency_percentage: toNumOrNull(entry.efficiency_percentage),
+  weight_efficiency: toNumOrNull(entry.weight_efficiency),
   sqc: toIntOrNull(entry.sqc),
   qc_hold: toIntOrZero(entry.qc_hold),
   num: toIntOrNull(entry.num),
@@ -272,7 +272,6 @@ const fromDbEntry = (raw: Record<string, unknown>): QualityHourlyEntry => ({
   shift_id: toNumOrNull(raw.shift_id) ?? 1,
   production_time: toStrOrEmpty(raw.production_time),
   bottle_id: toStrOrEmpty(raw.bottle_id),
-  section: toStrOrEmpty(raw.section),
   weight_front: toStrOrEmpty(raw.weight_front),
   weight_middle: toStrOrEmpty(raw.weight_middle),
   weight_rear: toStrOrEmpty(raw.weight_rear),
@@ -283,6 +282,7 @@ const fromDbEntry = (raw: Record<string, unknown>): QualityHourlyEntry => ({
   cartons: toStrOrEmpty(raw.cartons),
   bottles_in_nos: toStrOrEmpty(raw.bottles_in_nos),
   efficiency_percentage: toStrOrEmpty(raw.efficiency_percentage),
+  weight_efficiency: toStrOrEmpty(raw.weight_efficiency),
   sqc: toStrOrEmpty(raw.sqc),
   qc_hold: toIntOrZero(raw.qc_hold),
   num: toStrOrEmpty(raw.num),

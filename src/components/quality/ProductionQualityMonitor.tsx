@@ -106,7 +106,7 @@ type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
  * Used to detect "nothing actually changed" so an unchanged row keeps its
  * object identity and the memoized row component does not re-render.
  */
-const MERGED_ROW_FIELDS = ['entry_id', 'report_id', 'job_id', 'bottle_id', 'section'] as const;
+const MERGED_ROW_FIELDS = ['entry_id', 'report_id', 'job_id', 'bottle_id'] as const;
 
 const AUTO_SAVE_STATUS_VIEW: Record<AutoSaveStatus, { label: string; color: string }> = {
   idle: { label: '', color: '#94a3b8' },
@@ -567,12 +567,10 @@ const QualityTimeRow = React.memo<{
   gobCount: number;
   hasM: boolean;
   bottles: BottleMaster[];
-  availableSections: string[];
   allDefectNames: string[];
   defectGroups: DefectGroup[];
   loadingDefects: boolean;
   selectBottle: (time: string, bottleId: string) => void;
-  selectSection: (time: string, section: string) => void;
   patchEntry: (time: string, patch: Partial<QualityHourlyEntry>) => void;
   copyRowDown: (time: string) => void;
   removeBottle: (time: string) => void;
@@ -585,12 +583,10 @@ const QualityTimeRow = React.memo<{
   gobCount,
   hasM,
   bottles,
-  availableSections,
   allDefectNames,
   defectGroups,
   loadingDefects,
   selectBottle,
-  selectSection,
   patchEntry,
   copyRowDown,
   removeBottle,
@@ -757,20 +753,6 @@ const QualityTimeRow = React.memo<{
         </div>
       </td>
 
-      <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <select
-          value={entry?.section ?? ''}
-          disabled={!canEdit}
-          onChange={(e) => selectSection(time, e.target.value)}
-          style={selectStyle}
-          onFocus={selectFocus}
-          onBlur={selectBlur}
-        >
-          <option value="">—</option>
-          {availableSections.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </td>
-
       <td style={{ ...tdCenter, padding: '4px 2px', width: '50px' }}>
         <NumInput value={entry?.weight_front ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { weight_front: v })} />
       </td>
@@ -813,6 +795,10 @@ const QualityTimeRow = React.memo<{
 
       <td style={tdCenter}>
         <EffBadge val={calcEffForEntry(entry, gobCount)} />
+      </td>
+
+      <td style={{ ...tdCenter, padding: '4px 4px' }}>
+        <NumInput value={entry?.weight_efficiency ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { weight_efficiency: v })} />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
@@ -1084,7 +1070,6 @@ export const QualityControlModule: React.FC = () => {
     shift_id: shiftId,
     production_time: time,
     bottle_id: '',
-    section: '',
     weight_front: '',
     weight_middle: '',
     weight_rear: '',
@@ -1095,6 +1080,7 @@ export const QualityControlModule: React.FC = () => {
     cartons: '',
     bottles_in_nos: '',
     efficiency_percentage: '',
+    weight_efficiency: '',
     sqc: '',
     qc_hold: 0,
     num: '',
@@ -1370,7 +1356,6 @@ export const QualityControlModule: React.FC = () => {
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
     const machineKey = String(activeMachine);
     const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
-    const currentSection = existingEntry?.section ?? '';
     const prevBottle = existingEntry?.bottle_id || '';
 
     if (prevBottle && prevBottle !== bottleId && existingEntry?.job_id) {
@@ -1384,9 +1369,7 @@ export const QualityControlModule: React.FC = () => {
     const configs = bottleMasterRecords.filter(
       (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
     );
-    const config =
-      (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
-      configs[0];
+    const config = configs[0];
 
     markTouched(dateKey, machineKey, time);
     queueAutoSave(dateKey);
@@ -1421,14 +1404,10 @@ export const QualityControlModule: React.FC = () => {
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
     const machineKey = String(activeMachine);
     const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
-    const currentSection = existingEntry?.section ?? '';
-
     const configs = bottleMasterRecords.filter(
       (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
     );
-    const config =
-      (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
-      configs[0];
+    const config = configs[0];
 
     markTouched(dateKey, machineKey, time);
     queueAutoSave(dateKey);
@@ -1459,8 +1438,6 @@ export const QualityControlModule: React.FC = () => {
   const cancelBottleChange = useCallback(() => {
     setPendingBottleChange(null);
   }, []);
-
-  const selectSection = useCallback((time: string, section: string) => patchEntry(time, { section }), [patchEntry]);
 
   // Copy a filled row down to the next empty slot. The row's job_id is
   // preserved (a copied row CONTINUES the same job). If all 24 slots of the
@@ -1536,7 +1513,6 @@ export const QualityControlModule: React.FC = () => {
   const removeBottle = useCallback((time: string) => {
     patchEntry(time, {
       bottle_id: '',
-      section: '',
       weight_front: '',
       weight_middle: '',
       weight_rear: '',
@@ -1547,6 +1523,7 @@ export const QualityControlModule: React.FC = () => {
       cartons: '',
       bottles_in_nos: '',
       efficiency_percentage: '',
+      weight_efficiency: '',
       sqc: '',
       qc_hold: 0,
       num: '',
@@ -1793,7 +1770,6 @@ export const QualityControlModule: React.FC = () => {
                     report_id: contEntry.report_id || prevEntry.report_id || '',
                     job_id: contEntry.job_id || prevEntry.job_id || '',
                     bottle_id: prevEntry.bottle_id || contEntry.bottle_id || '',
-                    section: prevEntry.section || contEntry.section || '',
                   };
                   byTime[tKey] = MERGED_ROW_FIELDS.every((f) => merged[f] === prevEntry[f])
                     ? prevEntry
@@ -1830,7 +1806,7 @@ export const QualityControlModule: React.FC = () => {
                 } else {
                   // Keep the operator's current values; the id fields
                   // (entry_id, report_id, job_id) come from the authoritative
-                  // database response. bottle_id / section are only ever
+                  // database response. bottle_id is only ever
                   // *adopted* from the response when the local row is empty, so
                   // a saved selection can never be blanked by a stale or empty
                   // response while an empty row can still pick up what the
@@ -1841,7 +1817,6 @@ export const QualityControlModule: React.FC = () => {
                     report_id: savedEntry.report_id || prevEntry.report_id || '',
                     job_id: savedEntry.job_id || prevEntry.job_id || '',
                     bottle_id: prevEntry.bottle_id || savedEntry.bottle_id || '',
-                    section: prevEntry.section || savedEntry.section || '',
                   };
                   // The response carries the whole 4 x 24 grid, but only the
                   // rows the operator actually changed can differ. Reusing the
@@ -1959,9 +1934,9 @@ const dateAndDay = `${dateLabel} - ${reportDate.toLocaleDateString('en-US', {
 rows.push(dateAndDay);
 
     const header = [
-      'Shift', 'Time', 'Machine', 'Bottle Name', 'Section', 'Weight F', 'Weight M', 'Weight R',
+      'Shift', 'Time', 'Machine', 'Bottle Name', 'Weight F', 'Weight M', 'Weight R',
       'AVG', 'Speed/Min', 'Packing Category', 'Packing Size', 'Cartons', 'Bottles in Nos.',
-      'Efficiency %', 'SQC', 'QC Hold', 'NUM', 'Defects', 'Remarks',
+      'QTY EFF%', 'WT EFF%', 'SQC', 'QC Hold', 'NUM', 'Defects', 'Remarks',
     ];
     rows.push(header.join(','));
     for (const pt of PRODUCTION_TIMES) {
@@ -1981,7 +1956,6 @@ rows.push(dateAndDay);
           e.production_time,
           `Machine ${activeMachine}`,
           bottleName,
-          e.section,
           e.weight_front,
           e.weight_middle,
           e.weight_rear,
@@ -1992,6 +1966,7 @@ rows.push(dateAndDay);
           e.cartons,
           calcBottlesInNosFor(e) || e.bottles_in_nos,
           eff,
+          e.weight_efficiency,
           e.sqc,
           e.qc_hold,
           e.num,
@@ -2089,7 +2064,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
         { content: 'Time', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Shift', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Bottle Name', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
-        { content: 'Section', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Weight (gms)', colSpan: hasM ? 3 : 2, styles: { halign: 'center' } },
         { content: 'Average', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Speed/Min', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
@@ -2097,7 +2071,8 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
         { content: 'Packing Size', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Cartons', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Bottles', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
-        { content: 'Eff%', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'QTY EFF%', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+        { content: 'WT EFF%', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'SQC', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'QC HOLD', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'NUM', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
@@ -2115,7 +2090,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
           pt.time,
           SHIFT_LABELS[pt.shift_id - 1] ?? '',
           e?.bottle_id ? bottleNameFor(e.bottle_id) : '',
-          e?.section ?? '',
           e?.weight_front ?? '',
           ...(hasM ? [e?.weight_middle ?? ''] : []),
           e?.weight_rear ?? '',
@@ -2126,6 +2100,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
           e?.cartons ?? '',
           calcBottlesInNosFor(e) || e?.bottles_in_nos || '',
           calcEffFor(e, activeMachine),
+          e?.weight_efficiency ?? '',
           e?.sqc ?? '',
           e?.qc_hold != null ? String(e.qc_hold) : '0',
           e?.num ?? '',
@@ -2139,10 +2114,10 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
       const summary: any[] = new Array(colCount).fill('');
       summary[0] = {
         content: 'Day Avg / Summary',
-        colSpan: 4,
+        colSpan: 3,
         styles: { halign: 'right', fontStyle: 'bold' },
       };
-      let wIdx = 4;
+      let wIdx = 3;
       summary[wIdx++] = dayAvgs.front;
       if (hasM) summary[wIdx++] = dayAvgs.middle;
       summary[wIdx++] = dayAvgs.rear;
@@ -2153,12 +2128,13 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
       summary[wIdx++] = stats.totalCartons.toLocaleString();
       summary[wIdx++] = stats.totalBottles.toLocaleString();
       summary[wIdx++] = `${stats.avgEff}%`;
+      wIdx++; // WT EFF% (empty for summary)
       body.push(summary);
 
       // ── Column widths + alignment (landscape A4 with 10mm page margins) ──
       const colWidths = hasM
-        ? [13, 11, 34, 11, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 24, 24]
-        : [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 24, 24];
+        ? [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 11, 24, 24]
+        : [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 11, 24, 24];
 
       const columnStyles: Record<number, any> = {};
       colWidths.forEach((w, i) => {
@@ -2349,7 +2325,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
         </div>
       </div>
 
-      {/* Shift Assignment cards */}
+      {/* Shift Assignment cards
       <div className="no-print" style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
         {DB_SHIFT_MASTER.map((sh, i) => {
           const assignment = getShiftAssignment(sh.shift_id);
@@ -2414,7 +2390,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
             </div>
           );
         })}
-      </div>
+      </div> */}
 
       {/* White card */}
       <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: '10px', boxShadow: '0 1px 4px rgba(0,0,0,0.05)', overflow: 'hidden' }}>
@@ -2539,7 +2515,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                 <th rowSpan={2} style={{ ...thStyle(), width: '38px', borderBottom: `2px solid ${C.border}`, padding: '9px 4px' }}>Shift</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '76px', borderBottom: `2px solid ${C.border}`, padding: '9px 6px' }}>Time</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '200px', borderBottom: `2px solid ${C.border}`, padding: '9px 10px', textAlign: 'left' }}>Bottle Name</th>
-                <th rowSpan={2} style={{ ...thStyle(), width: '46px', borderBottom: `2px solid ${C.border}` }}>Section</th>
                 <th colSpan={hasM ? 3 : 2} style={{ ...thStyle(), borderBottom: `1px solid ${C.border}` }}>Weight (gms)</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}`, color: '#475569' }}>Avg</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>{'Speed\n/Min'}</th>
@@ -2547,7 +2522,8 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>{'Packing\nSize'}</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>Cartons</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>{'Bottles\nin Nos.'}</th>
-                <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>Eff%</th>
+                <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>QTY EFF%</th>
+                <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>WT EFF%</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>SQC</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>{'QC\nHOLD'}</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>NUM</th>
@@ -2567,10 +2543,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                 const isFirstInShift = idx % 8 === 0;
                 const entry = activeRows[time];
 
-                const availSections = entry?.bottle_id
-                  ? getAvailableSections(entry.bottle_id)
-                  : getAvailableSections('', activeMachine);
-
                 return (
                   <QualityTimeRow
                     key={time}
@@ -2581,12 +2553,10 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                     gobCount={gobCount}
                     hasM={hasM}
                     bottles={machineBottles}
-                    availableSections={availSections}
                     allDefectNames={allDefectNames}
                     defectGroups={defectGroups}
                     loadingDefects={loadingDefects}
                     selectBottle={selectBottle}
-                    selectSection={selectSection}
                     patchEntry={patchEntry}
                     copyRowDown={copyRowDown}
                     removeBottle={removeBottle}
@@ -2597,7 +2567,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
 
               {/* Day Avg / Summary row */}
               <tr style={{ backgroundColor: '#f0f4fa', borderTop: `2px solid ${C.border}` }}>
-                <td colSpan={4} style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, fontSize: '11px', color: '#334155', letterSpacing: '0.06em', textTransform: 'uppercase', borderRight: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>
+                <td colSpan={3} style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, fontSize: '11px', color: '#334155', letterSpacing: '0.06em', textTransform: 'uppercase', borderRight: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>
                   Day Avg / Summary
                 </td>
                 <td style={{ padding: '8px 6px', textAlign: 'center', fontWeight: 700, fontSize: '12px', color: '#1e293b', borderRight: `1px solid ${C.border}` }}>
@@ -2632,6 +2602,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                     {stats.avgEff}%
                   </span>
                 </td>
+                <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
