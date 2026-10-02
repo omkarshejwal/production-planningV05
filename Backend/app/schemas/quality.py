@@ -105,4 +105,22 @@ class QualityDailyRequest(BaseModel):
 class QualityDailyResponse(BaseModel):
     hourly: Dict[str, Dict[str, QualityHourlyEntrySchema]]
     shift_assignments: Dict[str, QualityShiftAssignmentSchema]
+    continuation: Optional[Dict[str, Dict[str, QualityHourlyEntrySchema]]] = None
+
+class QualityJobRowSchema(BaseModel):
+    """One machine + Job ID row of the job-wise production summary.
+
+    job_start_time / job_end_time carry the PRODUCTION date together with the
+    job's start/end clock time: a slot between 12:00 AM and 8:59 AM belongs to
+    the previous production date, so its date part is that production date,
+    never the next calendar day.
+    """
+    machine_no: int
+    job_id: str
+    bottle_id: Optional[int] = None
+    job_start_time: datetime
+    job_end_time: Optional[datetime] = None
+    status: str = ""
+    remarks: Optional[str] = None
+    production_units: int = 0
 

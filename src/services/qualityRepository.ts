@@ -133,6 +133,46 @@ export interface QualityDayLoad {
   error?: string;
 }
 
+export interface QualitySaveResult {
+  ok: boolean;
+  persisted: boolean;
+  hourly?: QualityDayHourly;
+  continuation?: QualityDayHourly;
+  continuationDate?: string;
+  error?: string;
+}
+
+/**
+ * One machine + Job ID row of the job-wise production summary
+ * (GET /api/production/quality/daily/jobs/?date=). The backend derives the
+ * start from the job's earliest hourly row inside its 9 AM production day and
+ * sums the ACTUAL bottles of that Job ID from its start through the selected
+ * report date — never planned or speed-based quantities.
+ */
+export interface QualityJobRow {
+  machine_no: number;
+  job_id: string;
+  bottle_id: number | null;
+  /** Production date + start clock time (a 12 AM-8:59 AM start keeps the previous production date). */
+  job_start_time: string;
+  job_end_time: string | null;
+  status: string;
+  /** Job-level remark from hpr_job — null/blank when none exists. */
+  remarks: string | null;
+  production_units: number;
+}
+
+/** One job-wise load result: the rows plus whether the request actually worked. */
+export interface QualityJobsLoad {
+  rows: QualityJobRow[];
+  ok?: boolean;
+  error?: string;
+}
+
+// Deduplicates concurrent job-wise load requests per date (StrictMode
+// double-effects, Refresh, rapid date navigation share one in-flight request).
+const inFlightJobLoads = new Map<string, Promise<QualityJobsLoad>>();
+
 // Deduplicates concurrent load requests per date (StrictMode double-effects,
 // rapid date navigation, etc. all share one in-flight request).
 const inFlightLoads = new Map<string, Promise<QualityDayLoad>>();
@@ -366,6 +406,43 @@ export const qualityRepository = {
   },
 
   /**
+   * Loads the job-wise production summary for a single production date. Used
+   * by the Daily Production Performance Report's job table and refreshed by
+   * the same date changes / Refresh cycle as the hourly data. Concurrent calls
+   * for the same date share one in-flight request.
+   *
+   * `ok` is true only when the API responded with a row list. On any failure
+   * the result is an empty list with `ok: false` — never a throw — so the
+   * caller can fall back to deriving the rows from its already-loaded hourly
+   * records instead of breaking the existing report.
+   */
+  async loadJobs(dateKey: string): Promise<QualityJobsLoad> {
+    const pending = inFlightJobLoads.get(dateKey);
+    if (pending) return pending;
+    const promise = this._loadJobs(dateKey).finally(() => {
+      inFlightJobLoads.delete(dateKey);
+    });
+    inFlightJobLoads.set(dateKey, promise);
+    return promise;
+  },
+
+  async _loadJobs(dateKey: string): Promise<QualityJobsLoad> {
+    try {
+      const res = await apiFetch(`/api/production/quality/daily/jobs/?date=${dateKey}`);
+      if (Array.isArray(res)) {
+        return { rows: res as QualityJobRow[], ok: true };
+      }
+      return { rows: [], ok: false, error: 'The server returned an unexpected response.' };
+    } catch (err) {
+      return {
+        rows: [],
+        ok: false,
+        error: err instanceof Error && err.message ? err.message : 'Could not load job data.',
+      };
+    }
+  },
+
+  /**
    * Persists one day of hourly production + shift assignments to the backend.
    * No local cache is written: the database is the source of truth, so a
    * failed POST fails loudly instead of pretending the data was saved.
@@ -384,7 +461,7 @@ export const qualityRepository = {
     hourly: QualityDayHourly,
     shifts: QualityShiftMap,
     options: { keepalive?: boolean } = {}
-  ): Promise<{ ok: boolean; persisted: boolean; hourly?: QualityDayHourly; error?: string }> {
+  ): Promise<QualitySaveResult> {
     try {
       const res = await apiFetch('/api/production/quality/daily/', {
         method: 'POST',
@@ -397,6 +474,7 @@ export const qualityRepository = {
       });
       const body = res as {
         hourly?: Record<string, Record<string, Record<string, unknown>>>;
+        continuation?: Record<string, Record<string, Record<string, unknown>>>;
       } | null;
       // The backend commits the transaction and only then re-queries the day it
       // just wrote, so a 200 response carrying that state IS the proof that the
@@ -409,11 +487,19 @@ export const qualityRepository = {
           error: 'The server did not confirm the save. Please try again.',
         };
       }
-      return {
+      const result: QualitySaveResult = {
         ok: true,
         persisted: true,
         hourly: normalizeDbHourly(body.hourly),
       };
+      if (body.continuation && typeof body.continuation === 'object') {
+        result.continuation = normalizeDbHourly(body.continuation);
+        const nextDate = new Date(`${dateKey}T00:00:00`);
+        nextDate.setDate(nextDate.getDate() + 1);
+        const pad = (n: number) => String(n).padStart(2, '0');
+        result.continuationDate = `${nextDate.getFullYear()}-${pad(nextDate.getMonth() + 1)}-${pad(nextDate.getDate())}`;
+      }
+      return result;
     } catch (err) {
       // API unreachable or the backend rejected the payload — nothing was
       // persisted. Keep the reason so the caller can tell the user WHY the

@@ -4,15 +4,15 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
-from datetime import datetime, date, time as dtime
-from typing import Dict, Any, Optional, Tuple
+from datetime import datetime, date, time as dtime, timedelta
+from typing import Dict, Any, List, Optional, Tuple
 
 from app.db.session import get_db
 from app.models.quality import (
     HourlyProductionReport, ShiftAssignment, HourlyProduction,
     DefectMaster, HourlyProductionDefect, HprJob
 )
-from app.schemas.quality import QualityDailyRequest, QualityDailyResponse, QualityHourlyEntrySchema, QualityShiftAssignmentSchema
+from app.schemas.quality import QualityDailyRequest, QualityDailyResponse, QualityHourlyEntrySchema, QualityShiftAssignmentSchema, QualityJobRowSchema
 from app.api.permissions import require_module_read, require_module_edit, MODULE_QUALITY_CONTROL
 from app.models.auth import AuthUser
 
@@ -98,12 +98,44 @@ def _entry_key(machine_no: int, production_time: Any) -> Tuple[int, Optional[dti
     """The single canonical identity of an hourly row: machine + time-of-day."""
     return (machine_no, _norm_time(production_time))
 
+
+def _physical_dt(production_date: date, value: Any) -> Optional[datetime]:
+    """Timeline position of one hourly row inside the 9 AM production day.
+
+    A production day runs 9:00 AM -> 8:59 AM of the NEXT calendar day, but the
+    12:00 AM - 8:59 AM slots are stored under the report date. On this internal
+    timeline those overnight slots are pushed one day forward so they sort
+    AFTER the same report date's evening slots — used only to order jobs and to
+    pick a job's first row. The DATE shown to the user is always the row's
+    production date (a 1:00 AM start belongs to the previous production date).
+    """
+    slot = _norm_time(value)
+    if slot is None or production_date is None:
+        return None
+    base = datetime.combine(production_date, slot)
+    if slot.hour < 9:
+        base += timedelta(days=1)
+    return base
+
+
+def _entry_units(entry: HourlyProduction) -> int:
+    """Actual bottles of one hourly row — identical to the frontend's
+    hourlyUnits(): packing size x cartons when both are positive, otherwise the
+    stored bottles-in-nos value. Never a planned or speed-based quantity."""
+    packing = entry.packing_size or 0
+    cartons = entry.cartons or 0
+    if packing > 0 and cartons > 0:
+        return int(packing) * int(cartons)
+    bottles = entry.bottles_in_nos or 0
+    return int(bottles) if bottles > 0 else 0
+
+
 def get_default_shape(date_str: str) -> QualityDailyResponse:
     hourly = {str(m): {} for m in MACHINES}
     for m in MACHINES:
         for pt in PRODUCTION_TIMES:
             hourly[str(m)][pt['time']] = QualityHourlyEntrySchema(
-                entry_id=f"{date_str}:{m}:{pt['time']}",
+                entry_id="",
                 report_id=date_str,
                 machine_no=m,
                 shift_id=pt['shift_id'],
@@ -178,8 +210,8 @@ def get_daily_quality(date: str, db: Session = Depends(get_db), _user: AuthUser 
         pc = [x.strip() for x in pc if x.strip()]
 
         candidate = QualityHourlyEntrySchema(
-            entry_id=f"{date}:{entry.machine_no}:{pt_time}",
-            report_id=date,
+            entry_id=str(entry.entry_id),
+            report_id=str(report.report_id),
             machine_no=entry.machine_no,
             shift_id=entry.shift_id,
             production_time=pt_time,
@@ -241,6 +273,148 @@ def _has_meaningful_data(entry_data: QualityHourlyEntrySchema) -> bool:
     if entry_data.defect_ids and any(str(d).strip() for d in entry_data.defect_ids if d):
         return True
     return False
+
+
+@router.get("/jobs/", response_model=List[QualityJobRowSchema])
+def get_daily_jobs(
+    date: str,
+    db: Session = Depends(get_db),
+    _user: AuthUser = Depends(require_module_read(MODULE_QUALITY_CONTROL)),
+):
+    """Job-wise production summary for one production date (read-only).
+
+    One row per machine + Job ID applicable to the selected 9 AM -> 8:59 AM
+    production day: every Job ID with hourly records inside the day (a job
+    change therefore yields one row per job, while many hourly records of the
+    same job stay a single row), plus each machine's currently running job when
+    the day has no entries saved yet. Start date/time, item and production are
+    derived from the SAME hpr hourly rows and hpr_job table the Quality Module
+    already writes — no new tables and no change to any existing endpoint.
+    """
+    try:
+        query_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    # 1. Candidate (machine, job) pairs: jobs that produced during the selected
+    #    production day, in deterministic order.
+    candidates: Dict[Tuple[int, str], None] = {}
+    day_pairs = (
+        db.query(HourlyProduction.machine_no, HourlyProduction.job_id)
+        .join(
+            HourlyProductionReport,
+            HourlyProduction.report_id == HourlyProductionReport.report_id,
+        )
+        .filter(
+            HourlyProductionReport.production_date == query_date,
+            HourlyProduction.job_id != "",
+        )
+        .distinct()
+        .all()
+    )
+    for machine_no, job_id in day_pairs:
+        jid = str(job_id or "").strip()
+        if jid:
+            candidates[(int(machine_no), jid)] = None
+
+    # ... plus each machine's RUNNING job, so the table still shows what is
+    # producing before the day's first hourly entry has been saved (candidates
+    # without hourly rows on/before the selected date are dropped below, so a
+    # job that had not started yet never appears for this date).
+    if datetime.now().date() >= query_date:
+        for job in db.query(HprJob).filter(HprJob.status == "RUNNING").all():
+            jid = str(job.job_id or "").strip()
+            if jid:
+                candidates.setdefault((int(job.machine_no), jid), None)
+
+    if not candidates:
+        return []
+
+    # 2. Every hourly row of those Job IDs from their start through the
+    #    selected report date — this is what makes Production to Date span
+    #    multiple days for a job that continues across production dates.
+    job_ids = list(dict.fromkeys(jid for _, jid in candidates))
+    rows_by_job: Dict[Tuple[int, str], List[Tuple[HourlyProduction, date]]] = {}
+    for entry, production_date in (
+        db.query(HourlyProduction, HourlyProductionReport.production_date)
+        .join(
+            HourlyProductionReport,
+            HourlyProduction.report_id == HourlyProductionReport.report_id,
+        )
+        .filter(
+            HourlyProduction.job_id.in_(job_ids),
+            HourlyProductionReport.production_date <= query_date,
+        )
+        .all()
+    ):
+        key = (int(entry.machine_no), str(entry.job_id or "").strip())
+        if key in candidates:
+            rows_by_job.setdefault(key, []).append((entry, production_date))
+
+    job_meta = {
+        str(job.job_id).strip(): job
+        for job in db.query(HprJob).filter(HprJob.job_id.in_(job_ids)).all()
+    }
+
+    # 3. One row per candidate job.
+    built: List[Tuple[datetime, QualityJobRowSchema]] = []
+    for machine_no, jid in candidates:
+        entries = rows_by_job.get((machine_no, jid), [])
+        if not entries:
+            # Not applicable to this production date (e.g. a running job that
+            # starts later) — never rendered as a blank row.
+            continue
+        meta = job_meta.get(jid)
+
+        start_phys: Optional[datetime] = None
+        start_stamp: Optional[datetime] = None
+        end_phys: Optional[datetime] = None
+        end_stamp: Optional[datetime] = None
+        units = 0
+        bottle_id: Optional[int] = None
+
+        for entry, production_date in entries:
+            units += _entry_units(entry)
+            if bottle_id is None and entry.bottle_id is not None:
+                bottle_id = int(entry.bottle_id)
+            phys = _physical_dt(production_date, entry.production_time)
+            if phys is None:
+                continue
+            # Display stamp = production date + the slot's clock time (the
+            # production-day date rule), never the shifted timeline value.
+            stamp = datetime.combine(production_date, phys.time())
+            if start_phys is None or phys < start_phys:
+                start_phys, start_stamp = phys, stamp
+            if end_phys is None or phys > end_phys:
+                end_phys, end_stamp = phys, stamp
+
+        if start_phys is None or start_stamp is None:
+            # Every timestamp of the job failed to parse — the job table's own
+            # start (production date + clock time) is the only source left.
+            if meta is None or meta.job_start_time is None:
+                continue
+            start_stamp = meta.job_start_time
+        if meta is not None and meta.bottle_id is not None:
+            bottle_id = int(meta.bottle_id)
+
+        built.append((
+            start_phys if start_phys is not None else start_stamp,
+            QualityJobRowSchema(
+                machine_no=machine_no,
+                job_id=jid,
+                bottle_id=bottle_id,
+                job_start_time=start_stamp,
+                job_end_time=end_stamp,
+                status=(meta.status if meta is not None else "") or "",
+                remarks=(meta.remarks if meta is not None else None),
+                production_units=int(units),
+            ),
+        ))
+
+    # Machine order first, then the newest job first inside each machine.
+    built.sort(key=lambda item: item[0], reverse=True)
+    built.sort(key=lambda item: item[1].machine_no)
+    return [row for _, row in built]
 
 
 @router.post("/", response_model=QualityDailyResponse)
@@ -432,6 +606,26 @@ def save_daily_quality(
                 # set of names is already validated above; dedup here.
                 entry.defects = list({dname: defect_map[dname] for dname in entry_data.defect_ids}.values())
 
+        # Step 3.5: Cross-day job continuation
+        # Look at the previous production day's last entry (8 AM) for each machine.
+        # If the current day's first entry (9 AM) has the same bottle, add the
+        # previous day's Job ID to old_job_snapshot so the existing algorithm
+        # reuses it instead of generating a new one.
+        prev_date = p_date - timedelta(days=1)
+        prev_report = db.query(HourlyProductionReport).filter_by(production_date=prev_date).first()
+        if prev_report:
+            prev_entries = db.query(HourlyProduction).filter(
+                HourlyProduction.report_id == prev_report.report_id,
+                HourlyProduction.bottle_id.isnot(None)
+            ).all()
+            for prev_entry in prev_entries:
+                prev_time = _norm_time(prev_entry.production_time)
+                if prev_time and prev_time.hour == 8 and prev_time.minute == 0:
+                    current_9am_key = (prev_entry.machine_no, dtime(9, 0))
+                    current_9am_entry = entry_map.get(current_9am_key)
+                    if current_9am_entry and current_9am_entry.bottle_id == prev_entry.bottle_id:
+                        old_job_snapshot[current_9am_key] = (prev_entry.job_id, prev_entry.bottle_id)
+
         # Step 4.5: Compute canonical job_id and upsert HPR Job rows
         # Seed the next available sequence number once per save_daily_quality call across all machines/runs
         # Note: Known small race-condition risk in concurrent environments; acceptable for current scale.
@@ -464,6 +658,7 @@ def save_daily_quality(
                     "bottle_id": entry_data.bottle_id,
                     "old_job_id": old_jid,
                     "old_bottle_id": old_bottle_id,
+                    "payload_job_id": (entry_data.job_id or "").strip() if entry_data.job_id else "",
                 })
 
             if not entries:
@@ -509,10 +704,20 @@ def save_daily_quality(
                             f"Using chronologically earliest '{canonical_job_id}' as canonical."
                         )
                 else:
-                    # 4b. Brand-new run: generate next sequential job_id using the request-scoped counter.
-                    # Format matches 'J{:03d}' (e.g. J001, J002).
-                    canonical_job_id = f"J{next_new_seq:03d}"
-                    next_new_seq += 1
+                    # Try to reuse job_id from payload (frontend-copied rows) if consistent
+                    payload_jids = [
+                        item.get("payload_job_id", "")
+                        for item in run
+                        if item.get("payload_job_id")
+                    ]
+                    unique_payload_jids = list(dict.fromkeys(payload_jids))
+                    if len(unique_payload_jids) == 1 and unique_payload_jids[0].startswith("J"):
+                        canonical_job_id = unique_payload_jids[0]
+                    else:
+                        # 4b. Brand-new run: generate next sequential job_id using the request-scoped counter.
+                        # Format matches 'J{:03d}' (e.g. J001, J002).
+                        canonical_job_id = f"J{next_new_seq:03d}"
+                        next_new_seq += 1
 
                 # 5. Overwrite job_id on every ORM entry in this run
                 for item in run:
@@ -599,6 +804,100 @@ def save_daily_quality(
                             f"conflicting (machine={machine_no}, bottle={r['bottle_id']}). Skipping update."
                         )
 
+        # Step 4.6: Automatic next-day continuation
+        # After saving the current day, check if the 8 AM entry has a bottle.
+        # If so, automatically create the next day's 9 AM entry with the same
+        # bottle and Job ID. This ensures a running job continues into the next
+        # production day without manual intervention.
+        continuation_data = None
+        next_date = p_date + timedelta(days=1)
+        next_report = db.query(HourlyProductionReport).filter_by(production_date=next_date).first()
+        if not next_report:
+            next_report = HourlyProductionReport(production_date=next_date)
+            db.add(next_report)
+            db.flush()
+
+        continuation_entries = []
+        for machine_str, m_dict in payload.hourly.items():
+            machine_no = int(machine_str)
+            entry_8am = None
+            for time_str, entry_data in m_dict.items():
+                parsed_time = _slot_time(time_str)
+                if parsed_time.hour == 8 and parsed_time.minute == 0:
+                    entry_8am = entry_map.get((machine_no, parsed_time))
+                    break
+
+            if entry_8am and entry_8am.bottle_id:
+                next_9am_dt = datetime.combine(next_date, dtime(9, 0))
+                next_9am_entry = db.query(HourlyProduction).filter_by(
+                    report_id=next_report.report_id,
+                    machine_no=machine_no,
+                    production_time=next_9am_dt
+                ).first()
+
+                if not next_9am_entry:
+                    new_entry = HourlyProduction(
+                        report_id=next_report.report_id,
+                        machine_no=machine_no,
+                        shift_id=1,
+                        production_time=next_9am_dt,
+                        bottle_id=entry_8am.bottle_id,
+                        job_id=entry_8am.job_id,
+                        section=entry_8am.section,
+                        weight_front=entry_8am.weight_front,
+                        weight_middle=entry_8am.weight_middle,
+                        weight_rear=entry_8am.weight_rear,
+                        weight_avg=entry_8am.weight_avg,
+                        speed_per_min=entry_8am.speed_per_min,
+                        packing_category=entry_8am.packing_category,
+                        packing_size=entry_8am.packing_size,
+                        cartons=entry_8am.cartons,
+                        bottles_in_nos=entry_8am.bottles_in_nos,
+                        efficiency_percent=entry_8am.efficiency_percent,
+                        sqc=entry_8am.sqc,
+                        qc_hold=entry_8am.qc_hold,
+                        num=entry_8am.num,
+                        remarks=entry_8am.remarks,
+                    )
+                    db.add(new_entry)
+                    continuation_entries.append(new_entry)
+
+        if continuation_entries:
+            db.flush()
+            continuation_data = {}
+            for entry in continuation_entries:
+                m = str(entry.machine_no)
+                continuation_data.setdefault(m, {})
+                slot = _norm_time(entry.production_time)
+                pt_time = f"{slot.hour % 12 or 12}:{slot.minute:02d} {'AM' if slot.hour < 12 else 'PM'}"
+                pc = entry.packing_category.split(",") if entry.packing_category else []
+                pc = [x.strip() for x in pc if x.strip()]
+                continuation_data[m][pt_time] = QualityHourlyEntrySchema(
+                    entry_id=str(entry.entry_id),
+                    report_id=str(next_date),
+                    machine_no=entry.machine_no,
+                    shift_id=entry.shift_id,
+                    production_time=pt_time,
+                    bottle_id=entry.bottle_id,
+                    section=entry.section,
+                    weight_front=entry.weight_front,
+                    weight_middle=entry.weight_middle,
+                    weight_rear=entry.weight_rear,
+                    weight_avg=entry.weight_avg,
+                    speed_per_min=entry.speed_per_min,
+                    packing_category=pc,
+                    packing_size=entry.packing_size,
+                    cartons=entry.cartons,
+                    bottles_in_nos=entry.bottles_in_nos,
+                    efficiency_percentage=float(entry.efficiency_percent) if entry.efficiency_percent is not None else None,
+                    sqc=entry.sqc,
+                    qc_hold=int(entry.qc_hold) if entry.qc_hold is not None else None,
+                    num=entry.num,
+                    remarks=entry.remarks,
+                    defect_ids=[],
+                    job_id=entry.job_id
+                )
+
         # Step 5: Single Commit
         db.commit()
     except HTTPException:
@@ -622,4 +921,6 @@ def save_daily_quality(
         )
 
     # Return using explicit re-query
-    return get_daily_quality(payload.production_date, db)
+    response = get_daily_quality(payload.production_date, db)
+    response.continuation = continuation_data
+    return response

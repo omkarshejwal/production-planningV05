@@ -199,6 +199,32 @@ export function calculateBottlesPerMin(
 }
 
 /**
+ * Theoretical ("As Per Speed") bottle quantity of a production period.
+ *
+ *   Total Bottles = Speed/min × 60 × Machine Gob × Duration/Hours
+ *
+ * `gobCount` must be the running machine's own gob count (Machine 1 = 3,
+ * Machine 2 = 2, Machine 3 = 2, Machine 4 = 3) — it is a required argument,
+ * never a default, so no call site can silently assume a Gob value. A 1-hour
+ * period therefore yields Speed × 60 × 3 on Machines 1/4 and
+ * Speed × 60 × 2 on Machines 2/3.
+ *
+ * Returns 0 when any factor is missing or non-positive, so callers never divide
+ * by a zero theoretical quantity.
+ */
+export const calculateTheoreticalBottles = (
+  speedPerMin: number,
+  gobCount: number,
+  durationHours = 1
+): number => {
+  const speed = normalizePositive(speedPerMin);
+  const gob = normalizePositive(gobCount);
+  const hours = normalizePositive(durationHours);
+  if (speed <= 0 || gob <= 0 || hours <= 0) return 0;
+  return speed * 60 * gob * hours;
+};
+
+/**
  * Calculates Bottles Per Hour.
  * Uses machine gob count when machineNo is provided; otherwise falls back to sections.
  */

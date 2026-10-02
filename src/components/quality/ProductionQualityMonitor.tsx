@@ -6,6 +6,8 @@ import { useAuth, MODULES } from '../../context/AuthContext';
 import { BottleMaster } from '../../types';
 import { qualityRepository, QualityHourlyEntry, QualityShiftMap, QualityDayLoad, QualityDayHourly, hasMeaningfulData } from '../../services/qualityRepository';
 import { COMPANY_NAME, getReportHeaderLines } from '../../utils/reportHeader';
+import { calculateTheoreticalBottles } from '../../utils/calculations';
+import QualityReport from './QualityReport';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Shift master — mirrors the production.shift_master table
@@ -509,6 +511,13 @@ const PackingMultiSelect: React.FC<{ selected: string[]; onChange: (v: string[])
 const pad = (n: number) => String(n).padStart(2, '0');
 const toIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const toDisplay = (d: Date) => `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
+/** Parses a native date-input value (YYYY-MM-DD) as a local calendar day. */
+const fromIso = (iso: string): Date | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+};
 
 type DefectGroup = { group: 'Critical' | 'Major' | 'Minor'; items: string[] };
 
@@ -518,12 +527,18 @@ const calcBottlesInNos = (e?: QualityHourlyEntry): string => {
   return ps > 0 && ct > 0 ? String(ps * ct) : '';
 };
 
-const calcEffForEntry = (e?: QualityHourlyEntry): string => {
+/**
+ * Efficiency % of an hourly row = actual bottles (packing size × cartons)
+ * ÷ that row's theoretical "As Per Speed" bottles × 100, where the theoretical
+ * quantity uses the machine's own Gob count (see calculateTheoreticalBottles).
+ */
+const calcEffForEntry = (e?: QualityHourlyEntry, gobCount = 0): string => {
   if (!e?.bottle_id || !e.packing_size || !e.cartons) return '';
   const bottlesN = parseInt(e.packing_size) * parseInt(e.cartons);
   const speed = parseFloat(e.speed_per_min);
-  if (!bottlesN || !speed) return '';
-  return ((bottlesN / (speed * 60)) * 100).toFixed(1);
+  const theoretical = calculateTheoreticalBottles(speed, gobCount);
+  if (!bottlesN || theoretical <= 0) return '';
+  return ((bottlesN / theoretical) * 100).toFixed(1);
 };
 
 const calcRowAverage = (e: QualityHourlyEntry | undefined, gobCount: number): string => {
@@ -635,40 +650,62 @@ const QualityTimeRow = React.memo<{
       )}
 
       <td style={{ ...tdCenter, fontWeight: 500, fontSize: '12px', color: C.textMuted, whiteSpace: 'nowrap' }}>
+        {entry?.entry_id && (
+          <span style={{ color: '#2563eb', fontWeight: 600, marginRight: '6px', fontSize: '11px' }}>
+            E{String(entry.entry_id).padStart(3, '0')}
+          </span>
+        )}
         {time}
       </td>
 
       <td style={{ ...td, padding: '4px 6px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-          <select
-            value={entry?.bottle_id ?? ''}
-            disabled={!canEdit}
-            onChange={(e) => {
-              selectBottle(time, e.target.value);
-            }}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              padding: '3px 5px',
-              fontSize: '12px',
-              fontWeight: entry?.bottle_id ? 500 : 400,
-              color: entry?.bottle_id ? C.textMain : '#94a3b8',
-              backgroundColor: 'transparent',
-              border: '1px solid transparent',
-              borderRadius: '4px',
-              cursor: canEdit ? 'pointer' : 'not-allowed',
-              outline: 'none',
-              textAlign: 'left',
-              opacity: canEdit ? 1 : 0.6,
-            }}
-            onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
-            onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
-          >
-            <option value="">— Select bottle</option>
-            {bottles.map((b) => (
-              <option key={b.id} value={b.id}>{b.name}</option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+  <select
+    value={entry?.bottle_id ?? ''}
+    disabled={!canEdit}
+    onChange={(e) => {
+      selectBottle(time, e.target.value);
+    }}
+    style={{
+      flex: 1,
+      minWidth: 0,
+      padding: '3px 5px',
+      fontSize: '12px',
+      fontWeight: entry?.bottle_id ? 500 : 400,
+      color: entry?.bottle_id ? C.textMain : '#94a3b8',
+      backgroundColor: 'transparent',
+      border: '1px solid transparent',
+      borderRadius: '4px',
+      cursor: canEdit ? 'pointer' : 'not-allowed',
+      outline: 'none',
+      textAlign: 'left',
+      opacity: canEdit ? 1 : 0.6,
+    }}
+    onFocus={(e) => { e.currentTarget.style.borderColor = '#2563eb'; }}
+    onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
+  >
+    <option value="">— Select bottle</option>
+    {bottles.map((b) => (
+      <option key={b.id} value={b.id}>{b.name}</option>
+    ))}
+  </select>
+
+  {entry?.job_id && (
+    <span
+      style={{
+        fontSize: '9px',
+        color: '#64748b',
+        fontWeight: 600,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      ({entry.job_id})
+    </span>
+  )}
+
+  {/* KEEP YOUR EXISTING + BUTTON AND - BUTTON CODE HERE */}
+</div>
           {entry?.bottle_id && canEdit && (
             <button
               onClick={() => copyRowDown(time)}
@@ -775,7 +812,7 @@ const QualityTimeRow = React.memo<{
       </td>
 
       <td style={tdCenter}>
-        <EffBadge val={calcEffForEntry(entry)} />
+        <EffBadge val={calcEffForEntry(entry, gobCount)} />
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
@@ -830,7 +867,7 @@ const QualityTimeRow = React.memo<{
 
 // ─── Module ────────────────────────────────────────────────────────────────
 export const QualityControlModule: React.FC = () => {
-  const { machines, bottles, bottleMasterRecords } = useERP();
+  const { machines, bottles, getBottlesForMachine, bottleMasterRecords } = useERP();
   const { hasPermission } = useAuth();
   const canEdit = hasPermission(MODULES.QUALITY_CONTROL, 'edit');
 
@@ -908,6 +945,8 @@ export const QualityControlModule: React.FC = () => {
 
   const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
   const [autoSaveError, setAutoSaveError] = useState('');
+
+  const [pendingBottleChange, setPendingBottleChange] = useState<{ time: string; bottleId: string } | null>(null);
 
   const setAutoSaveStatusSafe = useCallback((next: AutoSaveStatus) => {
     if (mountedRef.current) setAutoSaveStatus(next);
@@ -1218,6 +1257,14 @@ export const QualityControlModule: React.FC = () => {
     [productionStore, dateKey, activeMachine]
   );
 
+  const reportId = useMemo(() => {
+    for (const pt of PRODUCTION_TIMES) {
+      const rid = activeRows[pt.time]?.report_id;
+      if (rid) return rid;
+    }
+    return '';
+  }, [activeRows]);
+
   const patchEntry = useCallback((time: string, patch: Partial<QualityHourlyEntry>) => {
     if (!canEdit) return;
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
@@ -1258,6 +1305,17 @@ export const QualityControlModule: React.FC = () => {
   // ── Master-data lookups ──────────────────────────────────────────────────
   const sectionKey = `${String(activeMachine).padStart(2, '0')}`;
 
+  // Bottle dropdown list: only the bottles that HAVE a bottle_configuration row
+  // on the machine currently selected (getBottlesForMachine filters the Bottle
+  // Master list on that machine's own machine_no/bottle_id rows). A bottle
+  // configured on several sections of the same machine appears once, because
+  // the lookup is keyed by bottle. Machines without any configuration simply
+  // get an empty list rather than another machine's bottles.
+  const machineBottles = useMemo(
+    () => getBottlesForMachine(`MAC-${sectionKey}`),
+    [getBottlesForMachine, sectionKey]
+  );
+
   // Available sections are derived from bottleMasterRecords/machines, which
   // only change when master data reloads, so the per-key result can be cached
   // and shared across rows renders (previously filtered the full record list
@@ -1296,11 +1354,6 @@ export const QualityControlModule: React.FC = () => {
 
   const allDefectNames = useMemo(() => defectGroups.flatMap((g) => g.items), [defectGroups]);
 
-  // Select a bottle: auto-fill F/M/R weights + speed from bottle_configuration.
-  // job_id is owned by the database — the frontend never generates one. A
-  // DB-assigned id is preserved only when re-selecting the same bottle on the
-  // same row; any other selection leaves job_id empty so the backend creates
-  // a fresh job id on save.
   const selectBottle = useCallback((time: string, bottleId: string) => {
     if (!canEdit) return;
     if (!bottleId) {
@@ -1319,6 +1372,12 @@ export const QualityControlModule: React.FC = () => {
     const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
     const currentSection = existingEntry?.section ?? '';
     const prevBottle = existingEntry?.bottle_id || '';
+
+    if (prevBottle && prevBottle !== bottleId && existingEntry?.job_id) {
+      setPendingBottleChange({ time, bottleId });
+      return;
+    }
+
     const newJobId =
       prevBottle === bottleId ? existingEntry?.job_id || '' : '';
 
@@ -1354,6 +1413,52 @@ export const QualityControlModule: React.FC = () => {
       };
     });
   }, [dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, patchEntry, canEdit, markTouched, queueAutoSave]);
+
+  const confirmBottleChange = useCallback(() => {
+    if (!pendingBottleChange) return;
+    const { time, bottleId } = pendingBottleChange;
+    setPendingBottleChange(null);
+    const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
+    const machineKey = String(activeMachine);
+    const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
+    const currentSection = existingEntry?.section ?? '';
+
+    const configs = bottleMasterRecords.filter(
+      (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
+    );
+    const config =
+      (currentSection && configs.find((r) => String(r.section) === currentSection)) ||
+      configs[0];
+
+    markTouched(dateKey, machineKey, time);
+    queueAutoSave(dateKey);
+
+    setProductionStore((prev) => {
+      const base = prev[dateKey]?.[machineKey]?.[time] ?? blankEntry(time, slot?.shift_id ?? 1);
+      return {
+        ...prev,
+        [dateKey]: {
+          ...(prev[dateKey] ?? {}),
+          [machineKey]: {
+            ...(prev[dateKey]?.[machineKey] ?? {}),
+            [time]: {
+              ...base,
+              job_id: '',
+              bottle_id: bottleId,
+              weight_front: (config && config.weightGrams ? String(config.weightGrams) : ''),
+              weight_middle: hasM && config && config.weightGrams ? String(config.weightGrams) : '',
+              weight_rear: (config && config.weightGrams ? String(config.weightGrams) : ''),
+              speed_per_min: (config && config.speed ? String(config.speed) : ''),
+            },
+          },
+        },
+      };
+    });
+  }, [pendingBottleChange, dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, markTouched, queueAutoSave]);
+
+  const cancelBottleChange = useCallback(() => {
+    setPendingBottleChange(null);
+  }, []);
 
   const selectSection = useCallback((time: string, section: string) => patchEntry(time, { section }), [patchEntry]);
 
@@ -1459,7 +1564,11 @@ export const QualityControlModule: React.FC = () => {
 
   const calcBottlesInNosFor = useCallback((e?: QualityHourlyEntry): string => calcBottlesInNos(e), []);
 
-  const calcEffFor = useCallback((e?: QualityHourlyEntry, _machineNo?: number): string => calcEffForEntry(e), []);
+  const calcEffFor = useCallback(
+    (e?: QualityHourlyEntry, machineNo?: number): string =>
+      calcEffForEntry(e, machineNo === undefined ? 0 : gobCountFor(machineNo)),
+    [gobCountFor]
+  );
 
   const calcRowAvgFor = useCallback((e: QualityHourlyEntry | undefined, machineNo: number): string =>
     calcRowAverage(e, gobCountFor(machineNo)),
@@ -1658,6 +1767,46 @@ export const QualityControlModule: React.FC = () => {
           continue;
         }
         savedAny = true;
+
+        if (result.continuation && result.continuationDate && Object.keys(result.continuation).length > 0) {
+          const nextDateKey = result.continuationDate;
+          const contData = result.continuation;
+          setProductionStore((prev) => {
+            const prevDate = prev[nextDateKey] ?? {};
+            const machineKeys = new Set<string>([...Object.keys(contData), ...Object.keys(prevDate)]);
+            const mergedDate: Record<string, Record<string, QualityHourlyEntry>> = {};
+            for (const mKey of machineKeys) {
+              const contMachine = contData[mKey] ?? {};
+              const prevMachine = prevDate[mKey] ?? {};
+              const byTime: Record<string, QualityHourlyEntry> = {};
+              for (const tKey of new Set<string>([...Object.keys(contMachine), ...Object.keys(prevMachine)])) {
+                const contEntry = contMachine[tKey];
+                const prevEntry = prevMachine[tKey];
+                if (!contEntry) {
+                  byTime[tKey] = prevEntry;
+                } else if (!prevEntry) {
+                  byTime[tKey] = contEntry;
+                } else {
+                  const merged: QualityHourlyEntry = {
+                    ...prevEntry,
+                    entry_id: contEntry.entry_id || prevEntry.entry_id || '',
+                    report_id: contEntry.report_id || prevEntry.report_id || '',
+                    job_id: contEntry.job_id || prevEntry.job_id || '',
+                    bottle_id: prevEntry.bottle_id || contEntry.bottle_id || '',
+                    section: prevEntry.section || contEntry.section || '',
+                  };
+                  byTime[tKey] = MERGED_ROW_FIELDS.every((f) => merged[f] === prevEntry[f])
+                    ? prevEntry
+                    : merged;
+                }
+              }
+              mergedDate[mKey] = byTime;
+            }
+            return { ...prev, [nextDateKey]: mergedDate };
+          });
+          continuationDates.current[nextDateKey] = true;
+        }
+
         // The database owns entry_id and job_id: write the DB-generated ids
         // returned by the save back into the live store so display and
         // subsequent saves reuse the same ids instead of creating new ones.
@@ -2084,6 +2233,12 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
     setNavDate(d);
   };
 
+  /** Date filter — jump straight to any historical date from the picker. */
+  const pickDate = (iso: string) => {
+    const d = fromIso(iso);
+    if (d) setNavDate(d);
+  };
+
   const thStyle = (last = false): React.CSSProperties => ({
     padding: '8px 6px',
     color: C.headerText,
@@ -2292,6 +2447,13 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
               </button>
             );
           })}
+          {reportId && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '6px', margin: '4px 0' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#2563eb', letterSpacing: '0.02em' }}>
+                Report ID: R{String(reportId).padStart(3, '0')}
+              </span>
+            </div>
+          )}
           <div style={{ flex: 1 }} />
 
           {/* Date navigation */}
@@ -2309,6 +2471,32 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
             >
               <span style={{ fontSize: '14px', lineHeight: 1 }}>‹</span> Previous Day
             </button>
+
+            {/* Date filter — pick any date directly (shared by HRP + Daily Report) */}
+            <label
+              style={{
+                display: 'flex', alignItems: 'center', gap: '5px', padding: '3px 8px',
+                fontSize: '12px', fontWeight: 500, color: C.textMuted,
+                backgroundColor: C.white,
+                border: `1px solid ${C.border}`, borderRadius: '6px', cursor: 'pointer',
+                whiteSpace: 'nowrap', transition: 'background-color 0.15s',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#f1f5f9'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = C.white; }}
+              title={dateLabel}
+            >
+              <CalendarDays className="w-3.5 h-3.5" />
+              <input
+                type="date"
+                value={dateKey}
+                onChange={(e) => pickDate(e.target.value)}
+                style={{
+                  border: 'none', outline: 'none', background: 'transparent',
+                  fontSize: '12px', fontWeight: 600, color: '#1e293b',
+                  padding: '2px 0', cursor: 'pointer',
+                }}
+              />
+            </label>
 
             <button
               onClick={() => setNavDate(new Date())}
@@ -2392,7 +2580,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                     entry={entry}
                     gobCount={gobCount}
                     hasM={hasM}
-                    bottles={bottles}
+                    bottles={machineBottles}
                     availableSections={availSections}
                     allDefectNames={allDefectNames}
                     defectGroups={defectGroups}
@@ -2498,7 +2686,61 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
           )}
         </div>
       </div>
+
+      {/* Daily Production Performance Report — existing QualityReport component,
+          rendered directly below the Quality/HPR hourly table card. It receives
+          navDate so both sections always share the same selected date. */}
+      <QualityReport date={navDate} />
+
       <Toaster position="bottom-right" richColors />
+
+      {pendingBottleChange && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backgroundColor: 'rgba(0,0,0,0.4)',
+          }}
+          onClick={cancelBottleChange}
+        >
+          <div
+            style={{
+              backgroundColor: '#ffffff', borderRadius: '10px', padding: '24px',
+              maxWidth: '400px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 700, color: '#1e293b' }}>
+              Change Bottle
+            </h3>
+            <p style={{ margin: '0 0 20px', fontSize: '14px', color: '#475569', lineHeight: 1.5 }}>
+              You are changing the current job. This will create a new Job ID. Do you want to continue?
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                onClick={cancelBottleChange}
+                style={{
+                  padding: '8px 16px', fontSize: '13px', fontWeight: 600,
+                  color: '#475569', backgroundColor: '#f1f5f9', border: 'none',
+                  borderRadius: '6px', cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmBottleChange}
+                style={{
+                  padding: '8px 16px', fontSize: '13px', fontWeight: 600,
+                  color: '#ffffff', backgroundColor: '#2563eb', border: 'none',
+                  borderRadius: '6px', cursor: 'pointer',
+                }}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
