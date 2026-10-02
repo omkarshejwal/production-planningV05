@@ -652,7 +652,7 @@ const QualityTimeRow = React.memo<{
       <td style={{ ...tdCenter, fontWeight: 500, fontSize: '12px', color: C.textMuted, whiteSpace: 'nowrap' }}>
         {entry?.entry_id && (
           <span style={{ color: '#2563eb', fontWeight: 600, marginRight: '6px', fontSize: '11px' }}>
-            E{String(entry.entry_id).padStart(3, '0')}
+            {/* E{String(entry.entry_id).padStart(3, '0')} */}
           </span>
         )}
         {time}
