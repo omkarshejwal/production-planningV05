@@ -798,10 +798,6 @@ const QualityTimeRow = React.memo<{
       </td>
 
       <td style={{ ...tdCenter, padding: '4px 4px' }}>
-        <NumInput value={entry?.weight_efficiency ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { weight_efficiency: v })} />
-      </td>
-
-      <td style={{ ...tdCenter, padding: '4px 4px' }}>
         <NumInput value={entry?.sqc ?? ''} disabled={!canEdit} onChange={(v) => patchEntry(time, { sqc: v })} />
       </td>
 
@@ -1366,11 +1362,6 @@ export const QualityControlModule: React.FC = () => {
     const newJobId =
       prevBottle === bottleId ? existingEntry?.job_id || '' : '';
 
-    const configs = bottleMasterRecords.filter(
-      (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
-    );
-    const config = configs[0];
-
     markTouched(dateKey, machineKey, time);
     queueAutoSave(dateKey);
 
@@ -1386,16 +1377,12 @@ export const QualityControlModule: React.FC = () => {
               ...base,
               job_id: newJobId,
               bottle_id: bottleId,
-              weight_front: (config && config.weightGrams ? String(config.weightGrams) : ''),
-              weight_middle: hasM && config && config.weightGrams ? String(config.weightGrams) : '',
-              weight_rear: (config && config.weightGrams ? String(config.weightGrams) : ''),
-              speed_per_min: (config && config.speed ? String(config.speed) : ''),
             },
           },
         },
       };
     });
-  }, [dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, patchEntry, canEdit, markTouched, queueAutoSave]);
+  }, [dateKey, activeMachine, patchEntry, canEdit, markTouched, queueAutoSave]);
 
   const confirmBottleChange = useCallback(() => {
     if (!pendingBottleChange) return;
@@ -1404,11 +1391,6 @@ export const QualityControlModule: React.FC = () => {
     const slot = PRODUCTION_TIMES.find((pt) => pt.time === time);
     const machineKey = String(activeMachine);
     const existingEntry = productionStoreRef.current?.[dateKey]?.[machineKey]?.[time];
-    const configs = bottleMasterRecords.filter(
-      (r) => r.mch === `MAC-${sectionKey}` && r.drawingNumber === bottleId
-    );
-    const config = configs[0];
-
     markTouched(dateKey, machineKey, time);
     queueAutoSave(dateKey);
 
@@ -1424,16 +1406,12 @@ export const QualityControlModule: React.FC = () => {
               ...base,
               job_id: '',
               bottle_id: bottleId,
-              weight_front: (config && config.weightGrams ? String(config.weightGrams) : ''),
-              weight_middle: hasM && config && config.weightGrams ? String(config.weightGrams) : '',
-              weight_rear: (config && config.weightGrams ? String(config.weightGrams) : ''),
-              speed_per_min: (config && config.speed ? String(config.speed) : ''),
             },
           },
         },
       };
     });
-  }, [pendingBottleChange, dateKey, activeMachine, bottleMasterRecords, sectionKey, hasM, markTouched, queueAutoSave]);
+  }, [pendingBottleChange, dateKey, activeMachine, markTouched, queueAutoSave]);
 
   const cancelBottleChange = useCallback(() => {
     setPendingBottleChange(null);
@@ -1936,13 +1914,13 @@ rows.push(dateAndDay);
     const header = [
       'Shift', 'Time', 'Machine', 'Bottle Name', 'Weight F', 'Weight M', 'Weight R',
       'AVG', 'Speed/Min', 'Packing Category', 'Packing Size', 'Cartons', 'Bottles in Nos.',
-      'QTY EFF%', 'WT EFF%', 'SQC', 'QC Hold', 'NUM', 'Defects', 'Remarks',
+      'QTY EFF%', 'SQC', 'QC Hold', 'NUM', 'Defects', 'Remarks',
     ];
     rows.push(header.join(','));
     for (const pt of PRODUCTION_TIMES) {
       const e = productionStore[dateKey]?.[String(activeMachine)]?.[pt.time];
       if (!e) {
-        rows.push([SHIFT_LABELS[pt.shift_id - 1], pt.time, `Machine ${activeMachine}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''].join(','));
+        rows.push([SHIFT_LABELS[pt.shift_id - 1], pt.time, `Machine ${activeMachine}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''].join(','));
         continue;
       }
       const bottleName = bottles.find((b) => b.id === e.bottle_id)?.name ?? e.bottle_id;
@@ -1966,7 +1944,6 @@ rows.push(dateAndDay);
           e.cartons,
           calcBottlesInNosFor(e) || e.bottles_in_nos,
           eff,
-          e.weight_efficiency,
           e.sqc,
           e.qc_hold,
           e.num,
@@ -2072,7 +2049,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
         { content: 'Cartons', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'Bottles', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'QTY EFF%', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
-        { content: 'WT EFF%', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'SQC', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'QC HOLD', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
         { content: 'NUM', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
@@ -2100,7 +2076,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
           e?.cartons ?? '',
           calcBottlesInNosFor(e) || e?.bottles_in_nos || '',
           calcEffFor(e, activeMachine),
-          e?.weight_efficiency ?? '',
           e?.sqc ?? '',
           e?.qc_hold != null ? String(e.qc_hold) : '0',
           e?.num ?? '',
@@ -2110,7 +2085,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
       }
 
       // Day Avg / Summary row — mirrors the on-screen totals.
-      const colCount = hasM ? 19 : 18;
+      const colCount = hasM ? 18 : 17;
       const summary: any[] = new Array(colCount).fill('');
       summary[0] = {
         content: 'Day Avg / Summary',
@@ -2128,13 +2103,12 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
       summary[wIdx++] = stats.totalCartons.toLocaleString();
       summary[wIdx++] = stats.totalBottles.toLocaleString();
       summary[wIdx++] = `${stats.avgEff}%`;
-      wIdx++; // WT EFF% (empty for summary)
       body.push(summary);
 
       // ── Column widths + alignment (landscape A4 with 10mm page margins) ──
       const colWidths = hasM
-        ? [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 11, 24, 24]
-        : [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 11, 24, 24];
+        ? [13, 11, 34, 11, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 24, 24]
+        : [13, 11, 34, 11, 11, 13, 13, 16, 11, 11, 13, 11, 11, 11, 11, 24, 24];
 
       const columnStyles: Record<number, any> = {};
       colWidths.forEach((w, i) => {
@@ -2509,7 +2483,7 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
 
         {/* Table */}
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: hasM ? '1400px' : '1340px' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: hasM ? '1332px' : '1272px' }}>
             <thead>
               <tr style={{ backgroundColor: C.headerBg }}>
                 <th rowSpan={2} style={{ ...thStyle(), width: '38px', borderBottom: `2px solid ${C.border}`, padding: '9px 4px' }}>Shift</th>
@@ -2523,7 +2497,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>Cartons</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>{'Bottles\nin Nos.'}</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>QTY EFF%</th>
-                <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>WT EFF%</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>SQC</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>{'QC\nHOLD'}</th>
                 <th rowSpan={2} style={{ ...thStyle(), width: '68px', borderBottom: `2px solid ${C.border}` }}>NUM</th>
@@ -2602,7 +2575,6 @@ doc.text(dateAndDay, centerX, 15.5, { align: 'center' });
                     {stats.avgEff}%
                   </span>
                 </td>
-                <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
                 <td style={{ padding: '8px 6px', borderRight: `1px solid ${C.border}` }} />
